@@ -1,5 +1,5 @@
 ﻿using System.Text.RegularExpressions;
-using FlexFetch.Domain;
+using FlexFetch.Entities;
 
 namespace FlexFetch.Tests;
 

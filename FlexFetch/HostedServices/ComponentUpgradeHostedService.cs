@@ -1,6 +1,6 @@
 ﻿using FlexFetch.Config;
 using FlexFetch.Data;
-using FlexFetch.Services;
+using FlexFetch.Services.Downloaders;
 using ILogger = Serilog.ILogger;
 
 namespace FlexFetch.HostedServices;
@@ -12,9 +12,9 @@ namespace FlexFetch.HostedServices;
 public sealed class ComponentUpgradeHostedService : IntervalHostedService
 {
     private readonly IConfigRepository _config;
-    private readonly YoutubeDLService _ytdlp;
+    private readonly YtdlpService _ytdlp;
 
-    public ComponentUpgradeHostedService(IConfigRepository config, YoutubeDLService ytdlp, ILogger log)
+    public ComponentUpgradeHostedService(IConfigRepository config, YtdlpService ytdlp, ILogger log)
         : base(log, "ComponentUpgrade")
     {
         _config = config;
@@ -36,7 +36,8 @@ public sealed class ComponentUpgradeHostedService : IntervalHostedService
             return;
         }
 
-        await _ytdlp.UpgradeAsync(cancellationToken);
+        await _ytdlp.UpgradeYtDlpAsync(cancellationToken);
+        await _ytdlp.UpgradeDenoAsync(cancellationToken);
     }
 
     private string Get(string key) => _config.Get(key) ?? ConfigRegistry.GetDefault(key);

@@ -1,7 +1,7 @@
 ﻿using System.Net;
 using System.Net.Sockets;
 
-namespace FlexFetch.Services.Route;
+namespace FlexFetch.Services.Routing;
 
 /// <summary>
 /// Matches IP addresses against a set of CIDR ranges in O(log N) time.

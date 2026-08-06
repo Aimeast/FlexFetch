@@ -1,4 +1,4 @@
-﻿using FlexFetch.Domain;
+﻿using FlexFetch.Entities;
 
 namespace FlexFetch.Services.Downloaders;
 

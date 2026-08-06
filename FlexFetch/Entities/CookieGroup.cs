@@ -1,4 +1,6 @@
-﻿namespace FlexFetch.Domain;
+﻿using FlexFetch.Entities;
+
+namespace FlexFetch.Entities;
 
 /// <summary>
 /// A group of sites plus their associated cookies, used for grouped refresh.

@@ -1,10 +1,11 @@
-﻿using FlexFetch.Domain;
+﻿using FlexFetch.Entities;
 using FlexFetch.Services.Downloaders;
+using FlexFetch.Services.Routing;
 using Serilog;
 using System.Text.RegularExpressions;
 using ILogger = Serilog.ILogger;
 
-namespace FlexFetch.Services;
+namespace FlexFetch.Services.Downloaders;
 
 /// <summary>
 /// Twitter/X downloader: fetches the status page, uses the og:description

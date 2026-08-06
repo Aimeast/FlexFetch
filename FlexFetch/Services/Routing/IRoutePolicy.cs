@@ -1,6 +1,6 @@
 ﻿using System.Net;
 
-namespace FlexFetch.Services.Route;
+namespace FlexFetch.Services.Routing;
 
 /// <summary>Verdict of a route policy for a given request.</summary>
 public enum RouteVerdict

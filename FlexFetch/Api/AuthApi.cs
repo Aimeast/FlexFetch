@@ -1,5 +1,5 @@
 ﻿using System.Security.Claims;
-using FlexFetch.Domain;
+using FlexFetch.Entities;
 using FlexFetch.Services;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;

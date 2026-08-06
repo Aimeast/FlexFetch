@@ -1,6 +1,6 @@
 ﻿using System.Net;
 
-namespace FlexFetch.Services.Route;
+namespace FlexFetch.Services.Routing;
 
 /// <summary>
 /// Bypasses the proxy when any resolved IP of the target falls inside the

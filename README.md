@@ -6,14 +6,20 @@ A self-hosted web download service: paste a resource link and the server handles
 
 ## Features
 
-- Download plain file links, social media videos (Twitter/X), video sites (YouTube) and playlists
-- Browser-assisted parsing of arbitrary web pages for embedded video resources
+- Download plain file links, social media videos (Twitter/X), video sites (YouTube, vimeo, ...) and playlists
+- Generic yt-dlp fallback downloader for any other video site yt-dlp supports
+- Browser-assisted media detection: the headless browser sniffs network responses for media streams on arbitrary web pages
+- Direct media links (by extension, or by served Content-Type) are downloaded straight away by the generic file downloader
 - Share completed downloads via unguessable random links (read-only for visitors)
 - Simple account system (user / admin) with clear permission levels
 - Centralized login-state (Cookie pool) maintained by admins for all downloaders
 - Headless browser (system Chrome/Edge) with anti-detection stealth and profile persistence
 - Global proxy with CIDR bypass and composable route policies
 - One codebase deployed on Windows / Linux / Docker
+
+## Downloader selection
+
+Downloader plugins are self-discovered via reflection and tried in priority order (YouTube > Twitter > yt-dlp > HTML > Browser > generic). On failure the next candidate is tried; the generic file downloader is the guaranteed fallback. Direct media links — identified by URL extension, or by HEAD-probed Content-Type when the URL carries no extension — skip the slow yt-dlp attempt and go straight to the generic downloader.
 
 ## Requirements
 
@@ -65,7 +71,13 @@ Key settings: registration policy, session hours, inactive cleanup days, max con
 FlexFetch.slnx
 FlexFetch/                 # ASP.NET Core Web (net10.0)
   Program.cs / appsettings.json
-  Domain/  Data/  Config/  Services/  Api/  HostedServices/  wwwroot/
+  Entities/  Enums/        # domain models and enums (no Domain layer)
+  Data/  Config/           # LiteDB repositories and config registry
+  Services/                # domain services (root) + grouped folders
+    Downloaders/           # IDownloader plugins, DownloaderFactory, YtdlpService
+    Tasks/                 # TaskService, state machine, ITaskExecutor
+    Routing/               # proxy routing, CIDR bypass and route policies
+  Api/  HostedServices/  wwwroot/
 FlexFetch.Tests/           # MSTest
 deploy/                    # deploy.ps1, Dockerfile, compose.yaml
 ```

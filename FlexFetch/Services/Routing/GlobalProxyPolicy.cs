@@ -1,6 +1,6 @@
 ﻿using System.Net;
 
-namespace FlexFetch.Services.Route;
+namespace FlexFetch.Services.Routing;
 
 /// <summary>
 /// Routes everything through the configured global proxy (when set).

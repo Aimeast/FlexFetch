@@ -1,8 +1,10 @@
 ﻿using FlexFetch.Data;
-using FlexFetch.Domain;
+using FlexFetch.Entities;
+using FlexFetch.Services.Downloaders;
+using FlexFetch.Services.Routing;
 using FlexFetch.Services;
 using Serilog;
-using TaskStatus = FlexFetch.Domain.TaskStatus;
+using TaskStatus = FlexFetch.Enums.TaskStatus;
 using ILogger = Serilog.ILogger;
 
 namespace FlexFetch.Tests;

@@ -1,6 +1,7 @@
 ﻿using FlexFetch.Config;
 using FlexFetch.Data;
-using FlexFetch.Domain;
+using FlexFetch.Entities;
+using FlexFetch.Enums;
 using FlexFetch.Services;
 
 namespace FlexFetch.Tests;

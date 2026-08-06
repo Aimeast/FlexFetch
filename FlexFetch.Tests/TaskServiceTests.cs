@@ -1,9 +1,10 @@
 ﻿using FlexFetch.Config;
 using FlexFetch.Data;
-using FlexFetch.Domain;
+using FlexFetch.Entities;
 using FlexFetch.Services;
+using FlexFetch.Services.Tasks;
 using Serilog;
-using TaskStatus = FlexFetch.Domain.TaskStatus;
+using TaskStatus = FlexFetch.Enums.TaskStatus;
 using ILogger = Serilog.ILogger;
 
 namespace FlexFetch.Tests;

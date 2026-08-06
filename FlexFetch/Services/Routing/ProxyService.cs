@@ -1,10 +1,10 @@
 ﻿using FlexFetch.Config;
 using FlexFetch.Data;
-using FlexFetch.Services.Route;
+using FlexFetch.Services.Routing;
 using System.Net;
 using ILogger = Serilog.ILogger;
 
-namespace FlexFetch.Services;
+namespace FlexFetch.Services.Routing;
 
 /// <summary>
 /// Full proxy routing: global proxy (HTTP/SOCKS5), CIDR bypass list and

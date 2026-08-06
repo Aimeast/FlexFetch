@@ -1,6 +1,6 @@
-﻿using FlexFetch.Domain;
+﻿using FlexFetch.Entities;
 
-namespace FlexFetch.Services;
+namespace FlexFetch.Services.Tasks;
 
 /// <summary>Outcome of executing a single task.</summary>
 public enum TaskExecutionResult

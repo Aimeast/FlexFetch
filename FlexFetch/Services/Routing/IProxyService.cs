@@ -1,4 +1,4 @@
-﻿namespace FlexFetch.Services;
+﻿namespace FlexFetch.Services.Routing;
 
 /// <summary>
 /// Proxy routing contract shared by downloaders and the browser service.

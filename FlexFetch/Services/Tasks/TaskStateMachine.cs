@@ -1,6 +1,6 @@
-﻿using TaskStatus = FlexFetch.Domain.TaskStatus;
+﻿using TaskStatus = FlexFetch.Enums.TaskStatus;
 
-namespace FlexFetch.Services;
+namespace FlexFetch.Services.Tasks;
 
 /// <summary>
 /// Valid task state transitions. Illegal transitions are rejected.

@@ -1,13 +1,15 @@
 ﻿using FlexFetch.Config;
 using FlexFetch.Data;
-using FlexFetch.Domain;
+using FlexFetch.Entities;
 using FlexFetch.Services.Downloaders;
+using FlexFetch.Services.Routing;
+using FlexFetch.Services;
 using Serilog;
 using System.Net;
 using System.Net.Http.Headers;
 using ILogger = Serilog.ILogger;
 
-namespace FlexFetch.Services;
+namespace FlexFetch.Services.Downloaders;
 
 /// <summary>
 /// Generic file downloader: direct http/https links, filename inference

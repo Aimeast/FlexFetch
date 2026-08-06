@@ -1,6 +1,6 @@
 ﻿using System.Security.Cryptography;
 
-namespace FlexFetch.Domain;
+namespace FlexFetch.Entities;
 
 /// <summary>
 /// Generates high-entropy random IDs (48-bit, URL-safe base64, 8 characters).

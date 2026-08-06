@@ -1,13 +1,7 @@
-﻿namespace FlexFetch.Domain;
+﻿using FlexFetch.Entities;
+using TaskStatus = FlexFetch.Enums.TaskStatus;
 
-public enum TaskStatus
-{
-    Queued = 0,
-    Running = 1,
-    Completed = 2,
-    Failed = 3,
-    Cancelled = 4,
-}
+namespace FlexFetch.Entities;
 
 /// <summary>
 /// A download task. Owned by a user; files are organized by task ID

@@ -1,8 +1,8 @@
 ﻿using FlexFetch.Data;
-using FlexFetch.Domain;
+using FlexFetch.Entities;
 using FlexFetch.Services;
 using System.Net.Http.Headers;
-using TaskStatus = FlexFetch.Domain.TaskStatus;
+using TaskStatus = FlexFetch.Enums.TaskStatus;
 
 namespace FlexFetch.Api;
 

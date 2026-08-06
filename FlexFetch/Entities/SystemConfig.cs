@@ -1,4 +1,6 @@
-﻿namespace FlexFetch.Domain;
+﻿using FlexFetch.Entities;
+
+namespace FlexFetch.Entities;
 
 /// <summary>
 /// A structured configuration key-value entry (concurrency, proxy,

@@ -1,6 +1,6 @@
 ﻿using System.Net;
 
-namespace FlexFetch.Services.Route;
+namespace FlexFetch.Services.Routing;
 
 /// <summary>
 /// Evaluates an ordered list of route policies. Direct always wins over

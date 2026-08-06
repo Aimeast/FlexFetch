@@ -1,10 +1,13 @@
 ﻿using FlexFetch.Api;
 using FlexFetch.Config;
 using FlexFetch.Data;
-using FlexFetch.Domain;
+using FlexFetch.Entities;
+using FlexFetch.Enums;
 using FlexFetch.HostedServices;
 using FlexFetch.Services;
 using FlexFetch.Services.Downloaders;
+using FlexFetch.Services.Routing;
+using FlexFetch.Services.Tasks;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Serilog;
 using ILogger = Serilog.ILogger;
@@ -47,20 +50,17 @@ builder.Services.AddSingleton(Log.Logger);
 // Storage + proxy + downloader pipeline.
 builder.Services.AddSingleton(new StorageService(dataDir));
 builder.Services.AddSingleton<IProxyService, ProxyService>();
-builder.Services.AddSingleton(sp => new YoutubeDLService(
+builder.Services.AddSingleton(sp => new YtdlpService(
     sp.GetRequiredService<IProxyService>(),
     sp.GetRequiredService<IConfigRepository>(),
     sp.GetRequiredService<ILogger>(),
     dataDir));
 builder.Services.AddSingleton<StealthBrowserService>();
-builder.Services.AddSingleton<IDownloader, GenericFileDownloader>();
-builder.Services.AddSingleton<IDownloader, HtmlResourceDetector>();
-builder.Services.AddSingleton<IDownloader, BrowserParsingDownloader>();
-builder.Services.AddSingleton<IDownloader, TwitterDownloader>();
-builder.Services.AddSingleton<IDownloader, YouTubeDownloader>();
-builder.Services.AddSingleton<DownloaderFactory>();
+// Downloader plugins are self-discovered via reflection; no manual registration.
+builder.Services.AddSingleton(sp => DownloaderFactory.Create(sp));
 builder.Services.AddSingleton<ITaskExecutor>(sp => new DownloaderTaskExecutor(
     sp.GetRequiredService<DownloaderFactory>(),
+    sp.GetRequiredService<IProxyService>(),
     sp.GetRequiredService<ILogger>(),
     (parent, child, referrer) =>
     {

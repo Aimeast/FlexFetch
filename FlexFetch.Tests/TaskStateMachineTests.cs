@@ -1,6 +1,6 @@
-﻿using FlexFetch.Domain;
-using FlexFetch.Services;
-using TaskStatus = FlexFetch.Domain.TaskStatus;
+﻿using FlexFetch.Entities;
+using FlexFetch.Services.Tasks;
+using TaskStatus = FlexFetch.Enums.TaskStatus;
 
 namespace FlexFetch.Tests;
 

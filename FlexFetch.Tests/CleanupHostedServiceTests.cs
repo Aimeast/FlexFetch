@@ -1,8 +1,9 @@
 ﻿using FlexFetch.Config;
 using FlexFetch.Data;
-using FlexFetch.Domain;
+using FlexFetch.Entities;
 using FlexFetch.HostedServices;
 using FlexFetch.Services;
+using FlexFetch.Services.Tasks;
 using Serilog;
 using ILogger = Serilog.ILogger;
 

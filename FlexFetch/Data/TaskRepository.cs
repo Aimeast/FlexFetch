@@ -1,7 +1,6 @@
-﻿using FlexFetch.Domain;
-using FlexFetch.Domain.Entities;
+﻿using FlexFetch.Entities;
 using LiteDB;
-using TaskStatus = FlexFetch.Domain.Enums.TaskStatus;
+using TaskStatus = FlexFetch.Enums.TaskStatus;
 
 namespace FlexFetch.Data;
 

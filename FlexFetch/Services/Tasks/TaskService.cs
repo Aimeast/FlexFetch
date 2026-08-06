@@ -2,13 +2,14 @@
 using System.Threading.Channels;
 using FlexFetch.Config;
 using FlexFetch.Data;
-using FlexFetch.Domain;
+using FlexFetch.Entities;
 using FlexFetch.Services.Downloaders;
+using FlexFetch.Services;
 using Serilog;
-using TaskStatus = FlexFetch.Domain.TaskStatus;
+using TaskStatus = FlexFetch.Enums.TaskStatus;
 using ILogger = Serilog.ILogger;
 
-namespace FlexFetch.Services;
+namespace FlexFetch.Services.Tasks;
 
 /// <summary>
 /// Download queue and concurrency control: a global FIFO queue, a configurable

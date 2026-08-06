@@ -1,5 +1,6 @@
-﻿using FlexFetch.Services;
-using FlexFetch.Services.Downloaders;
+﻿using FlexFetch.Services.Downloaders;
+using FlexFetch.Services.Routing;
+using FlexFetch.Services;
 using FlexFetch.Config;
 using FlexFetch.Data;
 using Serilog;
@@ -22,7 +23,7 @@ public sealed class YouTubeDownloaderTests
         var dir = TestApp.CreateTempDataDir();
         var config = new InMemoryConfigRepository();
         var proxy = new DirectProxyService();
-        var ytdlp = new YoutubeDLService(proxy, config, Log, dir);
+        var ytdlp = new YtdlpService(proxy, config, Log, dir);
         var storage = new StorageService(dir);
         return new YouTubeDownloader(ytdlp, proxy, storage, Log, fetch);
     }

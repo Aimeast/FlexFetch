@@ -1,6 +1,8 @@
 ﻿using FlexFetch.Config;
 using FlexFetch.Data;
 using FlexFetch.Services;
+using FlexFetch.Services.Downloaders;
+using FlexFetch.Services.Tasks;
 
 namespace FlexFetch.Api;
 
@@ -16,7 +18,7 @@ public static class SystemApi
         info.MapGet("/info", (
             TaskService tasks,
             IConfigRepository config,
-            YoutubeDLService ytdlp,
+            YtdlpService ytdlp,
             StealthBrowserService browser) =>
         {
             var dataDir = config.Get(ConfigKeys.DataDir) ?? ConfigRegistry.GetDefault(ConfigKeys.DataDir);
@@ -44,9 +46,9 @@ public static class SystemApi
             return Results.Ok();
         });
 
-        admin.MapPost("/upgrade", async (YoutubeDLService ytdlp) =>
+        admin.MapPost("/upgrade", async (YtdlpService ytdlp) =>
         {
-            await ytdlp.UpgradeAsync();
+            await ytdlp.UpgradeYtDlpAsync();
             return Results.Ok(new { version = await ytdlp.GetVersionAsync() });
         });
     }

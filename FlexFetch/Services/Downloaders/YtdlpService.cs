@@ -1,51 +1,68 @@
 ﻿using FlexFetch.Config;
 using FlexFetch.Data;
+using FlexFetch.Services.Routing;
 using Serilog;
-using System.Diagnostics;
+using YoutubeDLSharp;
 using ILogger = Serilog.ILogger;
 
-namespace FlexFetch.Services;
+namespace FlexFetch.Services.Downloaders;
 
 /// <summary>
-/// Manages the yt-dlp binary: locates it, installs it (through the proxy
-/// policy) when missing, reports its version and upgrades it.
+/// Manages the external component binaries (yt-dlp, deno): locates them,
+/// reports versions, and installs/upgrades them through YoutubeDLSharp's own
+/// Utils.DownloadYtDlp / Utils.DownloadDeno helpers rather than
+/// re-implementing the download by hand.
 /// </summary>
-public sealed class YoutubeDLService
+public sealed class YtdlpService
 {
-    private readonly IProxyService _proxy;
-    private readonly IConfigRepository _config;
     private readonly ILogger _log;
 
     /// <summary>Directory holding external components (yt-dlp, deno, ...).</summary>
     private readonly string _componentsDir;
 
-    public YoutubeDLService(IProxyService proxy, IConfigRepository config, ILogger log, string dataDir)
+    public YtdlpService(IProxyService proxy, IConfigRepository config, ILogger log, string dataDir)
     {
-        _proxy = proxy;
-        _config = config;
         _log = log;
         _componentsDir = Path.Combine(dataDir, "components");
         Directory.CreateDirectory(_componentsDir);
     }
 
-    public string BinaryPath => Path.Combine(_componentsDir, OperatingSystem.IsWindows() ? "yt-dlp.exe" : "yt-dlp");
+    public string BinaryPath => Path.Combine(_componentsDir, Utils.YtDlpBinaryName);
 
-    /// <summary>Returns the installed version, or null when yt-dlp is missing.</summary>
-    public async Task<string?> GetVersionAsync(CancellationToken cancellationToken = default)
+    public string DenoPath => Path.Combine(_componentsDir, OperatingSystem.IsWindows() ? "deno.exe" : "deno");
+
+    /// <summary>Returns the installed yt-dlp version, or null when missing.</summary>
+    public string? GetVersion()
     {
         if (!File.Exists(BinaryPath))
         {
             return null;
         }
 
-        var psi = new ProcessStartInfo(BinaryPath, "--version")
+        var ytdlp = new YoutubeDL { YoutubeDLPath = BinaryPath };
+        return ytdlp.Version;
+    }
+
+    /// <summary>Returns the installed yt-dlp version, or null when missing.</summary>
+    public Task<string?> GetVersionAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult(GetVersion());
+
+    /// <summary>Returns the installed deno version, or null when missing.</summary>
+    public async Task<string?> GetDenoVersionAsync(CancellationToken cancellationToken = default)
+    {
+        if (!File.Exists(DenoPath))
+        {
+            return null;
+        }
+
+        var psi = new System.Diagnostics.ProcessStartInfo(DenoPath, "--version")
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true,
         };
-        using var process = Process.Start(psi);
+        using var process = System.Diagnostics.Process.Start(psi);
         if (process is null)
         {
             return null;
@@ -56,49 +73,33 @@ public sealed class YoutubeDLService
         return output.Trim();
     }
 
-    /// <summary>Installs the latest yt-dlp when missing; returns the version.</summary>
-    public async Task<string?> EnsureInstalledAsync(CancellationToken cancellationToken = default)
+    /// <summary>Installs yt-dlp and deno (through YoutubeDLSharp's download helpers) when missing.</summary>
+    public async Task EnsureInstalledAsync(CancellationToken cancellationToken = default)
     {
-        if (File.Exists(BinaryPath))
+        if (!File.Exists(BinaryPath))
         {
-            return await GetVersionAsync(cancellationToken);
+            _log.Information("Installing yt-dlp via YoutubeDLSharp");
+            await Utils.DownloadYtDlp(_componentsDir);
         }
 
-        await InstallLatestAsync(cancellationToken);
-        return await GetVersionAsync(cancellationToken);
+        if (!File.Exists(DenoPath))
+        {
+            _log.Information("Installing deno via YoutubeDLSharp");
+            await Utils.DownloadDeno(_componentsDir);
+        }
     }
 
-    /// <summary>Downloads the latest yt-dlp release (through the proxy policy).</summary>
-    public async Task InstallLatestAsync(CancellationToken cancellationToken = default)
+    /// <summary>Downloads the latest yt-dlp (through YoutubeDLSharp's own helper).</summary>
+    public async Task UpgradeYtDlpAsync(CancellationToken cancellationToken = default)
     {
-        var fileName = OperatingSystem.IsWindows() ? "yt-dlp.exe" : "yt-dlp";
-        var url = new Uri($"https://github.com/yt-dlp/yt-dlp/releases/latest/download/{fileName}");
-
-        _log.Information("Installing yt-dlp from {Url}", url);
-        var handler = _proxy.CreateHandler(url);
-        using var client = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(5) };
-        using var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        response.EnsureSuccessStatusCode();
-
-        var tmp = BinaryPath + ".tmp";
-        await using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
-        {
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            await stream.CopyToAsync(fs, cancellationToken);
-        }
-
-        File.Move(tmp, BinaryPath, overwrite: true);
-        if (!OperatingSystem.IsWindows())
-        {
-            File.SetUnixFileMode(BinaryPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        }
-
-        _log.Information("yt-dlp installed at {Path}", BinaryPath);
+        _log.Information("Upgrading yt-dlp via YoutubeDLSharp");
+        await Utils.DownloadYtDlp(_componentsDir);
     }
 
-    /// <summary>Upgrades yt-dlp to the latest version (through the proxy policy).</summary>
-    public async Task UpgradeAsync(CancellationToken cancellationToken = default)
+    /// <summary>Downloads the latest deno (through YoutubeDLSharp's own helper).</summary>
+    public async Task UpgradeDenoAsync(CancellationToken cancellationToken = default)
     {
-        await InstallLatestAsync(cancellationToken);
+        _log.Information("Upgrading deno via YoutubeDLSharp");
+        await Utils.DownloadDeno(_componentsDir);
     }
 }

@@ -1,18 +1,20 @@
-﻿using FlexFetch.Domain;
-using FlexFetch.Services.Downloaders;
+﻿using System.Collections.Concurrent;
+using FlexFetch.Entities;
+using FlexFetch.Services;
 using Microsoft.Playwright;
 using Serilog;
-using System.Text.RegularExpressions;
 using ILogger = Serilog.ILogger;
 
-namespace FlexFetch.Services;
+namespace FlexFetch.Services.Downloaders;
 
 /// <summary>
-/// Browser-assisted parsing downloader: renders a page in the stealth browser
-/// (executing JavaScript) and extracts embedded video resources from the
-/// rendered DOM. Used as the degradation step after plain-HTML analysis fails.
+/// Browser-assisted media detection: renders a page in the stealth browser and
+/// SNIFFS the network activity (responses) for media streams — video/audio
+/// content types, HLS/DASH manifests — instead of parsing the loaded HTML
+/// (which HtmlResourceDetector already does). Discovered media URLs become
+/// child tasks. Used as the degradation step after plain-HTML analysis fails.
 /// </summary>
-public sealed partial class BrowserParsingDownloader : IDownloader
+public sealed class BrowserParsingDownloader : IDownloader
 {
     private readonly StealthBrowserService _browser;
     private readonly ILogger _log;
@@ -36,24 +38,45 @@ public sealed partial class BrowserParsingDownloader : IDownloader
         var page = await _browser.NewPageAsync();
         try
         {
-            await page.GotoAsync(url, new PageGotoOptions
+            var mediaUrls = new ConcurrentBag<string>();
+
+            void OnResponse(object? sender, IResponse response)
             {
-                WaitUntil = WaitUntilState.DOMContentLoaded,
-                Timeout = 30_000,
-            });
+                if (IsMediaResponse(response.Headers, response.Url))
+                {
+                    mediaUrls.Add(response.Url);
+                }
+            }
 
-            var title = await page.TitleAsync();
-            var html = await page.ContentAsync();
-            var mediaUrls = ExtractMediaUrls(html);
+            page.Response += OnResponse;
+            try
+            {
+                await page.GotoAsync(url, new PageGotoOptions
+                {
+                    WaitUntil = WaitUntilState.DOMContentLoaded,
+                    Timeout = 30_000,
+                });
 
-            _log.Information("Browser analysis of {Url}: {Count} media resources", url, mediaUrls.Count);
+                // Give the player a moment to request media streams after load.
+                await page.WaitForTimeoutAsync(5_000);
+            }
+            finally
+            {
+                page.Response -= OnResponse;
+            }
+
+            var title = string.IsNullOrWhiteSpace(await page.TitleAsync()) ? "web-video" : await page.TitleAsync();
+            var children = mediaUrls
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Select(u => new MediaChild { Url = u, Title = title })
+                .ToList();
+
+            _log.Information("Browser sniffing of {Url}: {Count} media responses", url, children.Count);
             return new AnalysisResult
             {
-                Title = string.IsNullOrWhiteSpace(title) ? "web-video" : title,
+                Title = title,
                 Referrer = url,
-                Children = mediaUrls
-                    .Select(u => new MediaChild { Url = u, Title = title })
-                    .ToList(),
+                Children = children,
             };
         }
         finally
@@ -62,40 +85,42 @@ public sealed partial class BrowserParsingDownloader : IDownloader
         }
     }
 
-    /// <summary>Extracts media URLs from rendered HTML (pure logic, unit-testable).</summary>
-    public static IReadOnlyList<string> ExtractMediaUrls(string html)
+    /// <summary>
+    /// Classifies a network response as media based on Content-Type (video/*,
+    /// audio/*, HLS/DASH manifests) with a URL-extension fallback.
+    /// Pure logic, unit-testable.
+    /// </summary>
+    public static bool IsMediaResponse(IReadOnlyDictionary<string, string> headers, string url)
     {
-        var urls = new List<string>();
-        foreach (Match match in SourceRegex().Matches(html))
+        if (headers.TryGetValue("Content-Type", out var contentType))
         {
-            urls.Add(match.Groups[1].Value);
-        }
-        foreach (Match match in OgVideoRegex().Matches(html))
-        {
-            urls.Add(match.Groups[1].Value);
-        }
-        foreach (Match match in VideoUrlRegex().Matches(html))
-        {
-            urls.Add(match.Groups[1].Value);
+            var ct = contentType.ToLowerInvariant();
+            if (ct.StartsWith("video/", StringComparison.Ordinal)
+                || ct.StartsWith("audio/", StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            // HLS / DASH manifests.
+            if (ct.Contains("mpegurl") || ct.Contains("mpd"))
+            {
+                return true;
+            }
+
+            // Unknown binary often serves media; fall back to the extension.
+            if (ct.Contains("octet-stream") && HasMediaExtension(url))
+            {
+                return true;
+            }
         }
 
-        return urls
-            .Select(u => u.Trim())
-            .Where(u => Uri.TryCreate(u, UriKind.Absolute, out _))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        return HasMediaExtension(url);
     }
 
-    /// <summary>Browser analysis always expands children; nothing to download here.</summary>
+    /// <summary>True when the URL path ends with a common media extension.</summary>
+    public static bool HasMediaExtension(string url) => DirectLinkDetector.HasMediaExtension(url);
+
+    /// <summary>Browser sniffing always expands children; nothing to download here.</summary>
     public Task DownloadAsync(TaskItem task, AnalysisResult analysis, Action<double> progress, CancellationToken cancellationToken) =>
         throw new InvalidOperationException("Browser resources are expanded into child tasks, nothing to download directly");
-
-    [GeneratedRegex(@"<(?:video|source|embed|iframe)[^>]+src=""([^""]+)""", RegexOptions.IgnoreCase)]
-    private static partial Regex SourceRegex();
-
-    [GeneratedRegex(@"<meta[^>]+property=""og:video(?::url)?""[^>]+content=""([^""]+)""", RegexOptions.IgnoreCase)]
-    private static partial Regex OgVideoRegex();
-
-    [GeneratedRegex(@"<video[^>]+src=""([^""]+)""", RegexOptions.IgnoreCase)]
-    private static partial Regex VideoUrlRegex();
 }

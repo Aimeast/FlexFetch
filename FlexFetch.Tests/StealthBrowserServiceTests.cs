@@ -1,4 +1,5 @@
 ﻿using FlexFetch.Services;
+using FlexFetch.Services.Downloaders;
 
 namespace FlexFetch.Tests;
 
@@ -106,21 +107,40 @@ public sealed class StealthBrowserServiceTests
     }
 
     [TestMethod]
-    public void ExtractMediaUrls_FromRenderedHtml()
+    public void IsMediaResponse_DetectsByContentType()
     {
-        var html = """
-        <html><head><title>Page</title></head><body>
-          <video src="https://cdn.example.com/clip.mp4"></video>
-          <video><source src="https://cdn.example.com/stream.webm"></source></video>
-          <meta property="og:video" content="https://cdn.example.com/og.mp4">
-        </body></html>
-        """;
+        Assert.IsTrue(BrowserParsingDownloader.IsMediaResponse(
+            new Dictionary<string, string> { ["Content-Type"] = "video/mp4" }, "https://cdn.example.com/clip"));
+        Assert.IsTrue(BrowserParsingDownloader.IsMediaResponse(
+            new Dictionary<string, string> { ["Content-Type"] = "audio/mpeg" }, "https://cdn.example.com/audio"));
+        Assert.IsTrue(BrowserParsingDownloader.IsMediaResponse(
+            new Dictionary<string, string> { ["Content-Type"] = "application/vnd.apple.mpegurl" }, "https://cdn.example.com/stream.m3u8"));
+        Assert.IsTrue(BrowserParsingDownloader.IsMediaResponse(
+            new Dictionary<string, string> { ["Content-Type"] = "application/dash+xml" }, "https://cdn.example.com/manifest.mpd"));
+        Assert.IsFalse(BrowserParsingDownloader.IsMediaResponse(
+            new Dictionary<string, string> { ["Content-Type"] = "text/html" }, "https://example.com/page"));
+        Assert.IsFalse(BrowserParsingDownloader.IsMediaResponse(
+            new Dictionary<string, string> { ["Content-Type"] = "application/json" }, "https://example.com/api"));
+    }
 
-        var urls = BrowserParsingDownloader.ExtractMediaUrls(html);
+    [TestMethod]
+    public void IsMediaResponse_FallsBackToExtension()
+    {
+        // Unknown binary content type with a media extension still counts.
+        Assert.IsTrue(BrowserParsingDownloader.IsMediaResponse(
+            new Dictionary<string, string> { ["Content-Type"] = "application/octet-stream" }, "https://cdn.example.com/clip.mp4"));
+        // No content type but a media extension counts.
+        Assert.IsTrue(BrowserParsingDownloader.IsMediaResponse(
+            new Dictionary<string, string>(), "https://cdn.example.com/video.webm"));
+    }
 
-        Assert.HasCount(3, urls);
-        Assert.Contains("https://cdn.example.com/clip.mp4", urls);
-        Assert.Contains("https://cdn.example.com/stream.webm", urls);
-        Assert.Contains("https://cdn.example.com/og.mp4", urls);
+    [TestMethod]
+    public void HasMediaExtension_MatchesCommonMediaExtensions()
+    {
+        Assert.IsTrue(BrowserParsingDownloader.HasMediaExtension("https://cdn.example.com/clip.mp4"));
+        Assert.IsTrue(BrowserParsingDownloader.HasMediaExtension("https://cdn.example.com/stream.m3u8?token=1"));
+        Assert.IsTrue(BrowserParsingDownloader.HasMediaExtension("https://cdn.example.com/audio.mp3"));
+        Assert.IsFalse(BrowserParsingDownloader.HasMediaExtension("https://example.com/page"));
+        Assert.IsFalse(BrowserParsingDownloader.HasMediaExtension("https://example.com/app.js"));
     }
 }

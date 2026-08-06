@@ -1,5 +1,4 @@
-﻿using FlexFetch.Domain;
-using FlexFetch.Domain.Entities;
+﻿using FlexFetch.Entities;
 using LiteDB;
 
 namespace FlexFetch.Data;

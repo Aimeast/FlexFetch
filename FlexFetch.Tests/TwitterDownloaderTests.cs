@@ -1,4 +1,5 @@
-﻿using FlexFetch.Services;
+﻿using FlexFetch.Services.Downloaders;
+using FlexFetch.Services.Routing;
 using Serilog;
 using ILogger = Serilog.ILogger;
 

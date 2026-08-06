@@ -183,7 +183,7 @@ public sealed class TasksApiTests
 
     private string SeedCompletedTask(WebApplicationFactory<Program> factory, string ownerUserId, string fileName, string content)
     {
-        var taskId = FlexFetch.Domain.RandomId.New();
+        var taskId = FlexFetch.Entities.RandomId.New();
         var filesDir = Path.Combine(_dataDir!, "files", taskId);
         Directory.CreateDirectory(filesDir);
         File.WriteAllText(Path.Combine(filesDir, fileName), content);
@@ -191,13 +191,13 @@ public sealed class TasksApiTests
         // Persist a completed task owned by the given user so the share endpoints resolve it.
         using var scope = factory.Services.CreateScope();
         var tasks = scope.ServiceProvider.GetRequiredService<FlexFetch.Data.ITaskRepository>();
-        tasks.Insert(new FlexFetch.Domain.TaskItem
+        tasks.Insert(new FlexFetch.Entities.TaskItem
         {
             Id = taskId,
             OwnerUserId = ownerUserId,
             Url = "https://example.com/report.pdf",
             FileName = fileName,
-            Status = FlexFetch.Domain.TaskStatus.Completed,
+            Status = FlexFetch.Enums.TaskStatus.Completed,
             Progress = 100,
         });
         return taskId;
