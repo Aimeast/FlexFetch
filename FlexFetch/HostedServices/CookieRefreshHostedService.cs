@@ -1,4 +1,4 @@
-using FlexFetch.Config;
+﻿using FlexFetch.Config;
 using FlexFetch.Data;
 using FlexFetch.Services;
 using ILogger = Serilog.ILogger;

@@ -1,4 +1,4 @@
-namespace FlexFetch.Config;
+﻿namespace FlexFetch.Config;
 
 /// <summary>
 /// Central configuration registry: every config item is declared once here

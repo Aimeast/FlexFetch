@@ -1,4 +1,4 @@
-namespace FlexFetch.Config;
+﻿namespace FlexFetch.Config;
 
 /// <summary>
 /// Central registry of configuration keys. A new config item is declared

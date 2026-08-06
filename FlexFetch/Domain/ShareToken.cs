@@ -1,4 +1,4 @@
-namespace FlexFetch.Domain;
+﻿namespace FlexFetch.Domain;
 
 /// <summary>
 /// A share link for a completed download. The token is a high-entropy

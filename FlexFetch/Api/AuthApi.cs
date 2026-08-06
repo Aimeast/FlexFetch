@@ -1,4 +1,4 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using FlexFetch.Domain;
 using FlexFetch.Services;
 using Microsoft.AspNetCore.Authentication;

@@ -1,4 +1,4 @@
-using ILogger = Serilog.ILogger;
+﻿using ILogger = Serilog.ILogger;
 
 namespace FlexFetch.HostedServices;
 

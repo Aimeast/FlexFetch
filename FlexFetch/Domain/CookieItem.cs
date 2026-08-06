@@ -1,4 +1,4 @@
-namespace FlexFetch.Domain;
+﻿namespace FlexFetch.Domain;
 
 public enum SameSitePolicy
 {

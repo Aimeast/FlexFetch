@@ -1,4 +1,4 @@
-namespace FlexFetch.Services.Downloaders;
+﻿namespace FlexFetch.Services.Downloaders;
 
 /// <summary>
 /// Registers downloader plugins and selects candidates for a URL:

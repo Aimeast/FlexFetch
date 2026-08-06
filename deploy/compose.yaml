@@ -1,4 +1,4 @@
-# FlexFetch compose template. Build the image from source and run it with
+﻿# FlexFetch compose template. Build the image from source and run it with
 # a persistent data volume. Customize the proxy via environment when needed.
 
 services:

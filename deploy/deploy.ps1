@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     FlexFetch unified deployment script (Windows PowerShell / pwsh on Linux/macOS).
 

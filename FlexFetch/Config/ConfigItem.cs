@@ -1,4 +1,4 @@
-namespace FlexFetch.Config;
+﻿namespace FlexFetch.Config;
 
 /// <summary>
 /// A single declared configuration item: key, category, default value,
