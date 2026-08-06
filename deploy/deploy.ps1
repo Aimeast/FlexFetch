@@ -16,7 +16,7 @@
 
 .PARAMETER DataDir
     Data directory (database, files, logs, profiles). Independent of AppDir
-    so upgrades never lose data (default: ./flexfetch-data).
+    so upgrades never lose data (default: ./.flexfetch).
 
 .PARAMETER Port
     HTTP port the service listens on (default: 8080).
@@ -35,7 +35,7 @@
 [CmdletBinding()]
 param(
     [string]$AppDir = (Join-Path (Get-Location) 'flexfetch-app'),
-    [string]$DataDir = (Join-Path (Get-Location) 'flexfetch-data'),
+    [string]$DataDir = (Join-Path (Get-Location) '.flexfetch'),
     [int]$Port = 8080,
     [string]$Proxy = '',
     [ValidateSet('Auto', 'Docker', 'Systemd', 'WindowsService', 'None')]

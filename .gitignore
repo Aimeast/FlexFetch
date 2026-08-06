@@ -36,11 +36,8 @@ packages/
 publish/
 artifacts/
 
-# FlexFetch runtime data (data dir, logs, browser profiles, external components)
-/data/
-/logs/
-/profiles/
-/components/
+# FlexFetch runtime data (hidden runtime folder: db, logs, profiles, components, route files)
+**/.flexfetch/
 
 # OS files
 Thumbs.db

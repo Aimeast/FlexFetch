@@ -14,25 +14,32 @@ using ILogger = Serilog.ILogger;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Configure Serilog: structured logging to console and rolling files.
-Log.Logger = new LoggerConfiguration()
+// Data directory: hidden runtime folder (.flexfetch) holding the database,
+// logs, browser profiles, external components and route files.
+var dataDir = builder.Configuration["Data:Dir"] ?? ConfigRegistry.GetDefault(ConfigKeys.DataDir);
+Directory.CreateDirectory(dataDir);
+Directory.CreateDirectory(Path.Combine(dataDir, "logs"));
+
+// Configure Serilog: structured logging to console and rolling files
+// (file output can be disabled via Logging:WriteToFile, e.g. in tests).
+var loggerConfig = new LoggerConfiguration()
     .ReadFrom.Configuration(builder.Configuration)
     .Enrich.FromLogContext()
-    .WriteTo.Console()
-    .WriteTo.File(
-        path: "logs/flexfetch-.log",
+    .WriteTo.Console();
+if (builder.Configuration.GetValue("Logging:WriteToFile", true))
+{
+    loggerConfig = loggerConfig.WriteTo.File(
+        path: Path.Combine(dataDir, "logs", "flexfetch-.log"),
         rollingInterval: RollingInterval.Day,
         fileSizeLimitBytes: 100 * 1024 * 1024,
         rollOnFileSizeLimit: true,
         retainedFileCountLimit: 14,
-        outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {SourceContext}: {Message:lj}{NewLine}{Exception}")
-    .CreateLogger();
+        outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {SourceContext}: {Message:lj}{NewLine}{Exception}");
+}
+
+Log.Logger = loggerConfig.CreateLogger();
 
 builder.Host.UseSerilog();
-
-// Data directory (independent of program directory; overridable via config).
-var dataDir = builder.Configuration["Data:Dir"] ?? ConfigRegistry.GetDefault(ConfigKeys.DataDir);
-Directory.CreateDirectory(dataDir);
 
 // Data layer: one shared LiteDB store instance.
 builder.Services.AddSingleton(new LiteDbStore(Path.Combine(dataDir, "flexfetch.db")));
@@ -49,7 +56,10 @@ builder.Services.AddSingleton(Log.Logger);
 
 // Storage + proxy + downloader pipeline.
 builder.Services.AddSingleton(new StorageService(dataDir));
-builder.Services.AddSingleton<IProxyService, ProxyService>();
+builder.Services.AddSingleton<IProxyService>(sp => new ProxyService(
+    sp.GetRequiredService<IConfigRepository>(),
+    sp.GetRequiredService<ILogger>(),
+    dataDir));
 builder.Services.AddSingleton(sp => new YtdlpService(
     sp.GetRequiredService<IProxyService>(),
     sp.GetRequiredService<IConfigRepository>(),
@@ -123,11 +133,9 @@ CookiesApi.Map(app);
 SystemApi.Map(app);
 ConfigApi.Map(app);
 
-// Static web UI.
+// Static web UI: "/" serves wwwroot/index.html via UseDefaultFiles.
 app.UseDefaultFiles();
 app.UseStaticFiles();
-
-app.MapGet("/", () => "FlexFetch is running.");
 
 app.Run();
 

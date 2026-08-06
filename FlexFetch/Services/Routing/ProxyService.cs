@@ -15,17 +15,19 @@ public sealed class ProxyService : IProxyService
 {
     private readonly IConfigRepository _config;
     private readonly ILogger _log;
+    private readonly string _dataDir;
     private readonly CidrMatcher _bypass;
     private readonly RoutePolicyChain _policies;
 
-    public ProxyService(IConfigRepository config, ILogger log)
+    public ProxyService(IConfigRepository config, ILogger log, string dataDir)
     {
         _config = config;
         _log = log;
+        _dataDir = dataDir;
 
         // Load the CIDR bypass list (lines from the configured file, '#' comments).
         _bypass = new CidrMatcher();
-        var bypassFile = GetConfig(ConfigKeys.BypassCidrFile);
+        var bypassFile = ResolveBypassPath(GetConfig(ConfigKeys.BypassCidrFile));
         if (!string.IsNullOrWhiteSpace(bypassFile) && File.Exists(bypassFile))
         {
             _bypass.Load(File.ReadLines(bypassFile), msg => _log.Warning("Bypass list: {Message}", msg));
@@ -38,7 +40,7 @@ public sealed class ProxyService : IProxyService
     /// <summary>Reloads the bypass list and policy chain from current configuration.</summary>
     public void Reload()
     {
-        var bypassFile = GetConfig(ConfigKeys.BypassCidrFile);
+        var bypassFile = ResolveBypassPath(GetConfig(ConfigKeys.BypassCidrFile));
         var matcher = new CidrMatcher();
         if (!string.IsNullOrWhiteSpace(bypassFile) && File.Exists(bypassFile))
         {
@@ -47,6 +49,20 @@ public sealed class ProxyService : IProxyService
 
         _bypass.ReplaceFrom(matcher);
         _log.Information("Proxy routing policies reloaded");
+    }
+
+    /// <summary>
+    /// Relative bypass-list paths resolve against the runtime data directory
+    /// (.flexfetch) so route IP files live with the other runtime data.
+    /// </summary>
+    private string? ResolveBypassPath(string? bypassFile)
+    {
+        if (string.IsNullOrWhiteSpace(bypassFile))
+        {
+            return null;
+        }
+
+        return Path.IsPathRooted(bypassFile) ? bypassFile : Path.Combine(_dataDir, bypassFile);
     }
 
     public bool ShouldProxy(Uri url)

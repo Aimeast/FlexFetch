@@ -13,11 +13,13 @@ public sealed class ProxyServiceTests
         .MinimumLevel.Warning()
         .CreateLogger();
 
+    private static readonly string DataDir = Path.GetTempPath();
+
     [TestMethod]
     public void NoProxyConfigured_ConnectsDirect()
     {
         var config = new InMemoryConfigRepository();
-        var service = new ProxyService(config, Log);
+        var service = new ProxyService(config, Log, DataDir);
 
         Assert.IsFalse(service.ShouldProxy(new Uri("https://example.com/file")));
         Assert.IsNull(service.GetProxyUri(new Uri("https://example.com/file")));
@@ -28,7 +30,7 @@ public sealed class ProxyServiceTests
     {
         var config = new InMemoryConfigRepository();
         config.Set(ConfigKeys.Proxy, "socks5://127.0.0.1:1080");
-        var service = new ProxyService(config, Log);
+        var service = new ProxyService(config, Log, DataDir);
 
         Assert.IsTrue(service.ShouldProxy(new Uri("https://example.com/file")));
         Assert.AreEqual("socks5://127.0.0.1:1080", service.GetProxyUri(new Uri("https://example.com/file")));
@@ -46,7 +48,7 @@ public sealed class ProxyServiceTests
             var config = new InMemoryConfigRepository();
             config.Set(ConfigKeys.Proxy, "socks5://127.0.0.1:1080");
             config.Set(ConfigKeys.BypassCidrFile, bypassFile);
-            var service = new ProxyService(config, Log);
+            var service = new ProxyService(config, Log, DataDir);
 
             // 10.x resolves to an IP inside the bypass range -> direct.
             Assert.IsFalse(service.ShouldProxy(new Uri("https://10.1.2.3/file")));
@@ -70,7 +72,7 @@ public sealed class ProxyServiceTests
         var config = new InMemoryConfigRepository();
         config.Set(ConfigKeys.Proxy, "socks5://127.0.0.1:1080");
         config.Set(ConfigKeys.BypassCidrFile, "C:/nonexistent/bypass.txt");
-        var service = new ProxyService(config, Log);
+        var service = new ProxyService(config, Log, DataDir);
 
         Assert.IsTrue(service.ShouldProxy(new Uri("https://example.com/file")));
     }
@@ -80,7 +82,7 @@ public sealed class ProxyServiceTests
     {
         var config = new InMemoryConfigRepository();
         config.Set(ConfigKeys.Proxy, "http://127.0.0.1:3128");
-        var service = new ProxyService(config, Log);
+        var service = new ProxyService(config, Log, DataDir);
 
         var handler = (SocketsHttpHandler)service.CreateHandler(new Uri("https://example.com/file"));
         Assert.IsTrue(handler.UseProxy);
@@ -92,7 +94,7 @@ public sealed class ProxyServiceTests
     {
         var config = new InMemoryConfigRepository();
         config.Set(ConfigKeys.Proxy, "socks5://127.0.0.1:1080");
-        var service = new ProxyService(config, Log);
+        var service = new ProxyService(config, Log, DataDir);
 
         // Proxy is configured so GlobalProxy says UseProxy, but the bypass
         // list covers 127.0.0.0/8 and the target is 127.0.0.1 -> Direct wins.

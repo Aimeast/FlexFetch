@@ -174,7 +174,7 @@ public static class ConfigRegistry
             {
                 Key = ConfigKeys.DataDir,
                 Category = "Storage",
-                DefaultValue = "data",
+                DefaultValue = ".flexfetch",
                 Validator = v => string.IsNullOrWhiteSpace(v) ? "Must not be empty" : null,
             },
             new()

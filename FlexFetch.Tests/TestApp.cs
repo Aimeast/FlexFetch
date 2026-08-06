@@ -21,6 +21,9 @@ public static class TestApp
         {
             builder.UseSetting("Data:Dir", dataDir);
             builder.UseSetting("Admin:InitialPassword", adminPassword);
+            // Disable file logging so the temporary data dir is not locked
+            // by a rolling log file during cleanup.
+            builder.UseSetting("Logging:WriteToFile", "false");
         });
     }
 }
