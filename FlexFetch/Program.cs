@@ -97,7 +97,16 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
 builder.Services.AddAuthorizationBuilder()
     .AddPolicy("Admin", p => p.RequireRole(nameof(UserRole.Admin)));
 
+// Production: response compression + HTTPS redirection.
+builder.Services.AddResponseCompression(options => options.EnableForHttps = true);
+
 var app = builder.Build();
+
+app.UseResponseCompression();
+if (!builder.Environment.IsDevelopment())
+{
+    app.UseHttpsRedirection();
+}
 
 // Bootstrap: create the initial admin when none exists and a password is configured.
 app.Services.GetRequiredService<UserService>()
@@ -108,6 +117,15 @@ app.UseAuthorization();
 
 AuthApi.Map(app);
 UsersApi.Map(app);
+TasksApi.Map(app);
+ShareApi.Map(app);
+CookiesApi.Map(app);
+SystemApi.Map(app);
+ConfigApi.Map(app);
+
+// Static web UI.
+app.UseDefaultFiles();
+app.UseStaticFiles();
 
 app.MapGet("/", () => "FlexFetch is running.");
 
