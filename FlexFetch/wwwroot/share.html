@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Shared download - FlexFetch</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <header>
+        <h1>FlexFetch</h1>
+        <nav><a href="/index.html">Home</a></nav>
+    </header>
+    <main>
+        <div class="card">
+            <h2>Shared download</h2>
+            <div class="msg error" id="error-msg"></div>
+            <div id="info">
+                <div class="kv">
+                    <div><b>File</b><span id="file-name">-</span></div>
+                    <div><b>Size</b><span id="file-size">-</span></div>
+                    <div><b>Status</b><span id="file-status">-</span></div>
+                    <div><b>Progress</b><span id="file-progress">-</span></div>
+                </div>
+                <div class="muted" id="file-error"></div>
+                <p style="margin-top:1rem">
+                    <button id="download-btn" onclick="download()">Download file</button>
+                </p>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        const token = new URLSearchParams(location.search).get('token');
+
+        async function load() {
+            if (!token) { showError('Missing share token'); return; }
+            try {
+                const res = await fetch('/api/share/' + token);
+                if (!res.ok) { showError('Share link not found or expired'); return; }
+                const body = await res.json();
+                document.getElementById('file-name').textContent = body.fileName || '-';
+                document.getElementById('file-size').textContent = body.fileSize != null ? formatSize(body.fileSize) : '-';
+                document.getElementById('file-status').textContent = body.status || '-';
+                document.getElementById('file-progress').textContent = (body.progress || 0) + '%';
+                document.getElementById('file-error').textContent = body.errorMessage || '';
+                document.getElementById('download-btn').disabled = body.status !== 'Completed';
+            } catch (e) { showError(e.message); }
+        }
+
+        function download() {
+            location.href = '/api/share/' + token + '/file';
+        }
+
+        function showError(msg) {
+            document.getElementById('error-msg').textContent = msg;
+            document.getElementById('error-msg').style.display = 'block';
+            document.getElementById('info').style.display = 'none';
+        }
+
+        function formatSize(bytes) {
+            if (bytes == null) return '-';
+            const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+            let i = 0;
+            while (bytes >= 1024 && i < units.length - 1) { bytes /= 1024; i++; }
+            return bytes.toFixed(1) + ' ' + units[i];
+        }
+
+        load();
+    </script>
+</body>
+</html>

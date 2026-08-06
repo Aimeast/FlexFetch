@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>System - FlexFetch</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <header>
+        <h1>FlexFetch</h1>
+        <nav>
+            <a href="/index.html">Tasks</a>
+            <a href="/system.html">System</a>
+            <a href="/cookie.html">Cookies</a>
+            <a href="#" id="logout-link">Logout</a>
+        </nav>
+    </header>
+    <main>
+        <div class="msg error" id="msg"></div>
+
+        <div class="card">
+            <h2>System information</h2>
+            <div class="kv" id="info-kv"></div>
+        </div>
+
+        <div class="card">
+            <h2>Anti-detection self-check</h2>
+            <table>
+                <thead><tr><th>Vector</th><th>Result</th><th>Detail</th></tr></thead>
+                <tbody id="check-tbody"></tbody>
+            </table>
+        </div>
+
+        <div class="card">
+            <h2>Operations</h2>
+            <div class="row">
+                <button class="danger" onclick="shutdown()">Graceful shutdown</button>
+                <button class="secondary" onclick="upgrade()">Upgrade components</button>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        const msg = document.getElementById('msg');
+
+        async function api(path, options) {
+            const res = await fetch(path, options);
+            if (res.status === 401) { location.href = '/index.html'; return null; }
+            if (res.status === 403) { show('Admin access required'); return null; }
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.json();
+        }
+
+        function show(text, ok) {
+            msg.textContent = text;
+            msg.className = ok ? 'msg ok' : 'msg error';
+            setTimeout(() => { msg.className = 'msg'; }, 4000);
+        }
+
+        async function loadInfo() {
+            try {
+                const info = await api('/api/system/info');
+                if (!info) return;
+                const kv = document.getElementById('info-kv');
+                kv.innerHTML = '';
+                const entries = {
+                    'Version': info.version,
+                    'Started at': info.startedAt ? new Date(info.startedAt).toLocaleString() : '-',
+                    'Disk free': info.diskFreeBytes != null ? formatSize(info.diskFreeBytes) : '-',
+                    'Disk total': info.diskTotalBytes != null ? formatSize(info.diskTotalBytes) : '-',
+                    'Concurrency limit': info.concurrencyLimit,
+                    'Running tasks': info.runningTasks,
+                    'Queued tasks': info.queuedTasks,
+                    'yt-dlp': info.ytdlpVersion || 'not installed',
+                    'Browser': info.browser,
+                };
+                for (const [k, v] of Object.entries(entries)) {
+                    const div = document.createElement('div');
+                    div.innerHTML = '<b>' + esc(k) + '</b><span>' + esc(String(v)) + '</span>';
+                    kv.appendChild(div);
+                }
+
+                const tbody = document.getElementById('check-tbody');
+                tbody.innerHTML = '';
+                for (const r of (info.browserSelfCheck || [])) {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML =
+                        '<td>' + esc(r.name) + '</td>' +
+                        '<td><span class="badge ' + (r.passed ? 'ok' : 'err') + '">' + (r.passed ? 'PASS' : 'FAIL') + '</span></td>' +
+                        '<td class="muted">' + esc(r.detail || '') + '</td>';
+                    tbody.appendChild(tr);
+                }
+            } catch (e) { show(e.message); }
+        }
+
+        async function shutdown() {
+            if (!confirm('Shut down the service?')) return;
+            try { await api('/api/system/shutdown', { method: 'POST' }); show('Shutting down...', true); }
+            catch (e) { show(e.message); }
+        }
+
+        async function upgrade() {
+            try {
+                const body = await api('/api/system/upgrade', { method: 'POST' });
+                show('Upgraded, yt-dlp ' + (body.version || 'unknown'), true);
+                loadInfo();
+            } catch (e) { show(e.message); }
+        }
+
+        function formatSize(bytes) {
+            const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+            let i = 0;
+            while (bytes >= 1024 && i < units.length - 1) { bytes /= 1024; i++; }
+            return bytes.toFixed(1) + ' ' + units[i];
+        }
+
+        function esc(s) {
+            return (s || '').replace(/[&<>"']/g, c =>
+                ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+        }
+
+        document.getElementById('logout-link').onclick = async () => {
+            await fetch('/api/auth/logout', { method: 'POST' });
+            location.href = '/index.html';
+        };
+
+        loadInfo();
+    </script>
+</body>
+</html>

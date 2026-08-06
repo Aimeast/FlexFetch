@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FlexFetch</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <header>
+        <h1>FlexFetch</h1>
+        <nav>
+            <a href="/index.html">Tasks</a>
+            <a href="/system.html">System</a>
+            <a href="/cookie.html">Cookies</a>
+            <a href="#" id="logout-link" style="display:none">Logout</a>
+        </nav>
+    </header>
+    <main>
+        <div id="auth-section">
+            <div class="card">
+                <h2>Sign in</h2>
+                <div class="msg" id="auth-msg"></div>
+                <label for="username">Username</label>
+                <input id="username" autocomplete="username">
+                <label for="password">Password</label>
+                <input id="password" type="password" autocomplete="current-password">
+                <div class="row" style="margin-top:0.75rem">
+                    <button onclick="login()">Sign in</button>
+                    <button class="secondary" onclick="register()">Register</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="app-section" style="display:none">
+            <div class="card">
+                <h2>New download</h2>
+                <div class="msg" id="submit-msg"></div>
+                <div class="row">
+                    <input id="url" placeholder="https://example.com/video.mp4">
+                    <button onclick="submitTask()">Download</button>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>My tasks</h2>
+                <table id="task-table">
+                    <thead>
+                        <tr><th>File</th><th>Status</th><th>Progress</th><th>Error</th><th></th></tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        async function api(path, options) {
+            const res = await fetch(path, options);
+            if (res.status === 401) { showAuth(); return null; }
+            if (!res.ok) {
+                const body = await res.json().catch(() => ({}));
+                throw new Error(body.error || ("HTTP " + res.status));
+            }
+            return res.json();
+        }
+
+        function showAuth() {
+            document.getElementById('auth-section').style.display = 'block';
+            document.getElementById('app-section').style.display = 'none';
+            document.getElementById('logout-link').style.display = 'none';
+        }
+
+        function showApp() {
+            document.getElementById('auth-section').style.display = 'none';
+            document.getElementById('app-section').style.display = 'block';
+            document.getElementById('logout-link').style.display = 'inline';
+            loadTasks();
+        }
+
+        async function login() {
+            const msg = document.getElementById('auth-msg');
+            try {
+                const res = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userName: username.value, password: password.value }),
+                });
+                if (!res.ok) { msg.className = 'msg error'; msg.textContent = 'Login failed'; return; }
+                msg.className = 'msg';
+                showApp();
+            } catch (e) { msg.className = 'msg error'; msg.textContent = e.message; }
+        }
+
+        async function register() {
+            const msg = document.getElementById('auth-msg');
+            try {
+                const res = await fetch('/api/auth/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userName: username.value, password: password.value }),
+                });
+                if (!res.ok) { msg.className = 'msg error'; msg.textContent = 'Registration failed'; return; }
+                msg.className = 'msg ok'; msg.textContent = 'Registered. You can sign in now.';
+            } catch (e) { msg.className = 'msg error'; msg.textContent = e.message; }
+        }
+
+        async function logout() {
+            await fetch('/api/auth/logout', { method: 'POST' });
+            showAuth();
+        }
+
+        async function submitTask() {
+            const msg = document.getElementById('submit-msg');
+            const url = document.getElementById('url').value.trim();
+            if (!url) return;
+            try {
+                await api('/api/tasks', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url }),
+                });
+                document.getElementById('url').value = '';
+                msg.className = 'msg';
+                loadTasks();
+            } catch (e) { msg.className = 'msg error'; msg.textContent = e.message; }
+        }
+
+        async function loadTasks() {
+            const tasks = await api('/api/tasks');
+            if (!tasks) return;
+            const tbody = document.querySelector('#task-table tbody');
+            tbody.innerHTML = '';
+            for (const t of tasks) {
+                const tr = document.createElement('tr');
+                const statusClass = t.status === 'Completed' ? 'ok' : t.status === 'Failed' ? 'err' : 'warn';
+                tr.innerHTML =
+                    '<td>' + esc(t.fileName || t.url) + '</td>' +
+                    '<td><span class="badge ' + statusClass + '">' + t.status + '</span></td>' +
+                    '<td><progress value="' + (t.progress || 0) + '" max="100"></progress></td>' +
+                    '<td class="muted">' + esc(t.errorMessage || '') + '</td>' +
+                    '<td>' +
+                        '<button class="secondary" onclick="retryTask(\'' + t.id + '\')">Retry</button> ' +
+                        '<button class="secondary" onclick="shareTask(\'' + t.id + '\')">Share</button> ' +
+                        '<button class="danger" onclick="deleteTask(\'' + t.id + '\')">Delete</button>' +
+                    '</td>';
+                tbody.appendChild(tr);
+            }
+        }
+
+        async function retryTask(id) {
+            try { await api('/api/tasks/' + id + '/retry', { method: 'POST' }); loadTasks(); }
+            catch (e) { alert(e.message); }
+        }
+
+        async function shareTask(id) {
+            try {
+                const body = await api('/api/tasks/' + id + '/share', { method: 'POST' });
+                const origin = location.origin;
+                prompt('Share link:', origin + '/share.html?token=' + body.token);
+            } catch (e) { alert(e.message); }
+        }
+
+        async function deleteTask(id) {
+            try {
+                const res = await fetch('/api/tasks/' + id, { method: 'DELETE' });
+                if (!res.ok) throw new Error('Delete failed');
+                loadTasks();
+            } catch (e) { alert(e.message); }
+        }
+
+        function esc(s) {
+            return (s || '').replace(/[&<>"']/g, c =>
+                ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+        }
+
+        document.getElementById('logout-link').onclick = logout;
+
+        // Detect an existing session: fetch tasks; if 401 the auth form shows.
+        fetch('/api/tasks').then(r => { if (r.ok) showApp(); });
+    </script>
+</body>
+</html>

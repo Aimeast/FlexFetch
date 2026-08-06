@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Cookie pool - FlexFetch</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <header>
+        <h1>FlexFetch</h1>
+        <nav>
+            <a href="/index.html">Tasks</a>
+            <a href="/system.html">System</a>
+            <a href="/cookie.html">Cookies</a>
+            <a href="#" id="logout-link">Logout</a>
+        </nav>
+    </header>
+    <main>
+        <div class="msg error" id="msg"></div>
+
+        <div class="card">
+            <h2>Import cookies</h2>
+            <label for="group">Group name (optional)</label>
+            <input id="group" placeholder="youtube">
+            <label for="url">Site URL (optional, for Set-Cookie text)</label>
+            <input id="url" placeholder="https://www.youtube.com">
+            <label for="text">Cookie text (Netscape file content or Set-Cookie header)</label>
+            <textarea id="text" rows="8" placeholder="# Netscape HTTP Cookie File&#10;.example.com&#9;TRUE&#9;/&#9;FALSE&#9;4102444800&#9;SID&#9;abc"></textarea>
+            <div class="row" style="margin-top:0.75rem">
+                <button onclick="importCookies()">Import</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Groups</h2>
+            <div class="row" style="margin-bottom:0.75rem">
+                <input id="new-group" placeholder="New group name">
+                <button class="secondary" onclick="createGroup()">Create</button>
+            </div>
+            <table>
+                <thead><tr><th>Name</th><th>URLs</th><th>Cookies</th><th></th></tr></thead>
+                <tbody id="group-tbody"></tbody>
+            </table>
+        </div>
+    </main>
+
+    <script>
+        const msg = document.getElementById('msg');
+
+        async function api(path, options) {
+            const res = await fetch(path, options);
+            if (res.status === 401) { location.href = '/index.html'; return null; }
+            if (res.status === 403) { show('Admin access required'); return null; }
+            if (!res.ok) {
+                const body = await res.json().catch(() => ({}));
+                throw new Error(body.error || ('HTTP ' + res.status));
+            }
+            return res.json();
+        }
+
+        function show(text, ok) {
+            msg.textContent = text;
+            msg.className = ok ? 'msg ok' : 'msg error';
+            setTimeout(() => { msg.className = 'msg'; }, 4000);
+        }
+
+        async function importCookies() {
+            try {
+                const body = await api('/api/cookies/import', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        text: document.getElementById('text').value,
+                        groupName: document.getElementById('group').value || null,
+                        url: document.getElementById('url').value || null,
+                    }),
+                });
+                show('Imported ' + body.imported + ' cookies' + (body.skipped ? ', skipped ' + body.skipped : ''), true);
+                loadGroups();
+            } catch (e) { show(e.message); }
+        }
+
+        async function createGroup() {
+            const name = document.getElementById('new-group').value.trim();
+            if (!name) return;
+            try {
+                await api('/api/cookies/groups', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, urls: [] }),
+                });
+                document.getElementById('new-group').value = '';
+                loadGroups();
+            } catch (e) { show(e.message); }
+        }
+
+        async function deleteGroup(id) {
+            try {
+                await api('/api/cookies/groups/' + id, { method: 'DELETE' });
+                loadGroups();
+            } catch (e) { show(e.message); }
+        }
+
+        async function loadGroups() {
+            const groups = await api('/api/cookies');
+            if (!groups) return;
+            const tbody = document.getElementById('group-tbody');
+            tbody.innerHTML = '';
+            for (const g of groups) {
+                const tr = document.createElement('tr');
+                tr.innerHTML =
+                    '<td>' + esc(g.name) + '</td>' +
+                    '<td class="muted">' + esc((g.urls || []).join(', ')) + '</td>' +
+                    '<td>' + (g.cookies || []).length + '</td>' +
+                    '<td><button class="danger" onclick="deleteGroup(\'' + g.id + '\')">Delete</button></td>';
+                tbody.appendChild(tr);
+            }
+        }
+
+        function esc(s) {
+            return (s || '').replace(/[&<>"']/g, c =>
+                ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+        }
+
+        document.getElementById('logout-link').onclick = async () => {
+            await fetch('/api/auth/logout', { method: 'POST' });
+            location.href = '/index.html';
+        };
+
+        loadGroups();
+    </script>
+</body>
+</html>
