@@ -79,7 +79,7 @@ public sealed class TaskServiceTests
         await WaitForStatusAsync(id, TaskStatus.Failed);
         var task = _service.GetById(id);
         Assert.AreEqual(TaskStatus.Failed, task!.Status);
-        Assert.IsTrue(task.Attempts >= 3, $"Expected at least 3 attempts, got {task.Attempts}");
+        Assert.IsGreaterThanOrEqualTo(3, task.Attempts);
         Assert.AreEqual("boom", task.ErrorMessage);
     }
 
@@ -239,7 +239,8 @@ public sealed class TaskServiceTests
 
     private async Task WaitForStatusAsync(string id, TaskStatus status)
     {
-        for (var i = 0; i < 100; i++)
+        // Allow enough time for retry backoff (2s + 4s for a 3-attempt run).
+        for (var i = 0; i < 400; i++)
         {
             var task = _service!.GetById(id);
             if (task is not null && task.Status == status)

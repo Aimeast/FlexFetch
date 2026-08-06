@@ -1,0 +1,52 @@
+using FlexFetch.Domain;
+
+namespace FlexFetch.Services.Downloaders;
+
+/// <summary>A single playable/downloadable item discovered during analysis.</summary>
+public sealed class MediaChild
+{
+    public string Url { get; init; } = string.Empty;
+
+    public string? Title { get; init; }
+}
+
+/// <summary>Result of analyzing a resource URL.</summary>
+public sealed class AnalysisResult
+{
+    /// <summary>Extracted video/page title, used as the filename source.</summary>
+    public string Title { get; init; } = string.Empty;
+
+    /// <summary>Direct media URL when the link itself is a downloadable file.</summary>
+    public string? DirectUrl { get; init; }
+
+    /// <summary>Referrer page to send with the download request.</summary>
+    public string? Referrer { get; init; }
+
+    /// <summary>Filename suggested by the analysis (title-based).</summary>
+    public string? SuggestedFileName { get; init; }
+
+    /// <summary>Expanded children (e.g. playlist videos), empty for plain files.</summary>
+    public IReadOnlyList<MediaChild> Children { get; init; } = Array.Empty<MediaChild>();
+}
+
+/// <summary>
+/// A downloader plugin: declares supported resources, decides whether it can
+/// handle a URL, analyzes it, and downloads the result.
+/// </summary>
+public interface IDownloader
+{
+    /// <summary>Unique downloader identifier (e.g. "Generic").</summary>
+    string Type { get; }
+
+    /// <summary>Attempt priority; higher values are tried first.</summary>
+    int Priority { get; }
+
+    /// <summary>Match rule: whether this downloader claims the URL.</summary>
+    bool CanHandle(string url);
+
+    /// <summary>Parses the URL and extracts title / direct link / children.</summary>
+    Task<AnalysisResult> AnalyzeAsync(string url, CancellationToken cancellationToken);
+
+    /// <summary>Downloads the analyzed resource into the task's storage directory.</summary>
+    Task DownloadAsync(TaskItem task, AnalysisResult analysis, Action<double> progress, CancellationToken cancellationToken);
+}

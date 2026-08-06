@@ -3,6 +3,7 @@ using FlexFetch.Config;
 using FlexFetch.Data;
 using FlexFetch.Domain;
 using FlexFetch.Services;
+using FlexFetch.Services.Downloaders;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Serilog;
 
@@ -38,6 +39,15 @@ builder.Services.AddSingleton<IConfigRepository, ConfigRepository>();
 
 // Application services.
 builder.Services.AddSingleton<UserService>();
+builder.Services.AddSingleton(Log.Logger);
+
+// Storage + proxy + downloader pipeline.
+builder.Services.AddSingleton(new StorageService(dataDir));
+builder.Services.AddSingleton<IProxyService, ConfigProxyService>();
+builder.Services.AddSingleton<IDownloader, GenericFileDownloader>();
+builder.Services.AddSingleton<DownloaderFactory>();
+builder.Services.AddSingleton<ITaskExecutor, DownloaderTaskExecutor>();
+builder.Services.AddSingleton<TaskService>();
 
 // Server-side session cookie authentication.
 var sessionHours = int.TryParse(builder.Configuration["Account:SessionHours"], out var sh) ? sh : 168;
