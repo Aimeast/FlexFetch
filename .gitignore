@@ -1,0 +1,52 @@
+﻿# .NET build output
+bin/
+obj/
+[Bb]uild/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+bld/
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userprefs
+*.userosscache
+*.sln.docstates
+
+# Test results
+[Tt]est[Rr]esult*/
+[Bb]uild[Ll]og.*
+*.trx
+
+# NuGet
+*.nupkg
+*.snupkg
+packages/
+
+# Publish output
+publish/
+artifacts/
+
+# FlexFetch runtime data (data dir, logs, browser profiles, external components)
+data/
+logs/
+profiles/
+components/
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Misc
+*.swp
+*~
