@@ -149,7 +149,7 @@ public sealed class DataLayerTests
         Assert.AreEqual("task-1", loaded.TaskId);
         Assert.AreEqual(share.Token, loaded.Token);
 
-        Assert.AreEqual(1, repo.GetByTaskId("task-1").Count);
+        Assert.HasCount(1, repo.GetByTaskId("task-1"));
         Assert.IsTrue(repo.DeleteByTaskId("task-1"));
         Assert.IsNull(repo.GetByToken(share.Token));
     }
@@ -189,8 +189,8 @@ public sealed class DataLayerTests
         var loaded = repo.GetGroupByName("youtube");
         Assert.IsNotNull(loaded);
         Assert.AreEqual(group.Id, loaded.Id);
-        Assert.AreEqual(1, loaded.Urls.Count);
-        Assert.AreEqual(1, loaded.Cookies.Count);
+        Assert.HasCount(1, loaded.Urls);
+        Assert.HasCount(1, loaded.Cookies);
         Assert.AreEqual("SID", loaded.Cookies[0].Name);
 
         loaded.Cookies[0].Value = "def";
@@ -222,7 +222,7 @@ public sealed class DataLayerTests
             Assert.IsNull(repo.Get("missing"));
 
             var all = repo.GetAll();
-            Assert.AreEqual(2, all.Count);
+            Assert.HasCount(2, all);
             Assert.AreEqual("updated", all["key1"]);
 
             Assert.IsTrue(repo.Delete("key1"));

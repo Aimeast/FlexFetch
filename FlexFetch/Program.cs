@@ -1,4 +1,10 @@
-﻿using Serilog;
+﻿using FlexFetch.Api;
+using FlexFetch.Config;
+using FlexFetch.Data;
+using FlexFetch.Domain;
+using FlexFetch.Services;
+using Microsoft.AspNetCore.Authentication.Cookies;
+using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -18,7 +24,54 @@ Log.Logger = new LoggerConfiguration()
 
 builder.Host.UseSerilog();
 
+// Data directory (independent of program directory; overridable via config).
+var dataDir = builder.Configuration["Data:Dir"] ?? ConfigRegistry.GetDefault(ConfigKeys.DataDir);
+Directory.CreateDirectory(dataDir);
+
+// Data layer: one shared LiteDB store instance.
+builder.Services.AddSingleton(new LiteDbStore(Path.Combine(dataDir, "flexfetch.db")));
+builder.Services.AddSingleton<IUserRepository, UserRepository>();
+builder.Services.AddSingleton<ITaskRepository, TaskRepository>();
+builder.Services.AddSingleton<IShareRepository, ShareRepository>();
+builder.Services.AddSingleton<ICookieRepository, CookieRepository>();
+builder.Services.AddSingleton<IConfigRepository, ConfigRepository>();
+
+// Application services.
+builder.Services.AddSingleton<UserService>();
+
+// Server-side session cookie authentication.
+var sessionHours = int.TryParse(builder.Configuration["Account:SessionHours"], out var sh) ? sh : 168;
+builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
+    .AddCookie(options =>
+    {
+        options.Cookie.Name = "FlexFetch.Auth";
+        options.ExpireTimeSpan = TimeSpan.FromHours(sessionHours);
+        options.SlidingExpiration = true;
+        options.Events.OnRedirectToLogin = ctx =>
+        {
+            ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            return Task.CompletedTask;
+        };
+        options.Events.OnRedirectToAccessDenied = ctx =>
+        {
+            ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
+            return Task.CompletedTask;
+        };
+    });
+builder.Services.AddAuthorizationBuilder()
+    .AddPolicy("Admin", p => p.RequireRole(nameof(UserRole.Admin)));
+
 var app = builder.Build();
+
+// Bootstrap: create the initial admin when none exists and a password is configured.
+app.Services.GetRequiredService<UserService>()
+    .EnsureInitialAdmin(builder.Configuration["Admin:InitialPassword"]);
+
+app.UseAuthentication();
+app.UseAuthorization();
+
+AuthApi.Map(app);
+UsersApi.Map(app);
 
 app.MapGet("/", () => "FlexFetch is running.");
 
