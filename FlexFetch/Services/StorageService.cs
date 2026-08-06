@@ -18,6 +18,9 @@ public sealed class StorageService
     /// <summary>Root data directory (independent of the program directory).</summary>
     public string DataDir { get; }
 
+    /// <summary>Directory holding download files organized by task ID.</summary>
+    public string FilesRoot => _filesRoot;
+
     public string GetTaskDir(string taskId) => Path.Combine(_filesRoot, taskId);
 
     public string GetTaskFilePath(string taskId, string fileName) =>

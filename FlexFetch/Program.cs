@@ -2,6 +2,7 @@
 using FlexFetch.Config;
 using FlexFetch.Data;
 using FlexFetch.Domain;
+using FlexFetch.HostedServices;
 using FlexFetch.Services;
 using FlexFetch.Services.Downloaders;
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -67,6 +68,12 @@ builder.Services.AddSingleton<ITaskExecutor>(sp => new DownloaderTaskExecutor(
         return taskService.Submit(parent.OwnerUserId, child.Url, parentId: parent.Id, title: child.Title, referrer: referrer);
     }));
 builder.Services.AddSingleton<TaskService>();
+
+// Background periodic services.
+builder.Services.AddHostedService<ComponentUpgradeHostedService>();
+builder.Services.AddHostedService<CookieRefreshHostedService>();
+builder.Services.AddHostedService<CleanupHostedService>();
+builder.Services.AddHostedService<InactiveUserCleanupHostedService>();
 
 // Server-side session cookie authentication.
 var sessionHours = int.TryParse(builder.Configuration["Account:SessionHours"], out var sh) ? sh : 168;
