@@ -21,7 +21,7 @@ public sealed class ConfigRegistryTests
             .Select(f => (string)f.GetRawConstantValue()!)
             .ToList();
 
-        Assert.IsTrue(keys.Count > 10, "Registry should declare a meaningful set of keys");
+        Assert.IsGreaterThan(10, keys.Count);
         foreach (var key in keys)
         {
             Assert.IsTrue(ConfigRegistry.ContainsKey(key), $"Missing config item for key: {key}");

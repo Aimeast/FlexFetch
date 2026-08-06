@@ -32,9 +32,9 @@ public sealed class RandomIdTests
         var a = RandomId.New();
         var b = RandomId.New();
 
-        Assert.IsFalse(a.Contains('='));
-        Assert.IsFalse(b.Contains('='));
         // Two consecutive IDs are not trivially related.
         Assert.AreNotEqual(a, b);
+        Assert.DoesNotContain(a, "=");
+        Assert.DoesNotContain(b, "=");
     }
 }
