@@ -1,4 +1,4 @@
-namespace FlexFetch.Domain;
+﻿namespace FlexFetch.Domain;
 
 public enum TaskStatus
 {
@@ -20,6 +20,9 @@ public sealed class TaskItem
     public string OwnerUserId { get; set; } = string.Empty;
 
     public string Url { get; set; } = string.Empty;
+
+    /// <summary>Source page to send as Referrer during download, if any.</summary>
+    public string? Referrer { get; set; }
 
     public string? DownloaderType { get; set; }
 

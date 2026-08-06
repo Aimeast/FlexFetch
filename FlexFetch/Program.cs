@@ -6,6 +6,7 @@ using FlexFetch.Services;
 using FlexFetch.Services.Downloaders;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Serilog;
+using ILogger = Serilog.ILogger;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -44,9 +45,24 @@ builder.Services.AddSingleton(Log.Logger);
 // Storage + proxy + downloader pipeline.
 builder.Services.AddSingleton(new StorageService(dataDir));
 builder.Services.AddSingleton<IProxyService, ProxyService>();
+builder.Services.AddSingleton(sp => new YoutubeDLService(
+    sp.GetRequiredService<IProxyService>(),
+    sp.GetRequiredService<IConfigRepository>(),
+    sp.GetRequiredService<ILogger>(),
+    dataDir));
 builder.Services.AddSingleton<IDownloader, GenericFileDownloader>();
+builder.Services.AddSingleton<IDownloader, HtmlResourceDetector>();
+builder.Services.AddSingleton<IDownloader, TwitterDownloader>();
+builder.Services.AddSingleton<IDownloader, YouTubeDownloader>();
 builder.Services.AddSingleton<DownloaderFactory>();
-builder.Services.AddSingleton<ITaskExecutor, DownloaderTaskExecutor>();
+builder.Services.AddSingleton<ITaskExecutor>(sp => new DownloaderTaskExecutor(
+    sp.GetRequiredService<DownloaderFactory>(),
+    sp.GetRequiredService<ILogger>(),
+    (parent, child, referrer) =>
+    {
+        var taskService = sp.GetRequiredService<TaskService>();
+        return taskService.Submit(parent.OwnerUserId, child.Url, parentId: parent.Id, title: child.Title, referrer: referrer);
+    }));
 builder.Services.AddSingleton<TaskService>();
 
 // Server-side session cookie authentication.

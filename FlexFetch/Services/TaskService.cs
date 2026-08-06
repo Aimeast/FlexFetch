@@ -3,6 +3,7 @@ using System.Threading.Channels;
 using FlexFetch.Config;
 using FlexFetch.Data;
 using FlexFetch.Domain;
+using FlexFetch.Services.Downloaders;
 using Serilog;
 using TaskStatus = FlexFetch.Domain.TaskStatus;
 using ILogger = Serilog.ILogger;
@@ -56,7 +57,13 @@ public sealed class TaskService : IDisposable
     public int QueuedCount => _queue.Reader.Count;
 
     /// <summary>Submits a new task: queues it and returns its id.</summary>
-    public string Submit(string ownerUserId, string url, string? downloaderType = null, string? parentId = null)
+    public string Submit(
+        string ownerUserId,
+        string url,
+        string? downloaderType = null,
+        string? parentId = null,
+        string? title = null,
+        string? referrer = null)
     {
         var task = new TaskItem
         {
@@ -64,8 +71,14 @@ public sealed class TaskService : IDisposable
             Url = url,
             DownloaderType = downloaderType,
             ParentId = parentId,
+            Referrer = referrer,
             Status = TaskStatus.Queued,
         };
+        if (!string.IsNullOrWhiteSpace(title))
+        {
+            task.FileName = FileNameRules.Sanitize(title);
+        }
+
         _tasks.Insert(task);
         _queue.Writer.TryWrite(task);
         _log.Information("Task {TaskId} queued for {Url}", task.Id, url);
@@ -264,7 +277,19 @@ public sealed class TaskService : IDisposable
 
             try
             {
-                await _executor.ExecuteAsync(task, p => UpdateProgress(task, p), cts.Token);
+                var result = await _executor.ExecuteAsync(task, p => UpdateProgress(task, p), cts.Token);
+                if (result == TaskExecutionResult.Expanded)
+                {
+                    // The parent became a virtual aggregation container;
+                    // keep it Running until its children finish.
+                    task.IsVirtual = true;
+                    task.Status = TaskStatus.Running;
+                    task.Progress = 0;
+                    _tasks.Update(task);
+                    _log.Information("Task {TaskId} expanded into child tasks", task.Id);
+                    return;
+                }
+
                 task.Status = TaskStatus.Completed;
                 task.Progress = 100;
                 task.CompletedAt = DateTime.UtcNow;

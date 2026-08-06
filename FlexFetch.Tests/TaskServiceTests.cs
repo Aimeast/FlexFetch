@@ -264,7 +264,8 @@ public sealed class TaskServiceTests
         public Func<TaskItem, Action<double>, CancellationToken, Task> Handler { get; set; } =
             (_, _, _) => Task.CompletedTask;
 
-        public Task ExecuteAsync(TaskItem task, Action<double> progress, CancellationToken cancellationToken) =>
-            Handler(task, progress, cancellationToken);
+        public Task<TaskExecutionResult> ExecuteAsync(TaskItem task, Action<double> progress, CancellationToken cancellationToken) =>
+            Handler(task, progress, cancellationToken).ContinueWith(
+                _ => TaskExecutionResult.Completed, cancellationToken);
     }
 }

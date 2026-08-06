@@ -6,21 +6,32 @@ namespace FlexFetch.Services;
 
 /// <summary>
 /// Bridges TaskService and the downloader plugins: selects a downloader by
-/// match rules, analyzes the URL, and downloads — degrading to the next
-/// candidate on failure.
+/// match rules, analyzes the URL, expands playlists into child tasks and
+/// downloads — degrading to the next candidate on failure.
 /// </summary>
 public sealed class DownloaderTaskExecutor : ITaskExecutor
 {
     private readonly DownloaderFactory _factory;
     private readonly ILogger _log;
 
-    public DownloaderTaskExecutor(DownloaderFactory factory, ILogger log)
+    /// <summary>Creates a child task (parent, child, referrer) -> child id.</summary>
+    private readonly Func<TaskItem, MediaChild, string?, string> _submitChild;
+
+    public DownloaderTaskExecutor(
+        DownloaderFactory factory,
+        ILogger log,
+        Func<TaskItem, MediaChild, string?, string>? submitChild = null)
     {
         _factory = factory;
         _log = log;
+        _submitChild = submitChild
+            ?? ((_, _, _) => throw new InvalidOperationException("Child task submission is not configured"));
     }
 
-    public async Task ExecuteAsync(TaskItem task, Action<double> progress, CancellationToken cancellationToken)
+    public async Task<TaskExecutionResult> ExecuteAsync(
+        TaskItem task,
+        Action<double> progress,
+        CancellationToken cancellationToken)
     {
         var candidates = _factory.SelectDownloaders(task.Url);
         Exception? lastError = null;
@@ -32,8 +43,19 @@ public sealed class DownloaderTaskExecutor : ITaskExecutor
                 var analysis = await downloader.AnalyzeAsync(task.Url, cancellationToken);
                 task.DownloaderType = downloader.Type;
                 _log.Information("Task {TaskId}: using downloader {Type}", task.Id, downloader.Type);
+
+                if (analysis.Children.Count > 0)
+                {
+                    foreach (var child in analysis.Children)
+                    {
+                        _submitChild(task, child, analysis.Referrer);
+                    }
+
+                    return TaskExecutionResult.Expanded;
+                }
+
                 await downloader.DownloadAsync(task, analysis, progress, cancellationToken);
-                return;
+                return TaskExecutionResult.Completed;
             }
             catch (OperationCanceledException)
             {

@@ -55,9 +55,10 @@ public sealed class GenericFileDownloader : IDownloader
         using var client = new HttpClient(handler) { Timeout = GetTimeout() };
 
         // Send Referrer when provided (and always attach the original URL on 403 retry).
-        if (analysis.Referrer is not null)
+        var referrer = analysis.Referrer ?? task.Referrer;
+        if (referrer is not null)
         {
-            client.DefaultRequestHeaders.Referrer = new Uri(analysis.Referrer);
+            client.DefaultRequestHeaders.Referrer = new Uri(referrer);
         }
 
         _storage.EnsureTaskDir(task.Id);
