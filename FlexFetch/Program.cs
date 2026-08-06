@@ -43,7 +43,7 @@ builder.Services.AddSingleton(Log.Logger);
 
 // Storage + proxy + downloader pipeline.
 builder.Services.AddSingleton(new StorageService(dataDir));
-builder.Services.AddSingleton<IProxyService, ConfigProxyService>();
+builder.Services.AddSingleton<IProxyService, ProxyService>();
 builder.Services.AddSingleton<IDownloader, GenericFileDownloader>();
 builder.Services.AddSingleton<DownloaderFactory>();
 builder.Services.AddSingleton<ITaskExecutor, DownloaderTaskExecutor>();
