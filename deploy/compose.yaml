@@ -1,0 +1,24 @@
+# FlexFetch compose template. Build the image from source and run it with
+# a persistent data volume. Customize the proxy via environment when needed.
+
+services:
+  flexfetch:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: flexfetch:latest
+    container_name: flexfetch
+    restart: unless-stopped
+    ports:
+      - "${FLEXFETCH_PORT:-8080}:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://0.0.0.0:8080
+      Data__Dir: /data
+      # Optional: route downloads through a proxy (HTTP/SOCKS5).
+      # Network__Proxy: socks5://127.0.0.1:1080
+    volumes:
+      - flexfetch-data:/data
+
+volumes:
+  flexfetch-data:
