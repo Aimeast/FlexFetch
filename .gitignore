@@ -37,10 +37,10 @@ publish/
 artifacts/
 
 # FlexFetch runtime data (data dir, logs, browser profiles, external components)
-data/
-logs/
-profiles/
-components/
+/data/
+/logs/
+/profiles/
+/components/
 
 # OS files
 Thumbs.db
