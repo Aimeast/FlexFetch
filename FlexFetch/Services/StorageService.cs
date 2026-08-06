@@ -10,9 +10,13 @@ public sealed class StorageService
 
     public StorageService(string dataDir)
     {
+        DataDir = dataDir;
         _filesRoot = Path.Combine(dataDir, "files");
         Directory.CreateDirectory(_filesRoot);
     }
+
+    /// <summary>Root data directory (independent of the program directory).</summary>
+    public string DataDir { get; }
 
     public string GetTaskDir(string taskId) => Path.Combine(_filesRoot, taskId);
 

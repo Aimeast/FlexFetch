@@ -51,8 +51,10 @@ builder.Services.AddSingleton(sp => new YoutubeDLService(
     sp.GetRequiredService<IConfigRepository>(),
     sp.GetRequiredService<ILogger>(),
     dataDir));
+builder.Services.AddSingleton<StealthBrowserService>();
 builder.Services.AddSingleton<IDownloader, GenericFileDownloader>();
 builder.Services.AddSingleton<IDownloader, HtmlResourceDetector>();
+builder.Services.AddSingleton<IDownloader, BrowserParsingDownloader>();
 builder.Services.AddSingleton<IDownloader, TwitterDownloader>();
 builder.Services.AddSingleton<IDownloader, YouTubeDownloader>();
 builder.Services.AddSingleton<DownloaderFactory>();
