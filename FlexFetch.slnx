@@ -1,0 +1,4 @@
+﻿<Solution>
+  <Project Path="FlexFetch.Tests/FlexFetch.Tests.csproj" />
+  <Project Path="FlexFetch/FlexFetch.csproj" />
+</Solution>
