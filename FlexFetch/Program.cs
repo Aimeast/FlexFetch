@@ -40,6 +40,7 @@ builder.Services.AddSingleton<IConfigRepository, ConfigRepository>();
 
 // Application services.
 builder.Services.AddSingleton<UserService>();
+builder.Services.AddSingleton<CookiePoolService>();
 builder.Services.AddSingleton(Log.Logger);
 
 // Storage + proxy + downloader pipeline.
