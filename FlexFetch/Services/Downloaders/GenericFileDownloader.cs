@@ -1,12 +1,12 @@
-﻿using FlexFetch.Config;
+﻿using System.Net;
+using System.Net.Http.Headers;
+using FlexFetch.Config;
 using FlexFetch.Data;
 using FlexFetch.Entities;
+using FlexFetch.Services;
 using FlexFetch.Services.Downloaders;
 using FlexFetch.Services.Routing;
-using FlexFetch.Services;
 using Serilog;
-using System.Net;
-using System.Net.Http.Headers;
 using ILogger = Serilog.ILogger;
 
 namespace FlexFetch.Services.Downloaders;

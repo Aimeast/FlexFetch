@@ -1,7 +1,7 @@
-﻿using FlexFetch.Config;
-using FlexFetch.Data;
-using System.Net;
+﻿using System.Net;
 using System.Text.Json;
+using FlexFetch.Config;
+using FlexFetch.Data;
 using ILogger = Serilog.ILogger;
 
 namespace FlexFetch.Services.Routing;

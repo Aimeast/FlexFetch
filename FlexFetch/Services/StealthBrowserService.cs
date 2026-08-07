@@ -1,10 +1,10 @@
-﻿using FlexFetch.Data;
+﻿using System.Text.Json;
+using FlexFetch.Data;
 using FlexFetch.Entities;
 using FlexFetch.Enums;
 using FlexFetch.Services;
 using FlexFetch.Services.Routing;
 using Microsoft.Playwright;
-using System.Text.Json;
 using ILogger = Serilog.ILogger;
 
 namespace FlexFetch.Services;

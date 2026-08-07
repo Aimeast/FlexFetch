@@ -1,8 +1,8 @@
-﻿using FlexFetch.Entities;
+﻿using System.Text.RegularExpressions;
+using FlexFetch.Entities;
 using FlexFetch.Services.Downloaders;
 using FlexFetch.Services.Routing;
 using Serilog;
-using System.Text.RegularExpressions;
 using ILogger = Serilog.ILogger;
 
 namespace FlexFetch.Services.Downloaders;
