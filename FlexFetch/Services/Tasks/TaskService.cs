@@ -28,6 +28,10 @@ public sealed class TaskService : IDisposable
     private readonly Channel<TaskItem> _queue = Channel.CreateUnbounded<TaskItem>(
         new UnboundedChannelOptions { SingleReader = true });
 
+    // ChannelReader.Count is unsupported for unbounded channels, so the
+    // queued count is maintained with an interlocked counter.
+    private int _queuedCount;
+
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _running = new();
     private readonly SemaphoreSlim _concurrency;
     private readonly CancellationTokenSource _shutdown = new();
@@ -55,7 +59,7 @@ public sealed class TaskService : IDisposable
 
     public int RunningCount => _running.Count;
 
-    public int QueuedCount => _queue.Reader.Count;
+    public int QueuedCount => Volatile.Read(ref _queuedCount);
 
     /// <summary>Submits a new task: queues it and returns its id.</summary>
     public string Submit(
@@ -81,7 +85,11 @@ public sealed class TaskService : IDisposable
         }
 
         _tasks.Insert(task);
-        _queue.Writer.TryWrite(task);
+        if (_queue.Writer.TryWrite(task))
+        {
+            Interlocked.Increment(ref _queuedCount);
+        }
+
         _log.Information("Task {TaskId} queued for {Url}", task.Id, url);
         return task.Id;
     }
@@ -103,7 +111,11 @@ public sealed class TaskService : IDisposable
         task.Attempts = 0;
         task.ErrorMessage = null;
         _tasks.Update(task);
-        _queue.Writer.TryWrite(task);
+        if (_queue.Writer.TryWrite(task))
+        {
+            Interlocked.Increment(ref _queuedCount);
+        }
+
         _log.Information("Task {TaskId} re-queued for retry", id);
         return true;
     }
@@ -162,7 +174,11 @@ public sealed class TaskService : IDisposable
             task.Attempts = 0;
             task.ErrorMessage = null;
             _tasks.Update(task);
-            _queue.Writer.TryWrite(task);
+            if (_queue.Writer.TryWrite(task))
+            {
+                Interlocked.Increment(ref _queuedCount);
+            }
+
             _log.Information("Task {TaskId} recovered after restart", task.Id);
         }
     }
@@ -236,6 +252,7 @@ public sealed class TaskService : IDisposable
             {
                 while (_queue.Reader.TryRead(out var task))
                 {
+                    Interlocked.Decrement(ref _queuedCount);
                     await _concurrency.WaitAsync(_shutdown.Token).ConfigureAwait(false);
                     _ = ProcessAsync(task);
                 }

@@ -140,4 +140,8 @@ app.UseStaticFiles();
 app.Run();
 
 // Expose the generated Program class for integration tests (WebApplicationFactory).
-public partial class Program { }
+public partial class Program
+{
+    /// <summary>Process start time (UTC), surfaced by the system info API.</summary>
+    public static readonly DateTime StartedAt = DateTime.UtcNow;
+}

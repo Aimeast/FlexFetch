@@ -26,7 +26,7 @@ public static class SystemApi
             return Results.Ok(new
             {
                 version = typeof(Program).Assembly.GetName().Version?.ToString() ?? "unknown",
-                startedAt = app.Lifetime.ApplicationStarted,
+                startedAt = Program.StartedAt,
                 diskFreeBytes = disk.FreeBytes,
                 diskTotalBytes = disk.TotalBytes,
                 concurrencyLimit = tasks.ConcurrencyLimit,
