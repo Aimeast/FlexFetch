@@ -59,7 +59,8 @@ builder.Services.AddSingleton(new StorageService(dataDir));
 builder.Services.AddSingleton<IProxyService>(sp => new ProxyService(
     sp.GetRequiredService<IConfigRepository>(),
     sp.GetRequiredService<ILogger>(),
-    dataDir));
+    dataDir,
+    builder.Configuration));
 builder.Services.AddSingleton(sp => new YtdlpService(
     sp.GetRequiredService<IProxyService>(),
     sp.GetRequiredService<IConfigRepository>(),

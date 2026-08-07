@@ -81,17 +81,17 @@ public static class ConfigRegistry
             },
             new()
             {
-                Key = ConfigKeys.BypassCidrFile,
+                Key = ConfigKeys.RouteRules,
                 Category = "Network",
                 DefaultValue = string.Empty,
                 Validator = _ => null,
             },
             new()
             {
-                Key = ConfigKeys.RoutePolicies,
+                Key = ConfigKeys.DefaultAction,
                 Category = "Network",
-                DefaultValue = "GlobalProxy,BypassCidr",
-                Validator = _ => null,
+                DefaultValue = "UseProxy",
+                Validator = v => v is "UseProxy" or "Direct" ? null : "Must be UseProxy or Direct",
             },
             new()
             {

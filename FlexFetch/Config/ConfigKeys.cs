@@ -18,8 +18,8 @@ public static class ConfigKeys
 
     // Network
     public const string Proxy = "network.proxy";
-    public const string BypassCidrFile = "network.bypassCidrFile";
-    public const string RoutePolicies = "network.routePolicies";
+    public const string RouteRules = "network.routeRules";
+    public const string DefaultAction = "network.defaultAction";
 
     // Cookie pool
     public const string CookieAutoRefresh = "cookie.autoRefreshEnabled";

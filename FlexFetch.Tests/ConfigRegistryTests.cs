@@ -9,11 +9,11 @@ public sealed class ConfigRegistryTests
     public void Registry_DeclaresAllKeysWithDefaults()
     {
         // Keys whose empty default is intentional (e.g. proxy must not be
-        // hardcoded; bypass list file is optional).
+        // hardcoded; route rules are optional).
         var allowEmpty = new HashSet<string>
         {
             ConfigKeys.Proxy,
-            ConfigKeys.BypassCidrFile,
+            ConfigKeys.RouteRules,
         };
 
         var keys = typeof(ConfigKeys).GetFields()
