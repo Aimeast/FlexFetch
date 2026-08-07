@@ -55,7 +55,9 @@ public sealed class ProxyService : IProxyService
     {
         var handler = new SocketsHttpHandler
         {
-            AllowAutoRedirect = false,
+            // All http downloads follow redirects (e.g. yt-dlp/deno latest
+            // release URLs 302 to the real file; pages may redirect too).
+            AllowAutoRedirect = true,
             UseCookies = false,
         };
 

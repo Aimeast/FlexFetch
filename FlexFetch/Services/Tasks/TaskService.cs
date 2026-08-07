@@ -33,6 +33,7 @@ public sealed class TaskService : IDisposable
     private int _queuedCount;
 
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _running = new();
+    private readonly ConcurrentDictionary<string, Task> _activeProcesses = new();
     private readonly SemaphoreSlim _concurrency;
     private readonly CancellationTokenSource _shutdown = new();
     private readonly Task _workerLoop;
@@ -98,11 +99,21 @@ public sealed class TaskService : IDisposable
 
     public IReadOnlyList<TaskItem> GetByOwner(string ownerUserId) => _tasks.GetByOwner(ownerUserId);
 
-    /// <summary>Re-queues a failed task for retry (per-user retry).</summary>
+    /// <summary>Re-queues a task for retry (per-user retry).</summary>
     public bool Retry(string id)
     {
         var task = _tasks.GetById(id);
-        if (task is null || task.Status != TaskStatus.Failed)
+        if (task is null)
+        {
+            return false;
+        }
+
+        // Retry applies to failed tasks and to tasks still sitting queued
+        // (e.g. after an unexpected service stop the status may be left
+        // queued without an error message): re-queueing restarts them.
+        var isFailed = task.Status == TaskStatus.Failed;
+        var isQueued = task.Status == TaskStatus.Queued;
+        if (!isFailed && !isQueued)
         {
             return false;
         }
@@ -158,8 +169,9 @@ public sealed class TaskService : IDisposable
     }
 
     /// <summary>
-    /// Recovers tasks after a restart: tasks left in Running are reset to
-    /// Queued and re-queued. Queued tasks are also re-queued.
+    /// Recovers tasks after a restart: tasks left in Running or Queued are
+    /// reset to Queued and re-queued. Failed is reserved for real download
+    /// failures and is not re-queued.
     /// </summary>
     public void RecoverPending()
     {
@@ -221,11 +233,6 @@ public sealed class TaskService : IDisposable
             parent.Status = TaskStatus.Running;
             parent.ErrorMessage = null;
         }
-        else if (children.All(c => c.Status == TaskStatus.Cancelled))
-        {
-            parent.Status = TaskStatus.Cancelled;
-            parent.ErrorMessage = null;
-        }
 
         _tasks.Update(parent);
     }
@@ -233,6 +240,27 @@ public sealed class TaskService : IDisposable
     public void Dispose()
     {
         _shutdown.Cancel();
+
+        // Cancel running tasks but leave their status unchanged (Running/
+        // Queued); a restart's RecoverPending re-queues them. Failed is
+        // reserved for real download failures. Deleted tasks no longer exist
+        // in the store and are skipped.
+        foreach (var (id, cts) in _running)
+        {
+            cts.Cancel();
+        }
+
+        // Wait for in-flight process tasks to finish so they no longer touch
+        // the store when the data directory is disposed/removed.
+        try
+        {
+            Task.WaitAll(_activeProcesses.Values.ToArray(), TimeSpan.FromSeconds(5));
+        }
+        catch (AggregateException)
+        {
+            // Individual task failures were already logged; ignore here.
+        }
+
         _workerLoop.Wait(TimeSpan.FromSeconds(5));
         _shutdown.Dispose();
         _concurrency.Dispose();
@@ -254,7 +282,7 @@ public sealed class TaskService : IDisposable
                 {
                     Interlocked.Decrement(ref _queuedCount);
                     await _concurrency.WaitAsync(_shutdown.Token).ConfigureAwait(false);
-                    _ = ProcessAsync(task);
+                    _activeProcesses[task.Id] = ProcessAsync(task);
                 }
             }
         }
@@ -272,6 +300,7 @@ public sealed class TaskService : IDisposable
         }
         finally
         {
+            _activeProcesses.TryRemove(task.Id, out _);
             _concurrency.Release();
         }
     }
@@ -322,10 +351,19 @@ public sealed class TaskService : IDisposable
             }
             catch (OperationCanceledException)
             {
-                task.Status = TaskStatus.Cancelled;
+                // The task was cancelled: either deleted (it no longer exists
+                // in the store — write nothing) or the service is shutting
+                // down (Dispose cancelled the work; status stays Running so
+                // a restart's RecoverPending re-queues it).
+                if (_tasks.GetById(task.Id) is null)
+                {
+                    return;
+                }
+
+                task.Status = TaskStatus.Running;
                 task.ErrorMessage = null;
                 _tasks.Update(task);
-                _log.Information("Task {TaskId} cancelled", task.Id);
+                _log.Information("Task {TaskId} interrupted, will recover after restart", task.Id);
                 if (task.ParentId is not null)
                 {
                     AggregateParent(task.ParentId);

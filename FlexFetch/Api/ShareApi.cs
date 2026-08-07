@@ -74,7 +74,7 @@ public static class ShareApi
             }
 
             var stream = File.OpenRead(path);
-            return Results.File(stream, "application/octet-stream", task.FileName, enableRangeProcessing: true);
+            return Results.File(stream, FileMime.For(task.FileName), task.FileName, enableRangeProcessing: true);
         });
     }
 }

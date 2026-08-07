@@ -20,6 +20,9 @@ public sealed class TaskItem
 
     public string? DownloaderType { get; set; }
 
+    /// <summary>Extracted page/tweet text, shown under the URL (e.g. tweet content).</summary>
+    public string? ContentText { get; set; }
+
     public string? FileName { get; set; }
 
     public long? FileSize { get; set; }

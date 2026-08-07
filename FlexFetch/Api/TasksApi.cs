@@ -1,6 +1,7 @@
 ﻿using System.Security.Claims;
 using FlexFetch.Data;
 using FlexFetch.Entities;
+using FlexFetch.Services;
 using FlexFetch.Services.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using TaskStatus = FlexFetch.Enums.TaskStatus;
@@ -58,6 +59,32 @@ public static class TasksApi
             }
 
             return tasks.Retry(id) ? Results.Ok() : Results.Conflict(new { error = "Task cannot be retried" });
+        });
+
+        group.MapGet("/{id}/file", (
+            string id,
+            TaskService tasks,
+            StorageService storage,
+            HttpContext ctx) =>
+        {
+            var task = tasks.GetById(id);
+            if (task is null || task.OwnerUserId != GetUserId(ctx))
+            {
+                return Results.NotFound();
+            }
+            if (task.Status != TaskStatus.Completed || string.IsNullOrEmpty(task.FileName))
+            {
+                return Results.Conflict(new { error = "Task is not completed yet" });
+            }
+
+            var path = storage.GetTaskFilePath(task.Id, task.FileName);
+            if (!File.Exists(path))
+            {
+                return Results.NotFound();
+            }
+
+            var stream = File.OpenRead(path);
+            return Results.File(stream, FileMime.For(task.FileName), task.FileName, enableRangeProcessing: true);
         });
 
         group.MapPost("/{id}/share", (string id, TaskService tasks, IShareRepository shares, IConfigRepository config, HttpContext ctx) =>

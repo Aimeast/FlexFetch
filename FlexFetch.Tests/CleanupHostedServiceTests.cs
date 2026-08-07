@@ -4,6 +4,7 @@ using FlexFetch.Entities;
 using FlexFetch.HostedServices;
 using FlexFetch.Services;
 using FlexFetch.Services.Tasks;
+using Microsoft.Extensions.Hosting;
 using Serilog;
 using ILogger = Serilog.ILogger;
 
@@ -23,6 +24,8 @@ public sealed class CleanupHostedServiceTests
     private static readonly ILogger Log = new LoggerConfiguration()
         .MinimumLevel.Warning()
         .CreateLogger();
+
+    private static readonly IHostApplicationLifetime Lifetime = new FakeLifetime();
 
     [TestInitialize]
     public void Setup()
@@ -47,6 +50,14 @@ public sealed class CleanupHostedServiceTests
         }
     }
 
+    private CleanupHostedService CreateService(TaskService? taskService = null, UserService? userService = null)
+    {
+        var tasks = taskService ?? new TaskService(_tasks!, _shares!, _config!, new NoopExecutor(), _storage!, Log);
+        var users = userService ?? new UserService(_users!, _config!);
+        return new CleanupHostedService(
+            _shares!, _tasks!, _config!, _users!, tasks, users, _storage!, Lifetime, Log);
+    }
+
     [TestMethod]
     public async Task Cleanup_DeletesExpiredSharesAndKeepsValidOnes()
     {
@@ -54,7 +65,7 @@ public sealed class CleanupHostedServiceTests
         _shares.Insert(new ShareToken { TaskId = "t2", ExpiresAt = DateTime.UtcNow.AddHours(1) });
         _shares.Insert(new ShareToken { TaskId = "t3" });
 
-        var service = new CleanupHostedService(_shares, _tasks!, _storage!, Log);
+        var service = CreateService();
         await service.ExecuteOnceForTestAsync(CancellationToken.None);
 
         Assert.IsNull(_shares.GetByToken(_shares.GetByTaskId("t1").SingleOrDefault()?.Token ?? ""));
@@ -76,7 +87,7 @@ public sealed class CleanupHostedServiceTests
         _storage.EnsureTaskDir(orphanId);
         File.WriteAllText(_storage.GetTaskFilePath(orphanId, "b.bin"), "y");
 
-        var service = new CleanupHostedService(_shares!, _tasks, _storage, Log);
+        var service = CreateService();
         await service.ExecuteOnceForTestAsync(CancellationToken.None);
 
         Assert.IsTrue(Directory.Exists(_storage.GetTaskDir(task.Id)));
@@ -96,7 +107,7 @@ public sealed class CleanupHostedServiceTests
         var activeTaskId = taskService.Submit(active.Id, "https://example.com/a.bin");
         var inactiveTaskId = taskService.Submit(inactive.Id, "https://example.com/b.bin");
 
-        var service = new InactiveUserCleanupHostedService(_config, _users, taskService, new UserService(_users, _config), Log);
+        var service = CreateService(taskService);
         await service.ExecuteOnceForTestAsync(CancellationToken.None);
 
         // Inactive user's resources are gone; account remains.
@@ -117,10 +128,18 @@ public sealed class CleanupHostedServiceTests
         var taskService = new TaskService(_tasks!, _shares!, _config, new NoopExecutor(), _storage!, Log);
         var taskId = taskService.Submit(old.Id, "https://example.com/a.bin");
 
-        var service = new InactiveUserCleanupHostedService(_config, _users, taskService, new UserService(_users, _config), Log);
+        var service = CreateService(taskService);
         await service.ExecuteOnceForTestAsync(CancellationToken.None);
 
         Assert.IsNotNull(_tasks!.GetById(taskId));
+    }
+
+    private sealed class FakeLifetime : IHostApplicationLifetime
+    {
+        public CancellationToken ApplicationStarted => CancellationToken.None;
+        public CancellationToken ApplicationStopping => CancellationToken.None;
+        public CancellationToken ApplicationStopped => CancellationToken.None;
+        public void StopApplication() { }
     }
 
     private sealed class NoopExecutor : ITaskExecutor

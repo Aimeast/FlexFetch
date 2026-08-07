@@ -50,6 +50,7 @@ public sealed class DownloaderTaskExecutor : ITaskExecutor
             {
                 var analysis = await downloader.AnalyzeAsync(task.Url, cancellationToken);
                 task.DownloaderType = downloader.Type;
+                task.ContentText = string.IsNullOrWhiteSpace(analysis.ContentText) ? task.ContentText : analysis.ContentText;
                 _log.Information("Task {TaskId}: using downloader {Type}", task.Id, downloader.Type);
 
                 if (analysis.Children.Count > 0)

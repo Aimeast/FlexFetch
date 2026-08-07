@@ -1,4 +1,6 @@
-﻿using System.Text.Json;
+﻿using System.Diagnostics;
+using System.Text.Json;
+using FlexFetch.Config;
 using FlexFetch.Data;
 using FlexFetch.Entities;
 using FlexFetch.Enums;
@@ -22,10 +24,12 @@ public sealed class StealthBrowserService : IAsyncDisposable
 {
     private readonly IProxyService _proxy;
     private readonly CookiePoolService _cookiePool;
+    private readonly IConfigRepository _config;
     private readonly ILogger _log;
     private readonly string _profileDir;
     private readonly int _idleMinutes;
     private readonly SemaphoreSlim _initLock = new(1, 1);
+    private readonly SemaphoreSlim _installLock = new(1, 1);
     private readonly Random _random = new();
 
     private IPlaywright? _playwright;
@@ -42,6 +46,7 @@ public sealed class StealthBrowserService : IAsyncDisposable
     {
         _proxy = proxy;
         _cookiePool = cookiePool;
+        _config = config;
         _log = log;
         _profileDir = Path.Combine(storage.DataDir, "profiles", "Chromium");
         _idleMinutes = 10;
@@ -259,6 +264,91 @@ public sealed class StealthBrowserService : IAsyncDisposable
         return $"Playwright {typeof(Playwright).Assembly.GetName().Version}";
     }
 
+    /// <summary>
+    /// Installs a Playwright browser only if no system browser was found.
+    /// The install runs in a child process with the proxy passed through
+    /// that process's environment, so the parent process is unaffected.
+    /// Serialized so concurrent triggers (startup hosted service, browser
+    /// startup) never start multiple installs at once.
+    /// </summary>
+    public async Task EnsureBrowserInstalledAsync(CancellationToken cancellationToken = default)
+    {
+        await _installLock.WaitAsync(cancellationToken);
+        try
+        {
+            // Re-check under the lock: another caller may have installed a
+            // system browser (or completed this install) while we waited.
+            if (FindFirstExisting(GetBrowserCandidates()) is not null)
+            {
+                _log.Information("System browser detected; skipping browser install");
+                return;
+            }
+
+            await InstallBrowserCoreAsync(cancellationToken);
+        }
+        finally
+        {
+            _installLock.Release();
+        }
+    }
+
+    private async Task InstallBrowserCoreAsync(CancellationToken cancellationToken)
+    {
+        _log.Information("No system browser found; installing Playwright Chromium");
+        var proxy = _config.Get(ConfigKeys.Proxy) ?? ConfigRegistry.GetDefault(ConfigKeys.Proxy);
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = Environment.ProcessPath ?? "dotnet",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        if (OperatingSystem.IsWindows() && Environment.ProcessPath?.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) == false)
+        {
+            // On Windows the app host executable re-enters with the flag.
+            startInfo.ArgumentList.Add("--install-browser");
+        }
+        else
+        {
+            // Running via `dotnet` (tests, Linux self-contained-less): pass the dll.
+            startInfo.ArgumentList.Add(Environment.ProcessPath ?? "dotnet");
+            startInfo.ArgumentList.Add("--install-browser");
+        }
+
+        if (!string.IsNullOrWhiteSpace(proxy))
+        {
+            startInfo.Environment["HTTPS_PROXY"] = proxy;
+            startInfo.Environment["HTTP_PROXY"] = proxy;
+        }
+
+        try
+        {
+            using var process = Process.Start(startInfo);
+            if (process is null)
+            {
+                _log.Warning("Failed to start browser installer process");
+                return;
+            }
+
+            // Bound the install so a slow download cannot hang the service.
+            var finished = await Task.WhenAny(
+                process.WaitForExitAsync(cancellationToken),
+                Task.Delay(TimeSpan.FromMinutes(30), cancellationToken));
+            if (finished != process.WaitForExitAsync(cancellationToken) && !process.HasExited)
+            {
+                _log.Warning("Browser install timed out; killing installer process");
+                process.Kill(entireProcessTree: true);
+                await process.WaitForExitAsync(CancellationToken.None);
+            }
+
+            _log.Information("Playwright Chromium install exited with code {Code}", process.ExitCode);
+        }
+        catch (Exception ex)
+        {
+            _log.Error(ex, "Browser install failed");
+        }
+    }
+
     private async Task EnsureInitializedAsync()
     {
         if (_context is not null)
@@ -275,6 +365,13 @@ public sealed class StealthBrowserService : IAsyncDisposable
             }
 
             SystemBrowserPath = FindFirstExisting(GetBrowserCandidates());
+            if (SystemBrowserPath is null)
+            {
+                // No system Chrome/Edge: install the Playwright browser before
+                // launching (lazy install, scoped to a child process).
+                await EnsureBrowserInstalledAsync();
+            }
+
             _playwright = await Playwright.CreateAsync();
 
             var args = ManagedCode.Playwright.Stealth.PlaywrightStealthExtensions.StealthArgs.ToList();

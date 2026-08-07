@@ -11,9 +11,11 @@ public abstract class IntervalHostedService : BackgroundService
 {
     private readonly ILogger _log;
     private readonly string _name;
+    private readonly IHostApplicationLifetime _lifetime;
 
-    protected IntervalHostedService(ILogger log, string name)
+    protected IntervalHostedService(IHostApplicationLifetime lifetime, ILogger log, string name)
     {
+        _lifetime = lifetime;
         _log = log;
         _name = name;
     }
@@ -33,6 +35,24 @@ public abstract class IntervalHostedService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // Yield before any work so StartAsync returns immediately and the
+        // host (Kestrel) can start listening without waiting on this service.
+        await Task.Yield();
+
+        // Do not start periodic work until the main service has finished
+        // starting (Kestrel is listening), so background jobs never compete
+        // with startup for resources.
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var registration = _lifetime.ApplicationStarted.Register(() => started.TrySetResult());
+        try
+        {
+            await started.Task.WaitAsync(stoppingToken);
+        }
+        catch (OperationCanceledException)
+        {
+            return; // shutting down before startup finished
+        }
+
         var first = true;
         while (!stoppingToken.IsCancellationRequested)
         {

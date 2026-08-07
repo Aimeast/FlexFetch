@@ -53,6 +53,7 @@ public sealed partial class TwitterDownloader : IDownloader
         return new AnalysisResult
         {
             Title = title,
+            ContentText = string.IsNullOrWhiteSpace(description) ? null : description,
             Referrer = url,
             Children = children,
         };

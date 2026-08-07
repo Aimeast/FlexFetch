@@ -10,10 +10,8 @@ public static class TaskStateMachine
     private static readonly HashSet<(TaskStatus From, TaskStatus To)> Transitions = new()
     {
         (TaskStatus.Queued, TaskStatus.Running),
-        (TaskStatus.Queued, TaskStatus.Cancelled),
         (TaskStatus.Running, TaskStatus.Completed),
         (TaskStatus.Running, TaskStatus.Failed),
-        (TaskStatus.Running, TaskStatus.Cancelled),
         // Retry: only failed tasks can go back to queued.
         (TaskStatus.Failed, TaskStatus.Queued),
     };

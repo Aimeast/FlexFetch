@@ -20,8 +20,9 @@ public sealed class CookieRefreshHostedService : IntervalHostedService
         IConfigRepository config,
         CookiePoolService pool,
         StealthBrowserService browser,
+        IHostApplicationLifetime lifetime,
         ILogger log)
-        : base(log, "CookieRefresh")
+        : base(lifetime, log, "CookieRefresh")
     {
         _config = config;
         _pool = pool;

@@ -1,4 +1,5 @@
 ﻿using System.Security.Claims;
+using FlexFetch.Data;
 using FlexFetch.Entities;
 using FlexFetch.Services;
 using Microsoft.AspNetCore.Authentication;
@@ -60,5 +61,24 @@ public static class AuthApi
             await ctx.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
             return Results.Ok();
         });
+
+        // Current signed-in user info (name + role), used by the UI to
+        // decide which navigation links to show.
+        group.MapGet("/me", (HttpContext ctx, IUserRepository users) =>
+        {
+            var userId = ctx.User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrEmpty(userId))
+            {
+                return Results.Unauthorized();
+            }
+
+            var user = users.GetById(userId);
+            if (user is null)
+            {
+                return Results.Unauthorized();
+            }
+
+            return Results.Ok(new { id = user.Id, userName = user.UserName, role = user.Role.ToString() });
+        }).RequireAuthorization();
     }
 }

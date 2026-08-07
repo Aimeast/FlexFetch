@@ -117,6 +117,40 @@ public sealed class TasksApiTests
     }
 
     [TestMethod]
+    public async Task TaskFile_DownloadByOwner()
+    {
+        using var factory = TestApp.CreateFactory(_dataDir!);
+        var (alice, aliceId) = await LoginAsync(factory, "alice");
+        var taskId = SeedCompletedTask(factory, aliceId, "report.pdf", "PDF-CONTENT");
+
+        var response = await alice.GetAsync($"/api/tasks/{taskId}/file");
+
+        Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+        var content = await response.Content.ReadAsStringAsync();
+        Assert.AreEqual("PDF-CONTENT", content);
+    }
+
+    [TestMethod]
+    public async Task TaskFile_RejectsForeignUserAndUnfinished()
+    {
+        using var factory = TestApp.CreateFactory(_dataDir!);
+        var (alice, aliceId) = await LoginAsync(factory, "alice");
+        var (bob, _) = await LoginAsync(factory, "bob");
+        var taskId = SeedCompletedTask(factory, aliceId, "report.pdf", "PDF-CONTENT");
+
+        // Bob cannot download Alice's file.
+        var foreign = await bob.GetAsync($"/api/tasks/{taskId}/file");
+        Assert.AreEqual(HttpStatusCode.NotFound, foreign.StatusCode);
+
+        // An unfinished task returns conflict.
+        var submit = await alice.PostAsJsonAsync("/api/tasks", new { url = "https://example.com/slow.bin" });
+        var created = await submit.Content.ReadFromJsonAsync<SubmitResponse>();
+        Assert.IsNotNull(created);
+        var unfinished = await alice.GetAsync($"/api/tasks/{created.Id}/file");
+        Assert.AreEqual(HttpStatusCode.Conflict, unfinished.StatusCode);
+    }
+
+    [TestMethod]
     public async Task Share_FileGoneAfterTaskDeleted()
     {
         using var factory = TestApp.CreateFactory(_dataDir!);

@@ -43,6 +43,7 @@ public sealed class TwitterDownloaderTests
         var analysis = await downloader.AnalyzeAsync(server.BaseUrl + "/status/1", CancellationToken.None);
 
         Assert.AreEqual("SpaceX launch footage", analysis.Title);
+        Assert.AreEqual("SpaceX launch footage", analysis.ContentText);
         Assert.AreEqual(server.BaseUrl + "/status/1", analysis.Referrer);
         Assert.HasCount(2, analysis.Children);
         CollectionAssert.Contains(analysis.Children.Select(c => c.Url).ToList(), "https://video.twimg.com/ext_tw_video/1.mp4");
@@ -59,6 +60,7 @@ public sealed class TwitterDownloaderTests
         var analysis = await downloader.AnalyzeAsync(server.BaseUrl + "/status/2", CancellationToken.None);
 
         Assert.AreEqual("x-post", analysis.Title);
+        Assert.IsNull(analysis.ContentText);
     }
 
     private sealed class DirectProxyService : IProxyService

@@ -143,9 +143,14 @@ public sealed class TaskServiceTests
     [TestMethod]
     public async Task RecoverPending_RequeuesRunningAndQueued()
     {
-        // Simulate a restart: a task stuck in Running.
-        var orphan = new TaskItem { OwnerUserId = "user-1", Url = "https://example.com/orphan.bin", Status = TaskStatus.Running };
-        _tasks!.Insert(orphan);
+        // Simulate a restart: tasks stuck in Running and Queued must be
+        // re-queued; Failed (a real download failure) is not re-queued.
+        var running = new TaskItem { OwnerUserId = "user-1", Url = "https://example.com/r.bin", Status = TaskStatus.Running };
+        var queued = new TaskItem { OwnerUserId = "user-1", Url = "https://example.com/q.bin", Status = TaskStatus.Queued };
+        var failed = new TaskItem { OwnerUserId = "user-1", Url = "https://example.com/f.bin", Status = TaskStatus.Failed };
+        _tasks!.Insert(running);
+        _tasks.Insert(queued);
+        _tasks.Insert(failed);
 
         _executor!.Handler = (task, progress, ct) =>
         {
@@ -155,10 +160,13 @@ public sealed class TaskServiceTests
 
         _service!.RecoverPending();
 
-        await WaitForStatusAsync(orphan.Id, TaskStatus.Completed);
-        var task = _service.GetById(orphan.Id);
-        Assert.AreEqual(TaskStatus.Completed, task!.Status);
-        Assert.AreEqual("recovered.bin", task.FileName);
+        await WaitForStatusAsync(running.Id, TaskStatus.Completed);
+        await WaitForStatusAsync(queued.Id, TaskStatus.Completed);
+        Assert.AreEqual("recovered.bin", _service!.GetById(running.Id)!.FileName);
+        Assert.AreEqual("recovered.bin", _service!.GetById(queued.Id)!.FileName);
+
+        // Failed stays failed — it was a real download failure.
+        Assert.AreEqual(TaskStatus.Failed, _service.GetById(failed.Id)!.Status);
     }
 
     [TestMethod]

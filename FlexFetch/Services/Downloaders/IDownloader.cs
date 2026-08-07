@@ -16,6 +16,9 @@ public sealed class AnalysisResult
     /// <summary>Extracted video/page title, used as the filename source.</summary>
     public string Title { get; init; } = string.Empty;
 
+    /// <summary>Page/tweet text to display under the URL, if any.</summary>
+    public string? ContentText { get; init; }
+
     /// <summary>Direct media URL when the link itself is a downloadable file.</summary>
     public string? DirectUrl { get; init; }
 

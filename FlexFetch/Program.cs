@@ -12,6 +12,14 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 using Serilog;
 using ILogger = Serilog.ILogger;
 
+// Child-process entry used by DependencyInstallHostedService to install the
+// headless browser: runs Playwright's install command and exits without
+// starting the web application.
+if (args.Length > 0 && args[0] == "--install-browser")
+{
+    Environment.Exit(Microsoft.Playwright.Program.Main(new[] { "install", "chromium" }));
+}
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Data directory: hidden runtime folder (.flexfetch) holding the database,
@@ -81,10 +89,9 @@ builder.Services.AddSingleton<ITaskExecutor>(sp => new DownloaderTaskExecutor(
 builder.Services.AddSingleton<TaskService>();
 
 // Background periodic services.
-builder.Services.AddHostedService<ComponentUpgradeHostedService>();
+builder.Services.AddHostedService<DependencyInstallHostedService>();
 builder.Services.AddHostedService<CookieRefreshHostedService>();
 builder.Services.AddHostedService<CleanupHostedService>();
-builder.Services.AddHostedService<InactiveUserCleanupHostedService>();
 
 // Server-side session cookie authentication.
 var sessionHours = int.TryParse(builder.Configuration["Account:SessionHours"], out var sh) ? sh : 168;
@@ -122,6 +129,11 @@ if (!builder.Environment.IsDevelopment())
 // Bootstrap: create the initial admin when none exists and a password is configured.
 app.Services.GetRequiredService<UserService>()
     .EnsureInitialAdmin(builder.Configuration["Admin:InitialPassword"]);
+
+// Recover tasks after a restart: tasks left in Running/Queued are reset to
+// Queued and re-queued for execution.
+app.Services.GetRequiredService<TaskService>()
+    .RecoverPending();
 
 app.UseAuthentication();
 app.UseAuthorization();

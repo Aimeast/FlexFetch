@@ -10,9 +10,9 @@
     <header>
         <h1>FlexFetch</h1>
         <nav>
-            <a href="/index.html">Tasks</a>
-            <a href="/system.html">System</a>
-            <a href="/cookie.html">Cookies</a>
+            <a href="/index.html" class="nav-auth" style="display:none">Tasks</a>
+            <a href="/system.html" class="nav-auth" style="display:none">System</a>
+            <a href="/cookie.html" class="nav-auth" style="display:none">Cookies</a>
             <a href="#" id="logout-link" style="display:none">Logout</a>
         </nav>
     </header>
@@ -44,17 +44,63 @@
 
             <div class="card">
                 <h2>My tasks</h2>
-                <table id="task-table">
-                    <thead>
-                        <tr><th>File</th><th>Status</th><th>Progress</th><th>Error</th><th></th></tr>
-                    </thead>
-                    <tbody></tbody>
-                </table>
+                <div class="table-wrap">
+                    <table id="task-table">
+                        <thead>
+                            <tr>
+                                <th>File</th>
+                                <th>Size</th>
+                                <th>Status</th>
+                                <th>Created</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
             </div>
         </div>
     </main>
 
     <script>
+        const STATUS = { 0: 'Queued', 1: 'Running', 2: 'Completed', 3: 'Failed' };
+        let refreshTimer = null;
+        let refreshBusy = false;
+        let currentRole = 'User';
+        const REFRESH_INTERVAL_MS = 3000;
+
+        // Chain refreshes with setTimeout instead of setInterval: the next
+        // tick is scheduled only after the previous loadTasks finishes, so
+        // slow responses never pile up concurrent DOM updates (which froze
+        // the page).
+        async function refreshLoop() {
+            if (!refreshBusy) {
+                refreshBusy = true;
+                try {
+                    await loadTasks();
+                } catch (e) {
+                    // A failed refresh must not stop the loop.
+                } finally {
+                    refreshBusy = false;
+                }
+            }
+            if (refreshTimer !== null) {
+                refreshTimer = setTimeout(refreshLoop, REFRESH_INTERVAL_MS);
+            }
+        }
+
+        function startRefresh() {
+            stopRefresh();
+            refreshLoop();
+        }
+
+        function stopRefresh() {
+            if (refreshTimer !== null) {
+                clearTimeout(refreshTimer);
+                refreshTimer = null;
+            }
+        }
+
         async function api(path, options) {
             const res = await fetch(path, options);
             if (res.status === 401) { showAuth(); return null; }
@@ -66,16 +112,28 @@
         }
 
         function showAuth() {
+            stopRefresh();
+            currentRole = 'User';
             document.getElementById('auth-section').style.display = 'block';
             document.getElementById('app-section').style.display = 'none';
             document.getElementById('logout-link').style.display = 'none';
+            setNavLinks(false);
         }
 
-        function showApp() {
+        function showApp(role) {
+            currentRole = role || 'User';
             document.getElementById('auth-section').style.display = 'none';
             document.getElementById('app-section').style.display = 'block';
             document.getElementById('logout-link').style.display = 'inline';
+            setNavLinks(true);
             loadTasks();
+            startRefresh();
+        }
+
+        // Tasks/System/Cookies are admin-only; regular users see only Logout.
+        function setNavLinks(visible) {
+            const display = visible && currentRole === 'Admin' ? 'inline' : 'none';
+            document.querySelectorAll('.nav-auth').forEach(a => { a.style.display = display; });
         }
 
         async function login() {
@@ -88,7 +146,8 @@
                 });
                 if (!res.ok) { msg.className = 'msg error'; msg.textContent = 'Login failed'; return; }
                 msg.className = 'msg';
-                showApp();
+                const body = await res.json().catch(() => ({}));
+                showApp(body.role);
             } catch (e) { msg.className = 'msg error'; msg.textContent = e.message; }
         }
 
@@ -129,23 +188,162 @@
         async function loadTasks() {
             const tasks = await api('/api/tasks');
             if (!tasks) return;
+            taskCache = tasks;
             const tbody = document.querySelector('#task-table tbody');
-            tbody.innerHTML = '';
+
+            const children = new Map();
+            const parents = [];
             for (const t of tasks) {
-                const tr = document.createElement('tr');
-                const statusClass = t.status === 'Completed' ? 'ok' : t.status === 'Failed' ? 'err' : 'warn';
-                tr.innerHTML =
-                    '<td>' + esc(t.fileName || t.url) + '</td>' +
-                    '<td><span class="badge ' + statusClass + '">' + t.status + '</span></td>' +
-                    '<td><progress value="' + (t.progress || 0) + '" max="100"></progress></td>' +
-                    '<td class="muted">' + esc(t.errorMessage || '') + '</td>' +
-                    '<td>' +
-                        '<button class="secondary" onclick="retryTask(\'' + t.id + '\')">Retry</button> ' +
-                        '<button class="secondary" onclick="shareTask(\'' + t.id + '\')">Share</button> ' +
-                        '<button class="danger" onclick="deleteTask(\'' + t.id + '\')">Delete</button>' +
-                    '</td>';
-                tbody.appendChild(tr);
+                if (t.parentId) {
+                    if (!children.has(t.parentId)) children.set(t.parentId, []);
+                    children.get(t.parentId).push(t);
+                } else {
+                    parents.push(t);
+                }
             }
+
+            // Expected ordered row descriptors: URL header + parent + children.
+            // Number file rows only when the group contains more than one
+            // file; a single file (any link type) gets no number.
+            const expected = [];
+            for (const t of parents) {
+                // Tasks with tweet text (Twitter) show the content row instead
+                // of the URL header row.
+                if (t.contentText) {
+                    expected.push({ key: 'content:' + t.id, html: contentRowHtml(t) });
+                } else {
+                    expected.push({ key: 'url:' + t.id, html: urlRowHtml(t) });
+                }
+                const kids = children.get(t.id) || [];
+                const fileCount = (t.fileName ? 1 : 0) + kids.length;
+                const showIndex = fileCount > 1;
+                let n = 1;
+                expected.push({ key: 'task:' + t.id, html: taskRowHtml(t, showIndex && t.fileName ? n++ : 0) });
+                for (let i = 0; i < kids.length; i++) {
+                    expected.push({ key: 'task:' + kids[i].id, html: taskRowHtml(kids[i], showIndex ? n++ : 0) });
+                }
+            }
+
+            // Index existing rows by key, then reconcile: reuse unchanged rows
+            // (so page text selection is not disturbed), update only rows whose
+            // content changed, and drop rows that no longer exist.
+            const existing = new Map();
+            for (const tr of Array.from(tbody.children)) {
+                existing.set(tr.dataset.taskKey, tr);
+            }
+
+            const ordered = [];
+            for (const item of expected) {
+                const tr = existing.get(item.key);
+                if (tr) {
+                    // Update cell by cell: leave unchanged cells untouched so
+                    // selected page text is not cleared by the refresh.
+                    const tmp = document.createElement('tr');
+                    tmp.innerHTML = item.html;
+                    if (tr.cells.length === tmp.cells.length) {
+                        for (let i = 0; i < tr.cells.length; i++) {
+                            if (tr.cells[i].innerHTML !== tmp.cells[i].innerHTML) {
+                                tr.cells[i].innerHTML = tmp.cells[i].innerHTML;
+                            }
+                        }
+                    } else {
+                        tr.innerHTML = item.html;
+                    }
+                    existing.delete(item.key);
+                    ordered.push(tr);
+                } else {
+                    const newTr = document.createElement('tr');
+                    newTr.dataset.taskKey = item.key;
+                    newTr.innerHTML = item.html;
+                    ordered.push(newTr);
+                }
+            }
+            for (const tr of existing.values()) {
+                tr.remove();
+            }
+            // Re-append only when the DOM order differs from the expected
+            // order; otherwise leave rows untouched so a text selection in
+            // the page survives the refresh.
+            const currentKeys = Array.from(tbody.children).map(tr => tr.dataset.taskKey);
+            const expectedKeys = ordered.map(tr => tr.dataset.taskKey);
+            const orderMatches = currentKeys.length === expectedKeys.length
+                && currentKeys.every((k, i) => k === expectedKeys[i]);
+            if (!orderMatches) {
+                for (const tr of ordered) {
+                    tbody.appendChild(tr);
+                }
+            }
+        }
+
+        function urlRowHtml(t) {
+            return '<td colspan="5" class="group-url-cell">' + esc(t.url) + '</td>';
+        }
+
+        function contentRowHtml(t) {
+            return '<td colspan="5" class="content-cell">' + esc(t.contentText) + '</td>';
+        }
+
+        function taskRowHtml(t, index) {
+            const statusClass = t.status === 2 ? 'ok' : t.status === 3 ? 'err' : 'warn';
+            const statusText = STATUS[t.status] || ('Unknown(' + t.status + ')');
+            const errHtml = t.errorMessage
+                ? '<span class="error-inline">' + esc(t.errorMessage) + '</span>'
+                : '';
+            const actions = [];
+            // Show Retry for failed tasks and for tasks still sitting queued
+            // (e.g. after an unexpected service stop the status may be left
+            // queued without an error message — retry restarts them).
+            if (t.status === 3 || t.status === 0) {
+                actions.push('<button class="secondary" onclick="retryTask(\'' + t.id + '\')">Retry</button>');
+            }
+            // Share/Delete act on the whole task group, so they appear only
+            // on the parent row — not on child (single-file) rows.
+            if (!t.parentId) {
+                actions.push('<button class="secondary" onclick="shareTask(\'' + t.id + '\')">Share</button>');
+                actions.push('<button class="danger" onclick="askDelete(\'' + t.id + '\')">Delete</button>');
+            }
+
+            // Multiple files of one group are numbered in front of the name.
+            const indexHtml = index ? '<span class="file-index">' + index + '.</span> ' : '';
+
+            let nameHtml;
+            if (t.status === 2 && t.fileName) {
+                nameHtml = '<a class="file-link" href="/api/tasks/' + encodeURIComponent(t.id) + '/file">' + esc(t.fileName) + '</a>';
+            } else {
+                nameHtml = '<span class="file-name">' + esc(t.fileName || t.url) + '</span>';
+            }
+
+            return '<td data-label="File">' + indexHtml + nameHtml + errHtml + '</td>' +
+                '<td data-label="Size">' + formatTaskSize(t) + '</td>' +
+                '<td data-label="Status"><span class="badge ' + statusClass + '">' + statusText + '</span></td>' +
+                '<td data-label="Created" class="muted">' + esc(formatTime(t.createdAt)) + '</td>' +
+                '<td class="actions">' + actions.join(' ') + '</td>';
+        }
+
+        function formatTaskSize(t) {
+            if (t.fileSize == null) {
+                return '-';
+            }
+            const total = t.fileSize;
+            if (t.status === 1 && t.progress != null) {
+                const done = Math.round(total * (t.progress / 100));
+                return fmtSize(done) + ' / ' + fmtSize(total);
+            }
+            return fmtSize(total);
+        }
+
+        function fmtSize(bytes) {
+            if (bytes == null) return '-';
+            const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+            let i = 0;
+            while (bytes >= 1024 && i < units.length - 1) { bytes /= 1024; i++; }
+            return (i ? bytes.toFixed(1) : bytes) + ' ' + units[i];
+        }
+
+        function formatTime(iso) {
+            if (!iso) return '-';
+            const d = new Date(iso);
+            return d.toLocaleString();
         }
 
         async function retryTask(id) {
@@ -156,17 +354,31 @@
         async function shareTask(id) {
             try {
                 const body = await api('/api/tasks/' + id + '/share', { method: 'POST' });
-                const origin = location.origin;
-                prompt('Share link:', origin + '/share.html?token=' + body.token);
+                prompt('Share link:', location.origin + '/share.html?token=' + body.token);
             } catch (e) { alert(e.message); }
         }
 
-        async function deleteTask(id) {
+        async function askDelete(id) {
+            const t = await findTask(id);
+            if (!t) return;
+            const fileName = t.fileName || '-';
+            const ok = confirm(
+                'Delete this task?\n\nURL: ' + t.url + '\nFile: ' + fileName +
+                '\n\nThe task and its downloaded files will be removed.');
+            if (!ok) return;
             try {
                 const res = await fetch('/api/tasks/' + id, { method: 'DELETE' });
                 if (!res.ok) throw new Error('Delete failed');
                 loadTasks();
             } catch (e) { alert(e.message); }
+        }
+
+        let taskCache = [];
+        async function findTask(id) {
+            if (taskCache.length === 0) {
+                taskCache = (await api('/api/tasks')) || [];
+            }
+            return taskCache.find(t => t.id === id);
         }
 
         function esc(s) {
@@ -176,8 +388,30 @@
 
         document.getElementById('logout-link').onclick = logout;
 
-        // Detect an existing session: fetch tasks; if 401 the auth form shows.
-        fetch('/api/tasks').then(r => { if (r.ok) showApp(); });
+        // When the user types or pastes text into the URL field, extract the
+        // first http(s) link from it (e.g. pasted text with surrounding words).
+        const urlInput = document.getElementById('url');
+        urlInput.addEventListener('input', () => {
+            const match = /https?:\/\/[-a-zA-Z0-9@:%._\+~#=]+[-a-zA-Z0-9@:%_\+.~#?&/=]*/.exec(urlInput.value);
+            if (match && match[0] !== urlInput.value) {
+                urlInput.value = match[0];
+            }
+        });
+
+        // Pause background refreshing while the tab is hidden.
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden') {
+                stopRefresh();
+            } else if (document.getElementById('app-section').style.display !== 'none') {
+                // startRefresh refreshes immediately and continues the loop.
+                startRefresh();
+            }
+        });
+
+        // Detect an existing session: fetch current user; if 401 the auth form shows.
+        fetch('/api/auth/me').then(r => {
+            if (r.ok) r.json().then(me => showApp(me.role));
+        });
     </script>
 </body>
 </html>

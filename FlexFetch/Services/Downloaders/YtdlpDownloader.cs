@@ -111,6 +111,9 @@ public class YtdlpDownloader : IDownloader
 
     public async Task DownloadAsync(TaskItem task, AnalysisResult analysis, Action<double> progress, CancellationToken cancellationToken)
     {
+        // Ensure yt-dlp is available before using it (lazy install).
+        await Ytdlp.EnsureInstalledAsync(cancellationToken);
+
         var ytdlp = new YoutubeDL { YoutubeDLPath = Ytdlp.BinaryPath };
         var outputPath = Storage.GetTaskDir(task.Id) + Path.DirectorySeparatorChar
             + (task.FileName ?? analysis.SuggestedFileName ?? "video.mp4");
@@ -149,6 +152,10 @@ public class YtdlpDownloader : IDownloader
         OptionSet options,
         CancellationToken cancellationToken)
     {
+        // Ensure yt-dlp is available before invoking the real binary
+        // (lazy install; tests inject a fake fetch delegate and skip this).
+        await Ytdlp.EnsureInstalledAsync(cancellationToken);
+
         var ytdlp = new YoutubeDL { YoutubeDLPath = Ytdlp.BinaryPath };
         return await ytdlp.RunVideoDataFetch(url, ct: cancellationToken, overrideOptions: options);
     }
