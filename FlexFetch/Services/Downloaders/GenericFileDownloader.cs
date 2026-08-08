@@ -33,13 +33,13 @@ public sealed class GenericFileDownloader : IDownloader
 
     public string Type => "Generic";
 
-    public int Priority => 0;
+    public bool IsDomainSpecific => false;
 
     public bool CanHandle(string url) =>
         url.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
         || url.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
 
-    public Task<AnalysisResult> AnalyzeAsync(string url, CancellationToken cancellationToken)
+    public Task<AnalysisResult> AnalyzeAsync(string url, string taskId, CancellationToken cancellationToken)
     {
         var fileName = FileNameRules.Sanitize(FileNameRules.InferFromUrl(url));
         return Task.FromResult(new AnalysisResult

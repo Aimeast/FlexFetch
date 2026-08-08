@@ -72,7 +72,21 @@ public sealed class CodeConventionTests
             violations.Add($"{rel}: tab indentation found");
         }
 
-        // 5. Using directives: before namespace, System first, alphabetical.
+        // 5. No non-ASCII printable characters (language convention: code and
+        //    comments are ASCII; the leading UTF-8 BOM U+FEFF is exempt).
+        var checkLines = text.Split("\r\n");
+        for (var i = 0; i < checkLines.Length; i++)
+        {
+            var line = checkLines[i];
+            var start = i == 0 && line.StartsWith('\uFEFF') ? 1 : 0;
+            var nonAscii = line[start..].FirstOrDefault(c => c > 0x7F);
+            if (nonAscii != '\0')
+            {
+                violations.Add($"{rel}: line {i + 1} contains non-ASCII character '\\u{(int)nonAscii:X4}'");
+            }
+        }
+
+        // 6. Using directives: before namespace, System first, alphabetical.
         CheckUsings(text, rel, violations);
     }
 

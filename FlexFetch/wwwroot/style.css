@@ -125,24 +125,42 @@ th, td {
 th { color: var(--muted); font-weight: 600; white-space: nowrap; }
 
 /* Column widths (fixed layout): the file column takes all remaining
-   space; Size/Status/Created/Actions keep fixed widths so they are never
+   space; Size/Status/Created keep fixed widths so they are never
    squeezed on narrow windows. */
 th:nth-child(1), td:nth-child(1) { width: auto; min-width: 0; }
-th:nth-child(2), td:nth-child(2) { width: 7rem; min-width: 7rem; }
+th:nth-child(2), td:nth-child(2) { width: 9rem; min-width: 9rem; }
 th:nth-child(3), td:nth-child(3) { width: 6.5rem; min-width: 6.5rem; }
 th:nth-child(4), td:nth-child(4) { width: 9.5rem; min-width: 9.5rem; }
-th:nth-child(5), td:nth-child(5) { width: 14rem; min-width: 14rem; }
 
 /* Group header row: the original download URL spanning all columns.
-   word-break here is essential — without it a long URL widens the row. */
+   Flex layout: URL text takes the remaining space (wraps, never overlaps
+   the right-aligned actions). */
 td.group-url-cell {
     background: #eef1f6;
     color: var(--muted);
     font-size: 0.78rem;
     font-family: "Cascadia Mono", Consolas, monospace;
-    word-break: break-all;
     border-bottom: 1px solid var(--border);
     padding: 0.3rem 0.6rem;
+}
+
+td.group-url-cell .url-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+td.group-url-cell .url-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    word-break: break-all;
+}
+
+td.group-url-cell .url-actions {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    display: flex;
+    gap: 0.5rem;
 }
 
 /* Extracted page/tweet text shown under the URL (single line, no wrapping). */
@@ -256,13 +274,16 @@ dialog.card p { word-break: break-all; }
         min-width: 0;
     }
 
-    td.actions::before { content: ""; width: 0; }
-
-    /* The URL header cell has no data-label; remove its pseudo-element
-       placeholder so the line does not get indented. */
-    td.group-url-cell::before { content: ""; width: 0; }
-
-    td.actions { text-align: left; white-space: normal; }
+    /* On phones each file-row cell shows its column header (data-label)
+       before the value: label floats left, value aligns right. Cells
+       without a data-label (URL/content rows) are unaffected. */
+    td[data-label] { text-align: right; }
+    td[data-label]::before {
+        content: attr(data-label);
+        float: left;
+        font-weight: 600;
+        margin-right: 0.5rem;
+    }
 
     .error-inline { display: inline; margin-left: 0.25rem; }
 

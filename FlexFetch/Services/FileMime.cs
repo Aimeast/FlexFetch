@@ -46,7 +46,7 @@ public static class FileMime
         ("video/x-msvideo", "avi"),
         ("video/x-mpeg", "mpg"),
         ("video/x-sgi-movie", "movie"),
-        // Audio — standard types first so m4a maps to audio/mp4 and wav to
+        // Audio - standard types first so m4a maps to audio/mp4 and wav to
         // audio/wav instead of their aliases.
         ("audio/mpeg", "mp3,mpga,mpega,mp2"),
         ("audio/mp3", "mp3"),
@@ -108,5 +108,16 @@ public static class FileMime
 
         var ext = Path.GetExtension(fileName);
         return ext.Length > 0 && ByExtension.TryGetValue(ext, out var mime) ? mime : "application/octet-stream";
+    }
+
+    /// <summary>
+    /// True when the file is mapped to a playable video/audio type (the
+    /// browser can play it inline); everything else downloads.
+    /// </summary>
+    public static bool IsMedia(string? fileName)
+    {
+        var mime = For(fileName);
+        return mime.StartsWith("video/", StringComparison.OrdinalIgnoreCase)
+            || mime.StartsWith("audio/", StringComparison.OrdinalIgnoreCase);
     }
 }

@@ -67,13 +67,17 @@ public sealed class StealthBrowserService : IAsyncDisposable
     public static string? FindFirstExisting(IReadOnlyList<string> paths) =>
         paths.FirstOrDefault(File.Exists);
 
+    /// <summary>True when a system browser (Chrome/Edge) is already available.</summary>
+    public bool IsSystemBrowserDetected() =>
+        FindFirstExisting(GetBrowserCandidates()) is not null;
+
     /// <summary>Candidate system browser paths per platform.</summary>
     public static IReadOnlyList<string> GetBrowserCandidates()
     {
         if (OperatingSystem.IsWindows())
         {
             var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            return new[]
+            var candidates = new List<string>
             {
                 Path.Combine(local, @"Google\Chrome\Application\chrome.exe"),
                 @"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -81,11 +85,14 @@ public sealed class StealthBrowserService : IAsyncDisposable
                 @"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
                 @"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
             };
+            AddPlaywrightChromium(candidates, Path.Combine(local, "ms-playwright"), "chrome-win", "chrome.exe");
+            return candidates;
         }
 
         if (OperatingSystem.IsLinux())
         {
-            return new[]
+            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            var candidates = new List<string>
             {
                 "/usr/bin/google-chrome-stable",
                 "/usr/bin/google-chrome",
@@ -93,13 +100,40 @@ public sealed class StealthBrowserService : IAsyncDisposable
                 "/usr/bin/chromium",
                 "/usr/bin/microsoft-edge",
             };
+            AddPlaywrightChromium(candidates, Path.Combine(home, ".cache", "ms-playwright"), "chrome-linux", "chrome");
+            return candidates;
         }
 
-        return new[]
+        var macHome = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var macCandidates = new List<string>
         {
             "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
             "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
         };
+        AddPlaywrightChromium(
+            macCandidates,
+            Path.Combine(macHome, "Library", "Caches", "ms-playwright"),
+            Path.Combine("chrome-mac", "Chromium.app", "Contents", "MacOS"),
+            "Chromium");
+        return macCandidates;
+    }
+
+    /// <summary>
+    /// Appends Playwright-installed Chromium executables (directories named
+    /// chromium-*) under the given browsers root, so a Playwright-installed
+    /// browser counts as available even without a system Chrome/Edge.
+    /// </summary>
+    private static void AddPlaywrightChromium(List<string> candidates, string browsersRoot, string subDir, string exeName)
+    {
+        if (!Directory.Exists(browsersRoot))
+        {
+            return;
+        }
+
+        foreach (var dir in Directory.EnumerateDirectories(browsersRoot, "chromium-*"))
+        {
+            candidates.Add(Path.Combine(dir, subDir, exeName));
+        }
     }
 
     /// <summary>Determines whether the idle-recycle deadline has passed.</summary>

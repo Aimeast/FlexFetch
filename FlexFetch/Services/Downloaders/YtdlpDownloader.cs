@@ -21,6 +21,7 @@ public class YtdlpDownloader : IDownloader
     protected readonly YtdlpService Ytdlp;
     protected readonly IProxyService Proxy;
     protected readonly StorageService Storage;
+    protected readonly CookiePoolService Cookies;
     protected readonly ILogger Log;
 
     private readonly Func<string, OptionSet, CancellationToken, Task<RunResult<VideoData>>> _fetchData;
@@ -30,25 +31,27 @@ public class YtdlpDownloader : IDownloader
         IProxyService proxy,
         StorageService storage,
         ILogger log,
+        CookiePoolService cookies,
         Func<string, OptionSet, CancellationToken, Task<RunResult<VideoData>>>? fetchData = null)
     {
         Ytdlp = ytdlp;
         Proxy = proxy;
         Storage = storage;
         Log = log;
+        Cookies = cookies;
         _fetchData = fetchData ?? DefaultFetchDataAsync;
     }
 
     public virtual string Type => "Ytdlp";
 
-    public virtual int Priority => 80;
+    public virtual bool IsDomainSpecific => false;
 
     public virtual bool CanHandle(string url) =>
         url.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
         || url.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Builds the yt-dlp option set for a fetch/download call.</summary>
-    public OptionSet BuildOptions(Uri url, string? outputPath = null)
+    public OptionSet BuildOptions(Uri url, string? outputPath = null, string? cookieFile = null)
     {
         var options = new OptionSet
         {
@@ -59,6 +62,11 @@ public class YtdlpDownloader : IDownloader
         if (outputPath is not null)
         {
             options.Output = outputPath;
+        }
+
+        if (cookieFile is not null)
+        {
+            options.Cookies = cookieFile;
         }
 
         var proxyUri = Proxy.GetProxyUri(url);
@@ -95,18 +103,147 @@ public class YtdlpDownloader : IDownloader
         };
     }
 
-    public async Task<AnalysisResult> AnalyzeAsync(string url, CancellationToken cancellationToken)
+    public async Task<AnalysisResult> AnalyzeAsync(string url, string taskId, CancellationToken cancellationToken)
     {
         var target = new Uri(url);
         var options = BuildOptions(target);
         var result = await _fetchData(url, options, cancellationToken);
         if (!result.Success || result.Data is null)
         {
-            throw new InvalidOperationException(
-                $"yt-dlp failed: {string.Join(';', result.ErrorOutput.Where(l => l.StartsWith("ERROR:")).Take(3))}");
+            result = await RetryWithCookiesIfAuthAsync(url, taskId, options, result.ErrorOutput, cancellationToken)
+                ?? throw BuildFailure(result.ErrorOutput, "yt-dlp failed");
         }
 
         return BuildAnalysis(result.Data);
+    }
+
+    /// <summary>
+    /// For auth-class yt-dlp errors (only when the downloader enables it):
+    /// attaches pool cookies once and retries; returns the retried result, or
+    /// null when the error is not auth-class or no cookies are available.
+    /// When cookies were attached and the retry still fails, an
+    /// AuthRequiredException is thrown instead.
+    /// </summary>
+    private async Task<RunResult<VideoData>?> RetryWithCookiesIfAuthAsync(
+        string url,
+        string taskId,
+        OptionSet options,
+        IReadOnlyList<string> errorOutput,
+        CancellationToken cancellationToken)
+    {
+        if (!AuthRetryEnabled || !TryClassifyAuthError(errorOutput, out var reason))
+        {
+            return null;
+        }
+
+        var cookieFile = AttachCookiesIfAny(url, taskId);
+        if (cookieFile is null)
+        {
+            throw new AuthRequiredException(reason, BuildFailureMessage(errorOutput, "yt-dlp failed"));
+        }
+
+        try
+        {
+            options.Cookies = cookieFile;
+            var retried = await _fetchData(url, options, cancellationToken);
+            if (!retried.Success || retried.Data is null)
+            {
+                throw new AuthRequiredException(
+                    reason, BuildFailureMessage(retried.ErrorOutput, "yt-dlp failed with cookies"));
+            }
+
+            return retried;
+        }
+        finally
+        {
+            WriteBackCookiesAndCleanup(cookieFile, taskId);
+        }
+    }
+
+    /// <summary>
+    /// True when the downloader should attach pool cookies and retry once on
+    /// auth-class errors (only YouTube enables this).
+    /// </summary>
+    protected virtual bool AuthRetryEnabled => false;
+
+    private string? AttachCookiesIfAny(string url, string taskId)
+    {
+        var cookies = Cookies.GetCookiesForUrl(new Uri(url));
+        if (cookies.Count == 0)
+        {
+            return null;
+        }
+
+        CookieFile.Write(Storage.DataDir, taskId, cookies);
+        return CookieFile.GetPath(Storage.DataDir, taskId);
+    }
+
+    private void WriteBackCookiesAndCleanup(string cookieFile, string taskId)
+    {
+        var updated = CookieFile.Read(cookieFile);
+        if (updated.Count > 0)
+        {
+            Cookies.UpsertCookies(updated);
+        }
+
+        CookieFile.Delete(Storage.DataDir, taskId);
+    }
+
+    private static Exception BuildFailure(IReadOnlyList<string> errorOutput, string prefix) =>
+        new InvalidOperationException(BuildFailureMessage(errorOutput, prefix));
+
+    private static string BuildFailureMessage(IReadOnlyList<string> errorOutput, string prefix) =>
+        $"{prefix}: {string.Join(';', errorOutput.Where(l => l.StartsWith("ERROR:", StringComparison.OrdinalIgnoreCase)).Take(3))}";
+
+    /// <summary>
+    /// Classifies yt-dlp ERROR lines that indicate authentication/restriction.
+    /// Matching deliberately avoids the apostrophe inside "you're" (its
+    /// encoding is unstable across environments), using the stable substrings
+    /// "sign in to confirm" and "not a bot" instead.
+    /// </summary>
+    private static bool TryClassifyAuthError(IReadOnlyList<string> errorOutput, out AuthFailureReason reason)
+    {
+        reason = AuthFailureReason.Unknown;
+        foreach (var line in errorOutput)
+        {
+            if (!line.StartsWith("ERROR:", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (line.Contains("sign in to confirm", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("not a bot", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("login_required", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("login required", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("please sign in", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("--cookies", StringComparison.OrdinalIgnoreCase))
+            {
+                reason = AuthFailureReason.LoginRequired;
+                return true;
+            }
+
+            if (line.Contains("private video", StringComparison.OrdinalIgnoreCase))
+            {
+                reason = AuthFailureReason.Private;
+                return true;
+            }
+
+            if (line.Contains("age-restricted", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("age restricted", StringComparison.OrdinalIgnoreCase))
+            {
+                reason = AuthFailureReason.AgeRestricted;
+                return true;
+            }
+
+            if (line.Contains("members only", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("member-only", StringComparison.OrdinalIgnoreCase))
+            {
+                reason = AuthFailureReason.MembersOnly;
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public async Task DownloadAsync(TaskItem task, AnalysisResult analysis, Action<double> progress, CancellationToken cancellationToken)
@@ -133,8 +270,13 @@ public class YtdlpDownloader : IDownloader
 
         if (!result.Success)
         {
-            throw new InvalidOperationException(
-                $"yt-dlp download failed: {string.Join(';', result.ErrorOutput.Where(l => l.StartsWith("ERROR:")).Take(3))}");
+            if (TryClassifyAuthError(result.ErrorOutput, out var reason))
+            {
+                throw new AuthRequiredException(
+                    reason, BuildFailureMessage(result.ErrorOutput, "yt-dlp download failed"));
+            }
+
+            throw BuildFailure(result.ErrorOutput, "yt-dlp download failed");
         }
 
         task.FileName = Path.GetFileName(outputPath);

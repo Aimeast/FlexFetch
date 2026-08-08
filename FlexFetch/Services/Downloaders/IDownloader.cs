@@ -41,14 +41,18 @@ public interface IDownloader
     /// <summary>Unique downloader identifier (e.g. "Generic").</summary>
     string Type { get; }
 
-    /// <summary>Attempt priority; higher values are tried first.</summary>
-    int Priority { get; }
+    /// <summary>
+    /// True for domain-specific downloaders (e.g. YouTube/Twitter); false for
+    /// generic fallbacks (yt-dlp/Html/Browser/Generic). A URL matching more
+    /// than one specific downloader is a runtime error.
+    /// </summary>
+    bool IsDomainSpecific { get; }
 
     /// <summary>Match rule: whether this downloader claims the URL.</summary>
     bool CanHandle(string url);
 
     /// <summary>Parses the URL and extracts title / direct link / children.</summary>
-    Task<AnalysisResult> AnalyzeAsync(string url, CancellationToken cancellationToken);
+    Task<AnalysisResult> AnalyzeAsync(string url, string taskId, CancellationToken cancellationToken);
 
     /// <summary>Downloads the analyzed resource into the task's storage directory.</summary>
     Task DownloadAsync(TaskItem task, AnalysisResult analysis, Action<double> progress, CancellationToken cancellationToken);

@@ -1,4 +1,6 @@
-﻿using FlexFetch.Config;
+﻿using System.Security.Cryptography;
+using System.Text;
+using FlexFetch.Config;
 using FlexFetch.Data;
 using FlexFetch.Entities;
 using FlexFetch.Enums;
@@ -139,28 +141,44 @@ public sealed class UserService
     }
 
     /// <summary>
-    /// Creates the initial admin if none exists and a bootstrap password
-    /// is provided. Password is supplied via configuration (appsettings/env),
-    /// never via the runtime config registry.
+    /// Creates the initial admin when the database has no users yet - admin is
+    /// always the first account, so the name can never be taken by a regular
+    /// user. Password priority: configured value, else a simple dev password
+    /// in development, else a generated strong password. Returns the created
+    /// password, or null when no admin was created.
     /// </summary>
-    public void EnsureInitialAdmin(string? bootstrapPassword)
+    public string? EnsureInitialAdmin(string? configuredPassword, bool isDevelopment)
     {
-        if (string.IsNullOrWhiteSpace(bootstrapPassword))
+        if (_users.GetAll().Any())
         {
-            return;
+            return null; // database already initialized; never touch accounts
         }
 
-        var hasAdmin = _users.GetAll().Any(u => u.Role == UserRole.Admin && u.Status == UserStatus.Active);
-        if (!hasAdmin)
+        var password = configuredPassword
+            ?? (isDevelopment ? "admin" : GenerateStrongPassword());
+
+        _users.Insert(new User
         {
-            _users.Insert(new User
-            {
-                UserName = "admin",
-                PasswordHash = PasswordHasher.Hash(bootstrapPassword),
-                Role = UserRole.Admin,
-                Status = UserStatus.Active,
-            });
+            UserName = "admin",
+            PasswordHash = PasswordHasher.Hash(password),
+            Role = UserRole.Admin,
+            Status = UserStatus.Active,
+        });
+
+        return password;
+    }
+
+    private static string GenerateStrongPassword()
+    {
+        const string chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+";
+        var bytes = new byte[18];
+        RandomNumberGenerator.Fill(bytes);
+        var sb = new StringBuilder(chars.Length);
+        foreach (var b in bytes)
+        {
+            sb.Append(chars[b % chars.Length]);
         }
+        return sb.ToString();
     }
 
     private string GetConfig(string key) => _config.Get(key) ?? ConfigRegistry.GetDefault(key);

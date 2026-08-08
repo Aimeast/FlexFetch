@@ -19,14 +19,18 @@ public sealed class YouTubeDownloader : YtdlpDownloader
         IProxyService proxy,
         StorageService storage,
         ILogger log,
+        CookiePoolService cookies,
         Func<string, OptionSet, CancellationToken, Task<RunResult<VideoData>>>? fetchData = null)
-        : base(ytdlp, proxy, storage, log, fetchData)
+        : base(ytdlp, proxy, storage, log, cookies, fetchData)
     {
     }
 
     public override string Type => "YouTube";
 
-    public override int Priority => 100;
+    public override bool IsDomainSpecific => true;
+
+    /// <summary>YouTube enables the cookie attach-and-retry on auth-class errors.</summary>
+    protected override bool AuthRetryEnabled => true;
 
     public override bool CanHandle(string url) =>
         url.Contains("youtube.com", StringComparison.OrdinalIgnoreCase)

@@ -35,7 +35,8 @@ public sealed class FileNameRulesTests
     public void Sanitize_HandlesMultibyteUtf8()
     {
         // Each CJK char is 3 bytes in UTF-8; 60 chars = 180 bytes exactly.
-        var name = new string('中', 60) + ".mp4";
+        // \u4E2D is a CJK char written as an ASCII escape so the source stays ASCII.
+        var name = new string('\u4E2D', 60) + ".mp4";
 
         var result = FileNameRules.Sanitize(name);
 

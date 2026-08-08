@@ -26,13 +26,13 @@ public sealed partial class HtmlResourceDetector : IDownloader
 
     public string Type => "Html";
 
-    public int Priority => 50;
+    public bool IsDomainSpecific => false;
 
     public bool CanHandle(string url) =>
         url.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
         || url.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
 
-    public async Task<AnalysisResult> AnalyzeAsync(string url, CancellationToken cancellationToken)
+    public async Task<AnalysisResult> AnalyzeAsync(string url, string taskId, CancellationToken cancellationToken)
     {
         var pageUrl = new Uri(url);
         var handler = _proxy.CreateHandler(pageUrl);

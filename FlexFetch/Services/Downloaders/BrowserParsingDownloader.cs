@@ -9,8 +9,8 @@ namespace FlexFetch.Services.Downloaders;
 
 /// <summary>
 /// Browser-assisted media detection: renders a page in the stealth browser and
-/// SNIFFS the network activity (responses) for media streams — video/audio
-/// content types, HLS/DASH manifests — instead of parsing the loaded HTML
+/// SNIFFS the network activity (responses) for media streams - video/audio
+/// content types, HLS/DASH manifests - instead of parsing the loaded HTML
 /// (which HtmlResourceDetector already does). Discovered media URLs become
 /// child tasks. Used as the degradation step after plain-HTML analysis fails.
 /// </summary>
@@ -27,13 +27,13 @@ public sealed class BrowserParsingDownloader : IDownloader
 
     public string Type => "Browser";
 
-    public int Priority => 30;
+    public bool IsDomainSpecific => false;
 
     public bool CanHandle(string url) =>
         url.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
         || url.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
 
-    public async Task<AnalysisResult> AnalyzeAsync(string url, CancellationToken cancellationToken)
+    public async Task<AnalysisResult> AnalyzeAsync(string url, string taskId, CancellationToken cancellationToken)
     {
         var page = await _browser.NewPageAsync();
         try

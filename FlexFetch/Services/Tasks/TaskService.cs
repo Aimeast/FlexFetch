@@ -171,9 +171,9 @@ public sealed class TaskService : IDisposable
     /// <summary>
     /// Recovers tasks after a restart: tasks left in Running or Queued are
     /// reset to Queued and re-queued. Failed is reserved for real download
-    /// failures and is not re-queued.
+    /// failures and is not re-queued. Returns the number of re-queued tasks.
     /// </summary>
-    public void RecoverPending()
+    public int RecoverPending()
     {
         var orphans = _tasks.GetByStatus(TaskStatus.Running)
             .Concat(_tasks.GetByStatus(TaskStatus.Queued))
@@ -193,6 +193,8 @@ public sealed class TaskService : IDisposable
 
             _log.Information("Task {TaskId} recovered after restart", task.Id);
         }
+
+        return orphans.Count;
     }
 
     /// <summary>
@@ -352,7 +354,7 @@ public sealed class TaskService : IDisposable
             catch (OperationCanceledException)
             {
                 // The task was cancelled: either deleted (it no longer exists
-                // in the store — write nothing) or the service is shutting
+                // in the store - write nothing) or the service is shutting
                 // down (Dispose cancelled the work; status stays Running so
                 // a restart's RecoverPending re-queues it).
                 if (_tasks.GetById(task.Id) is null)
@@ -364,6 +366,21 @@ public sealed class TaskService : IDisposable
                 task.ErrorMessage = null;
                 _tasks.Update(task);
                 _log.Information("Task {TaskId} interrupted, will recover after restart", task.Id);
+                if (task.ParentId is not null)
+                {
+                    AggregateParent(task.ParentId);
+                }
+                return;
+            }
+            catch (AuthRequiredException ex)
+            {
+                // Authentication/restriction errors are deterministic: cookies
+                // were already attached (or were unavailable), so retrying the
+                // whole task will not help. Fail immediately.
+                task.ErrorMessage = ex.Message;
+                task.Status = TaskStatus.Failed;
+                _tasks.Update(task);
+                _log.Warning(ex, "Task {TaskId} failed with auth/restriction error", task.Id);
                 if (task.ParentId is not null)
                 {
                     AggregateParent(task.ParentId);

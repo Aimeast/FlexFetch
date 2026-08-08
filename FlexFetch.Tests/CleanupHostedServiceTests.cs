@@ -65,7 +65,8 @@ public sealed class CleanupHostedServiceTests
         _shares.Insert(new ShareToken { TaskId = "t2", ExpiresAt = DateTime.UtcNow.AddHours(1) });
         _shares.Insert(new ShareToken { TaskId = "t3" });
 
-        var service = CreateService();
+        using var taskService = new TaskService(_tasks!, _shares!, _config!, new NoopExecutor(), _storage!, Log);
+        var service = CreateService(taskService);
         await service.ExecuteOnceForTestAsync(CancellationToken.None);
 
         Assert.IsNull(_shares.GetByToken(_shares.GetByTaskId("t1").SingleOrDefault()?.Token ?? ""));
@@ -87,7 +88,8 @@ public sealed class CleanupHostedServiceTests
         _storage.EnsureTaskDir(orphanId);
         File.WriteAllText(_storage.GetTaskFilePath(orphanId, "b.bin"), "y");
 
-        var service = CreateService();
+        using var taskService = new TaskService(_tasks!, _shares!, _config!, new NoopExecutor(), _storage!, Log);
+        var service = CreateService(taskService);
         await service.ExecuteOnceForTestAsync(CancellationToken.None);
 
         Assert.IsTrue(Directory.Exists(_storage.GetTaskDir(task.Id)));
@@ -103,7 +105,7 @@ public sealed class CleanupHostedServiceTests
         _users!.Insert(active);
         _users.Insert(inactive);
 
-        var taskService = new TaskService(_tasks!, _shares!, _config, new NoopExecutor(), _storage!, Log);
+        using var taskService = new TaskService(_tasks!, _shares!, _config, new NoopExecutor(), _storage!, Log);
         var activeTaskId = taskService.Submit(active.Id, "https://example.com/a.bin");
         var inactiveTaskId = taskService.Submit(inactive.Id, "https://example.com/b.bin");
 
@@ -125,7 +127,7 @@ public sealed class CleanupHostedServiceTests
         var old = new User { UserName = "old", CreatedAt = DateTime.UtcNow.AddDays(-365) };
         _users!.Insert(old);
 
-        var taskService = new TaskService(_tasks!, _shares!, _config, new NoopExecutor(), _storage!, Log);
+        using var taskService = new TaskService(_tasks!, _shares!, _config, new NoopExecutor(), _storage!, Log);
         var taskId = taskService.Submit(old.Id, "https://example.com/a.bin");
 
         var service = CreateService(taskService);

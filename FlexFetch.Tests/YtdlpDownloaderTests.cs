@@ -24,7 +24,9 @@ public sealed class YtdlpDownloaderTests
         var proxy = new DirectProxyService();
         var ytdlp = new YtdlpService(proxy, config, Log, dir);
         var storage = new StorageService(dir);
-        return new YtdlpDownloader(ytdlp, proxy, storage, Log, fetch);
+        var store = new LiteDbStore(Path.Combine(dir, "flexfetch.db"));
+        var cookies = new CookiePoolService(new CookieRepository(store));
+        return new YtdlpDownloader(ytdlp, proxy, storage, Log, cookies, fetch);
     }
 
     [TestMethod]
@@ -39,18 +41,22 @@ public sealed class YtdlpDownloaderTests
     }
 
     [TestMethod]
-    public void Priority_SitsBelowYoutubeAboveHtml()
+    public void IsDomainSpecific_FalseForGenericChain()
     {
         var downloader = CreateDownloader();
+        var ytDir = TestApp.CreateTempDataDir();
+        var ytStore = new LiteDbStore(Path.Combine(ytDir, "flexfetch.db"));
         var youtube = new YouTubeDownloader(
-            new YtdlpService(new DirectProxyService(), new InMemoryConfigRepository(), Log, TestApp.CreateTempDataDir()),
+            new YtdlpService(new DirectProxyService(), new InMemoryConfigRepository(), Log, ytDir),
             new DirectProxyService(),
-            new StorageService(TestApp.CreateTempDataDir()),
-            Log);
+            new StorageService(ytDir),
+            Log,
+            new CookiePoolService(new CookieRepository(ytStore)));
 
-        Assert.IsGreaterThan(50, downloader.Priority); // above Html (50)
-        Assert.IsLessThan(100, downloader.Priority);   // below YouTube (100)
-        Assert.IsGreaterThan(downloader.Priority, youtube.Priority);
+        // YtdlpDownloader is part of the generic fallback chain; YouTube is
+        // a domain-specific downloader used alone.
+        Assert.IsFalse(downloader.IsDomainSpecific);
+        Assert.IsTrue(youtube.IsDomainSpecific);
     }
 
     [TestMethod]
@@ -101,7 +107,7 @@ public sealed class YtdlpDownloaderTests
                 Array.Empty<string>(),
                 new VideoData { Title = "Fetched", Extension = "webm", Url = "https://example.com/v.webm" }));
 
-        var analysis = await downloader.AnalyzeAsync("https://www.example.com/video/xyz789", CancellationToken.None);
+        var analysis = await downloader.AnalyzeAsync("https://www.example.com/video/xyz789", "task-1", CancellationToken.None);
 
         Assert.AreEqual("Fetched", analysis.Title);
         Assert.AreEqual("Fetched.webm", analysis.SuggestedFileName);
@@ -114,7 +120,29 @@ public sealed class YtdlpDownloaderTests
             new RunResult<VideoData>(false, new[] { "ERROR: Unsupported URL" }, null!));
 
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(
-            () => downloader.AnalyzeAsync("https://example.com/page", CancellationToken.None));
+            () => downloader.AnalyzeAsync("https://example.com/page", "task-1", CancellationToken.None));
+    }
+
+    [TestMethod]
+    public async Task AnalyzeAsync_AuthError_GenericDownloaderDoesNotRetry()
+    {
+        // The generic YtdlpDownloader does not enable the cookie attach-and-
+        // retry (only YouTube does), so an auth-class error surfaces as a
+        // plain InvalidOperationException without a retry.
+        var calls = 0;
+        var downloader = CreateDownloader(async (_, _, _) =>
+        {
+            calls++;
+            return new RunResult<VideoData>(
+                false,
+                new[] { "ERROR: [site] abc: Sign in to confirm you're not a bot. Use --cookies." },
+                null!);
+        });
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => downloader.AnalyzeAsync("https://www.example.com/video/xyz789", "task-1", CancellationToken.None));
+
+        Assert.AreEqual(1, calls); // no cookie retry on the generic downloader
     }
 
     private sealed class InMemoryConfigRepository : IConfigRepository

@@ -16,26 +16,35 @@ public sealed class DownloaderFactoryTests
         .CreateLogger();
 
     [TestMethod]
-    public void SelectDownloaders_ReturnsMatching_OrderedByPriority()
+    public void SelectDownloaders_SpecificDownloader_ReturnsItAlone()
     {
-        var high = new FakeDownloader("High", 100, "youtube.com");
-        var low = new FakeDownloader("Low", 10, "youtube.com");
-        var generic = new FakeDownloader("Generic", 0, "http");
-        var factory = new DownloaderFactory(new IDownloader[] { generic, low, high });
+        var youtube = new FakeDownloader("YouTube", isDomainSpecific: true, "youtube.com");
+        var generic = new FakeDownloader("Generic", isDomainSpecific: false, "http");
+        var factory = new DownloaderFactory(new IDownloader[] { generic, youtube });
 
         var selected = factory.SelectDownloaders("https://www.youtube.com/watch?v=abc");
 
-        Assert.HasCount(3, selected);
-        Assert.AreEqual("High", selected[0].Type);
-        Assert.AreEqual("Low", selected[1].Type);
-        Assert.AreEqual("Generic", selected[2].Type);
+        // A domain-specific downloader is used alone - no generic fallback.
+        Assert.HasCount(1, selected);
+        Assert.AreEqual("YouTube", selected[0].Type);
     }
 
     [TestMethod]
-    public void SelectDownloaders_FiltersNonMatching()
+    public void SelectDownloaders_MultipleSpecificMatches_Throws()
     {
-        var youtube = new FakeDownloader("YouTube", 100, "youtube.com");
-        var generic = new FakeDownloader("Generic", 0, "http");
+        var a = new FakeDownloader("A", isDomainSpecific: true, "youtube.com");
+        var b = new FakeDownloader("B", isDomainSpecific: true, "youtube.com");
+        var factory = new DownloaderFactory(new IDownloader[] { a, b });
+
+        Assert.ThrowsExactly<InvalidOperationException>(
+            () => factory.SelectDownloaders("https://www.youtube.com/watch?v=abc"));
+    }
+
+    [TestMethod]
+    public void SelectDownloaders_NoSpecificMatch_UsesGenericChain()
+    {
+        var youtube = new FakeDownloader("YouTube", isDomainSpecific: true, "youtube.com");
+        var generic = new FakeDownloader("Generic", isDomainSpecific: false, "http");
         var factory = new DownloaderFactory(new IDownloader[] { youtube, generic });
 
         var selected = factory.SelectDownloaders("https://example.com/file.bin");
@@ -47,12 +56,11 @@ public sealed class DownloaderFactoryTests
     [TestMethod]
     public void SelectDownloaders_DirectMediaLink_PromotesGenericFirst()
     {
-        var ytdlp = new FakeDownloader("Ytdlp", 80, "http");
-        var generic = new FakeDownloader("Generic", 0, "http");
+        var ytdlp = new FakeDownloader("Ytdlp", isDomainSpecific: false, "http");
+        var generic = new FakeDownloader("Generic", isDomainSpecific: false, "http");
         var factory = new DownloaderFactory(new IDownloader[] { ytdlp, generic });
 
-        // A direct media URL: even though Ytdlp has higher priority and matches,
-        // the generic downloader must go first for a direct file.
+        // A direct media URL (no specific match): generic goes first.
         var selected = factory.SelectDownloaders("https://cdn.example.com/clip.mp4");
 
         Assert.HasCount(2, selected);
@@ -61,13 +69,14 @@ public sealed class DownloaderFactoryTests
     }
 
     [TestMethod]
-    public void SelectDownloaders_PageUrl_KeepsPriorityOrder()
+    public void SelectDownloaders_PageUrl_KeepsGenericChainOrder()
     {
-        var ytdlp = new FakeDownloader("Ytdlp", 80, "http");
-        var generic = new FakeDownloader("Generic", 0, "http");
-        var factory = new DownloaderFactory(new IDownloader[] { ytdlp, generic });
+        var generic = new FakeDownloader("Generic", isDomainSpecific: false, "http");
+        var ytdlp = new FakeDownloader("Ytdlp", isDomainSpecific: false, "http");
+        var factory = new DownloaderFactory(new IDownloader[] { generic, ytdlp });
 
-        // A page URL (no media extension) keeps the priority order: Ytdlp first.
+        // Generic chain order is fixed (Ytdlp first) regardless of
+        // registration order.
         var selected = factory.SelectDownloaders("https://example.com/watch?v=123");
 
         Assert.AreEqual("Ytdlp", selected[0].Type);
@@ -75,10 +84,10 @@ public sealed class DownloaderFactoryTests
     }
 
     [TestMethod]
-    public void Fallback_IsLowestPriorityDownloader()
+    public void Fallback_IsGenericDownloader()
     {
-        var high = new FakeDownloader("High", 100, "youtube.com");
-        var generic = new FakeDownloader("Generic", 0, "http");
+        var high = new FakeDownloader("High", isDomainSpecific: true, "youtube.com");
+        var generic = new FakeDownloader("Generic", isDomainSpecific: false, "http");
         var factory = new DownloaderFactory(new IDownloader[] { high, generic });
 
         Assert.AreEqual("Generic", factory.Fallback!.Type);
@@ -97,6 +106,7 @@ public sealed class DownloaderFactoryTests
             services.AddSingleton(new LiteDbStore(Path.Combine(dir, "flexfetch.db")));
             services.AddSingleton<IConfigRepository>(sp => new ConfigRepository(sp.GetRequiredService<LiteDbStore>()));
             services.AddSingleton<ICookieRepository>(sp => new CookieRepository(sp.GetRequiredService<LiteDbStore>()));
+            services.AddSingleton(sp => new CookiePoolService(sp.GetRequiredService<ICookieRepository>()));
             services.AddSingleton(sp => new YtdlpService(
                 sp.GetRequiredService<IProxyService>(),
                 sp.GetRequiredService<IConfigRepository>(),
@@ -123,8 +133,7 @@ public sealed class DownloaderFactoryTests
             Assert.Contains("Html", types);
             Assert.Contains("Browser", types);
 
-            // Ordered by priority: YouTube(100) first, Generic(0) fallback last.
-            Assert.AreEqual("YouTube", factory.All[0].Type);
+            // Generic is the fallback at the end of the chain.
             Assert.AreEqual("Generic", factory.Fallback!.Type);
         }
         finally
@@ -146,21 +155,21 @@ public sealed class DownloaderFactoryTests
     {
         private readonly string[] _needles;
 
-        public FakeDownloader(string type, int priority, params string[] needles)
+        public FakeDownloader(string type, bool isDomainSpecific, params string[] needles)
         {
             Type = type;
-            Priority = priority;
+            IsDomainSpecific = isDomainSpecific;
             _needles = needles;
         }
 
         public string Type { get; }
 
-        public int Priority { get; }
+        public bool IsDomainSpecific { get; }
 
         public bool CanHandle(string url) =>
             _needles.Any(n => url.Contains(n, StringComparison.OrdinalIgnoreCase));
 
-        public Task<AnalysisResult> AnalyzeAsync(string url, CancellationToken ct) =>
+        public Task<AnalysisResult> AnalyzeAsync(string url, string taskId, CancellationToken ct) =>
             Task.FromResult(new AnalysisResult { Title = "t", DirectUrl = url });
 
         public Task DownloadAsync(TaskItem task, AnalysisResult analysis, Action<double> progress, CancellationToken ct) =>

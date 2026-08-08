@@ -8,7 +8,7 @@ namespace FlexFetch.Services.Downloaders;
 /// <summary>
 /// Bridges TaskService and the downloader plugins: selects a downloader by
 /// match rules, analyzes the URL, expands playlists into child tasks and
-/// downloads — degrading to the next candidate on failure. Direct media
+/// downloads - degrading to the next candidate on failure. Direct media
 /// links (by extension, or by HEAD-probed Content-Type when the URL has no
 /// extension) are handed to the generic file downloader right away instead
 /// of wasting a slow yt-dlp attempt.
@@ -48,7 +48,7 @@ public sealed class DownloaderTaskExecutor : ITaskExecutor
         {
             try
             {
-                var analysis = await downloader.AnalyzeAsync(task.Url, cancellationToken);
+                var analysis = await downloader.AnalyzeAsync(task.Url, task.Id, cancellationToken);
                 task.DownloaderType = downloader.Type;
                 task.ContentText = string.IsNullOrWhiteSpace(analysis.ContentText) ? task.ContentText : analysis.ContentText;
                 _log.Information("Task {TaskId}: using downloader {Type}", task.Id, downloader.Type);

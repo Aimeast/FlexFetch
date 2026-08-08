@@ -184,16 +184,47 @@ public sealed class UserServiceTests
     }
 
     [TestMethod]
-    public void EnsureInitialAdmin_CreatesAdminOnce()
+    public void EnsureInitialAdmin_CreatesAdminWhenDatabaseEmpty()
     {
-        _service!.EnsureInitialAdmin("bootpass");
+        // Empty database: admin is created as the first account.
+        var password = _service!.EnsureInitialAdmin("bootpass", isDevelopment: false);
+        Assert.AreEqual("bootpass", password);
 
         var admin = _service.Login("admin", "bootpass");
         Assert.AreEqual(LoginStatus.Success, admin.Status);
         Assert.AreEqual(UserRole.Admin, admin.User!.Role);
+    }
 
-        // Second call is a no-op (admin already exists).
-        _service.EnsureInitialAdmin("otherpass");
-        Assert.AreEqual(LoginStatus.Success, _service.Login("admin", "bootpass").Status);
+    [TestMethod]
+    public void EnsureInitialAdmin_ReturnsNullWhenUsersExist()
+    {
+        _service!.Register("alice", "password1");
+
+        // Non-empty database: never touch existing accounts.
+        Assert.IsNull(_service.EnsureInitialAdmin("bootpass", isDevelopment: false));
+        Assert.AreEqual(LoginStatus.InvalidCredentials, _service.Login("admin", "bootpass").Status);
+    }
+
+    [TestMethod]
+    public void EnsureInitialAdmin_ConfiguredPasswordTakesPriority()
+    {
+        var password = _service!.EnsureInitialAdmin("configured-pass", isDevelopment: false);
+        Assert.AreEqual("configured-pass", password);
+        Assert.AreEqual(LoginStatus.Success, _service.Login("admin", "configured-pass").Status);
+    }
+
+    [TestMethod]
+    public void EnsureInitialAdmin_DevUsesSimplePassword_ProdGeneratesStrong()
+    {
+        var devPassword = _service!.EnsureInitialAdmin(null, isDevelopment: true);
+        Assert.AreEqual("admin", devPassword);
+
+        using var prodStore = new LiteDbStore(Path.Combine(Path.GetTempPath(), "flexfetch-test-" + Guid.NewGuid().ToString("N") + ".db"));
+        var prodService = new UserService(new UserRepository(prodStore), new ConfigRepository(prodStore));
+        var prodPassword = prodService.EnsureInitialAdmin(null, isDevelopment: false);
+        Assert.IsNotNull(prodPassword);
+        Assert.IsGreaterThanOrEqualTo(prodPassword!.Length, 18);
+        Assert.AreEqual(LoginStatus.Success, prodService.Login("admin", prodPassword).Status);
+        prodStore.Dispose();
     }
 }

@@ -40,7 +40,7 @@ public sealed class TwitterDownloaderTests
             """)));
 
         var downloader = CreateDownloader();
-        var analysis = await downloader.AnalyzeAsync(server.BaseUrl + "/status/1", CancellationToken.None);
+        var analysis = await downloader.AnalyzeAsync(server.BaseUrl + "/status/1", "task-1", CancellationToken.None);
 
         Assert.AreEqual("SpaceX launch footage", analysis.Title);
         Assert.AreEqual("SpaceX launch footage", analysis.ContentText);
@@ -57,7 +57,7 @@ public sealed class TwitterDownloaderTests
             System.Text.Encoding.UTF8.GetBytes("<html><body>no meta here</body></html>")));
 
         var downloader = CreateDownloader();
-        var analysis = await downloader.AnalyzeAsync(server.BaseUrl + "/status/2", CancellationToken.None);
+        var analysis = await downloader.AnalyzeAsync(server.BaseUrl + "/status/2", "task-1", CancellationToken.None);
 
         Assert.AreEqual("x-post", analysis.Title);
         Assert.IsNull(analysis.ContentText);

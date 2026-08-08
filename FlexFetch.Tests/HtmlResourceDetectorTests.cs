@@ -29,7 +29,7 @@ public sealed class HtmlResourceDetectorTests
             """)));
 
         var detector = CreateDetector();
-        var analysis = await detector.AnalyzeAsync(server.BaseUrl + "/page", CancellationToken.None);
+        var analysis = await detector.AnalyzeAsync(server.BaseUrl + "/page", "task-1", CancellationToken.None);
 
         Assert.AreEqual("My Video Page", analysis.Title);
         Assert.AreEqual(server.BaseUrl + "/page", analysis.Referrer);
@@ -47,7 +47,7 @@ public sealed class HtmlResourceDetectorTests
             System.Text.Encoding.UTF8.GetBytes("<html><head><title>Plain Page</title></head><body>text</body></html>")));
 
         var detector = CreateDetector();
-        var analysis = await detector.AnalyzeAsync(server.BaseUrl + "/page", CancellationToken.None);
+        var analysis = await detector.AnalyzeAsync(server.BaseUrl + "/page", "task-1", CancellationToken.None);
 
         Assert.IsEmpty(analysis.Children);
         Assert.AreEqual("Plain Page", analysis.Title);

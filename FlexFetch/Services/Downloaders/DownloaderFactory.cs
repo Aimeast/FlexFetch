@@ -4,17 +4,23 @@ namespace FlexFetch.Services.Downloaders;
 
 /// <summary>
 /// Discovers and registers downloader plugins, then selects candidates for a
-/// URL: matching rules first, then attempt priority, with a guaranteed
-/// fallback. Plugins are self-discovered via reflection over the assembly —
-/// adding a new IDownloader requires no manual registration.
+/// URL: a domain-specific downloader (e.g. YouTube/Twitter) that claims the
+/// URL is used alone - it fails fast with no fallback; only when no specific
+/// downloader matches is the generic chain (yt-dlp -> Html -> Browser ->
+/// Generic) used, in that fixed order. Plugins are self-discovered via
+/// reflection over the assembly - adding a new IDownloader requires no manual
+/// registration.
 /// </summary>
 public sealed class DownloaderFactory
 {
+    /// <summary>Fixed attempt order of the generic fallback chain.</summary>
+    private static readonly string[] GenericChainOrder = { "Ytdlp", "Html", "Browser", "Generic" };
+
     private readonly IReadOnlyList<IDownloader> _downloaders;
 
     public DownloaderFactory(IEnumerable<IDownloader> downloaders)
     {
-        _downloaders = downloaders.OrderByDescending(d => d.Priority).ToList();
+        _downloaders = downloaders.ToList();
     }
 
     /// <summary>
@@ -38,18 +44,36 @@ public sealed class DownloaderFactory
     public IReadOnlyList<IDownloader> All => _downloaders;
 
     /// <summary>
-    /// Downloaders that claim the URL, ordered by priority (highest first).
-    /// For direct media links (extension-based) the generic file downloader
-    /// is promoted to the front: a direct file should be downloaded straight
-    /// away instead of wasting a slow yt-dlp attempt.
+    /// Selects downloader candidates for a URL. A matching domain-specific
+    /// downloader is returned alone (more than one is a runtime error); with
+    /// no specific match the generic chain is returned in its fixed order,
+    /// promoting the generic file downloader to the front for direct media
+    /// links so a direct file downloads straight away.
     /// </summary>
     public IReadOnlyList<IDownloader> SelectDownloaders(string url)
     {
-        var candidates = _downloaders.Where(d => d.CanHandle(url)).ToList();
+        var specific = _downloaders
+            .Where(d => d.IsDomainSpecific && d.CanHandle(url))
+            .ToList();
+        if (specific.Count > 1)
+        {
+            throw new InvalidOperationException(
+                $"Multiple domain-specific downloaders match {url}: {string.Join(", ", specific.Select(d => d.Type))}");
+        }
+
+        if (specific.Count == 1)
+        {
+            return specific;
+        }
+
+        var candidates = _downloaders
+            .Where(d => !d.IsDomainSpecific && d.CanHandle(url))
+            .OrderBy(d => Array.IndexOf(GenericChainOrder, d.Type))
+            .ToList();
         if (DirectLinkDetector.HasMediaExtension(url))
         {
             var generic = candidates.FirstOrDefault(d => d.Type == "Generic");
-            if (generic is not null && candidates[0] != generic)
+            if (generic is not null && candidates.Count > 0 && candidates[0] != generic)
             {
                 candidates.Remove(generic);
                 candidates.Insert(0, generic);
@@ -59,6 +83,6 @@ public sealed class DownloaderFactory
         return candidates;
     }
 
-    /// <summary>The guaranteed fallback downloader (lowest priority).</summary>
-    public IDownloader? Fallback => _downloaders.LastOrDefault();
+    /// <summary>The guaranteed fallback downloader (end of the generic chain).</summary>
+    public IDownloader? Fallback => _downloaders.FirstOrDefault(d => d.Type == "Generic");
 }

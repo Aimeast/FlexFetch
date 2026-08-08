@@ -33,6 +33,9 @@ public sealed class YtdlpService
     /// </summary>
     private readonly SemaphoreSlim _installLock = new(1, 1);
 
+    /// <summary>Set after the first full component check; later calls skip logging.</summary>
+    private bool _checked;
+
     public YtdlpService(IProxyService proxy, IConfigRepository config, ILogger log, string dataDir)
     {
         _proxy = proxy;
@@ -87,12 +90,28 @@ public sealed class YtdlpService
         return output.Trim();
     }
 
-    /// <summary>Installs yt-dlp and deno when missing (idempotent, serialized).</summary>
+    /// <summary>True when the yt-dlp binary is present.</summary>
+    public bool IsYtDlpInstalled() => File.Exists(BinaryPath);
+
+    /// <summary>True when the deno binary is present.</summary>
+    public bool IsDenoInstalled() => File.Exists(DenoPath);
+
+    /// <summary>
+    /// Installs yt-dlp and deno when missing (idempotent, serialized).
+    /// Existing components are left silent - readiness is summarized by the
+    /// caller (StartupTasksHostedService). Later calls - e.g. the per-task
+    /// install check before using yt-dlp - are a fast no-op.
+    /// </summary>
     public async Task EnsureInstalledAsync(CancellationToken cancellationToken = default)
     {
         await _installLock.WaitAsync(cancellationToken);
         try
         {
+            if (_checked)
+            {
+                return; // already verified once; components are in place
+            }
+
             // Re-check under the lock: a concurrent call may have installed
             // the component while we were waiting.
             if (!File.Exists(BinaryPath))
@@ -106,6 +125,10 @@ public sealed class YtdlpService
                 _log.Information("Installing deno");
                 await DownloadDenoAsync(cancellationToken);
             }
+
+            // Set only after the full check succeeded, so a failed download
+            // keeps the option to retry on the next call.
+            _checked = true;
         }
         finally
         {

@@ -10,7 +10,7 @@ public sealed record CookieImportResult(int Imported, int Skipped, IReadOnlyList
 /// <summary>
 /// Centralized cookie pool: the single source of truth for cookies shared by
 /// all download channels (HttpClient, yt-dlp, browser). Enforces RFC 6265
-/// matching rules — domain match, no cross-site sharing, no expired sessions —
+/// matching rules - domain match, no cross-site sharing, no expired sessions -
 /// and supports Netscape files, pasted text and Set-Cookie headers import.
 /// </summary>
 public sealed class CookiePoolService

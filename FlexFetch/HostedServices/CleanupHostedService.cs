@@ -12,7 +12,7 @@ namespace FlexFetch.HostedServices;
 /// 1. removes expired share tokens and orphaned task files (files/{taskId}
 ///    directories whose task no longer exists);
 /// 2. removes download resources (tasks and files) of accounts inactive
-///    beyond the configured threshold — accounts themselves are kept, and a
+///    beyond the configured threshold - accounts themselves are kept, and a
 ///    re-login starts from an empty state (disabled when the threshold is 0).
 /// </summary>
 public sealed class CleanupHostedService : IntervalHostedService

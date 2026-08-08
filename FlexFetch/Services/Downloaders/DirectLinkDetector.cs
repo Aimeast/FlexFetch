@@ -5,7 +5,7 @@ namespace FlexFetch.Services.Downloaders;
 /// <summary>
 /// Detects whether a URL is a direct media file link (as opposed to a web
 /// page). Detection is two-tiered: a fast extension check on the URL path,
-/// and — when the extension is ambiguous — a HEAD probe of the response
+/// and - when the extension is ambiguous - a HEAD probe of the response
 /// Content-Type (some direct videos have no media extension and are only
 /// identifiable by their MIME type).
 /// </summary>

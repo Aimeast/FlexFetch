@@ -50,6 +50,36 @@ public sealed class AuthApiTests
     }
 
     [TestMethod]
+    public async Task Me_ReturnsCurrentUserWithRole()
+    {
+        using var factory = TestApp.CreateFactory(_dataDir!);
+        using var client = factory.CreateClient();
+
+        // Anonymous: 401.
+        var anon = await client.GetAsync("/api/auth/me");
+        Assert.AreEqual(HttpStatusCode.Unauthorized, anon.StatusCode);
+
+        // Regular user: returns own name and role (drives UI navigation).
+        await client.PostAsJsonAsync("/api/auth/register", new { userName = "eve", password = "password1" });
+        await client.PostAsJsonAsync("/api/auth/login", new { userName = "eve", password = "password1" });
+        var me = await client.GetAsync("/api/auth/me");
+        Assert.AreEqual(HttpStatusCode.OK, me.StatusCode);
+        var meBody = await me.Content.ReadFromJsonAsync<LoginResponse>();
+        Assert.IsNotNull(meBody);
+        Assert.AreEqual("eve", meBody.UserName);
+        Assert.AreEqual("User", meBody.Role);
+
+        // Admin: role is Admin.
+        using var adminClient = factory.CreateClient();
+        await adminClient.PostAsJsonAsync("/api/auth/login", new { userName = "admin", password = "admin-pass-1" });
+        var adminMe = await adminClient.GetAsync("/api/auth/me");
+        Assert.AreEqual(HttpStatusCode.OK, adminMe.StatusCode);
+        var adminBody = await adminMe.Content.ReadFromJsonAsync<LoginResponse>();
+        Assert.IsNotNull(adminBody);
+        Assert.AreEqual("Admin", adminBody.Role);
+    }
+
+    [TestMethod]
     public async Task AdminEndpoints_RequireAdminRole()
     {
         using var factory = TestApp.CreateFactory(_dataDir!);

@@ -25,13 +25,13 @@ public sealed partial class TwitterDownloader : IDownloader
 
     public string Type => "Twitter";
 
-    public int Priority => 90;
+    public bool IsDomainSpecific => true;
 
     public bool CanHandle(string url) =>
         url.Contains("x.com", StringComparison.OrdinalIgnoreCase)
         || url.Contains("twitter.com", StringComparison.OrdinalIgnoreCase);
 
-    public async Task<AnalysisResult> AnalyzeAsync(string url, CancellationToken cancellationToken)
+    public async Task<AnalysisResult> AnalyzeAsync(string url, string taskId, CancellationToken cancellationToken)
     {
         var pageUrl = new Uri(url);
         var handler = _proxy.CreateHandler(pageUrl);

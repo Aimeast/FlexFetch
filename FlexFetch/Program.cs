@@ -89,7 +89,8 @@ builder.Services.AddSingleton<ITaskExecutor>(sp => new DownloaderTaskExecutor(
 builder.Services.AddSingleton<TaskService>();
 
 // Background periodic services.
-builder.Services.AddHostedService<DependencyInstallHostedService>();
+builder.Services.AddHostedService<StartupTasksHostedService>();
+builder.Services.AddHostedService<DependencyUpgradeHostedService>();
 builder.Services.AddHostedService<CookieRefreshHostedService>();
 builder.Services.AddHostedService<CleanupHostedService>();
 
@@ -125,15 +126,6 @@ if (!builder.Environment.IsDevelopment())
 {
     app.UseHttpsRedirection();
 }
-
-// Bootstrap: create the initial admin when none exists and a password is configured.
-app.Services.GetRequiredService<UserService>()
-    .EnsureInitialAdmin(builder.Configuration["Admin:InitialPassword"]);
-
-// Recover tasks after a restart: tasks left in Running/Queued are reset to
-// Queued and re-queued for execution.
-app.Services.GetRequiredService<TaskService>()
-    .RecoverPending();
 
 app.UseAuthentication();
 app.UseAuthorization();

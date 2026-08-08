@@ -165,7 +165,7 @@ public sealed class TaskServiceTests
         Assert.AreEqual("recovered.bin", _service!.GetById(running.Id)!.FileName);
         Assert.AreEqual("recovered.bin", _service!.GetById(queued.Id)!.FileName);
 
-        // Failed stays failed — it was a real download failure.
+        // Failed stays failed - it was a real download failure.
         Assert.AreEqual(TaskStatus.Failed, _service.GetById(failed.Id)!.Status);
     }
 

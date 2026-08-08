@@ -52,7 +52,6 @@
                                 <th>Size</th>
                                 <th>Status</th>
                                 <th>Created</th>
-                                <th></th>
                             </tr>
                         </thead>
                         <tbody></tbody>
@@ -66,13 +65,16 @@
         const STATUS = { 0: 'Queued', 1: 'Running', 2: 'Completed', 3: 'Failed' };
         let refreshTimer = null;
         let refreshBusy = false;
+        let refreshActive = false;
         let currentRole = 'User';
         const REFRESH_INTERVAL_MS = 3000;
 
         // Chain refreshes with setTimeout instead of setInterval: the next
         // tick is scheduled only after the previous loadTasks finishes, so
         // slow responses never pile up concurrent DOM updates (which froze
-        // the page).
+        // the page). refreshActive tracks whether the chain is on: it is set
+        // by startRefresh before the first immediate run, because at that
+        // point refreshTimer is still null (stopRefresh cleared it).
         async function refreshLoop() {
             if (!refreshBusy) {
                 refreshBusy = true;
@@ -84,17 +86,19 @@
                     refreshBusy = false;
                 }
             }
-            if (refreshTimer !== null) {
+            if (refreshActive) {
                 refreshTimer = setTimeout(refreshLoop, REFRESH_INTERVAL_MS);
             }
         }
 
         function startRefresh() {
             stopRefresh();
+            refreshActive = true;
             refreshLoop();
         }
 
         function stopRefresh() {
+            refreshActive = false;
             if (refreshTimer !== null) {
                 clearTimeout(refreshTimer);
                 refreshTimer = null;
@@ -126,7 +130,9 @@
             document.getElementById('app-section').style.display = 'block';
             document.getElementById('logout-link').style.display = 'inline';
             setNavLinks(true);
-            loadTasks();
+            // startRefresh loads tasks immediately once, then keeps the
+            // periodic chain alive — no separate loadTasks() call here,
+            // otherwise the very first refresh would issue a second request.
             startRefresh();
         }
 
@@ -202,25 +208,30 @@
                 }
             }
 
-            // Expected ordered row descriptors: URL header + parent + children.
-            // Number file rows only when the group contains more than one
-            // file; a single file (any link type) gets no number.
+            // Expected ordered row descriptors, uniform for every task type:
+            // URL row (with actions) → optional content row (tweet/page text)
+            // → file rows (no actions). A group's file rows are the parent's
+            // own file (direct download) or its children.
             const expected = [];
             for (const t of parents) {
-                // Tasks with tweet text (Twitter) show the content row instead
-                // of the URL header row.
+                expected.push({ key: 'url:' + t.id, html: urlRowHtml(t) });
                 if (t.contentText) {
                     expected.push({ key: 'content:' + t.id, html: contentRowHtml(t) });
-                } else {
-                    expected.push({ key: 'url:' + t.id, html: urlRowHtml(t) });
                 }
+
                 const kids = children.get(t.id) || [];
                 const fileCount = (t.fileName ? 1 : 0) + kids.length;
                 const showIndex = fileCount > 1;
                 let n = 1;
-                expected.push({ key: 'task:' + t.id, html: taskRowHtml(t, showIndex && t.fileName ? n++ : 0) });
+                if (t.fileName) {
+                    expected.push({ key: 'file:' + t.id, html: fileRowHtml(t, showIndex ? n++ : 0) });
+                } else if (kids.length === 0) {
+                    // Placeholder row: no file list yet (queued / downloading)
+                    // — show the task status; file name and size stay empty.
+                    expected.push({ key: 'file:' + t.id, html: fileRowHtml(t, 0) });
+                }
                 for (let i = 0; i < kids.length; i++) {
-                    expected.push({ key: 'task:' + kids[i].id, html: taskRowHtml(kids[i], showIndex ? n++ : 0) });
+                    expected.push({ key: 'file:' + kids[i].id, html: fileRowHtml(kids[i], showIndex ? n++ : 0) });
                 }
             }
 
@@ -276,48 +287,53 @@
         }
 
         function urlRowHtml(t) {
-            return '<td colspan="5" class="group-url-cell">' + esc(t.url) + '</td>';
+            // Retry for failed or stuck-queued tasks (e.g. after an unexpected
+            // service stop the status may be left queued without an error).
+            let actionsHtml = '';
+            if (t.status === 3 || t.status === 0) {
+                actionsHtml += '<button class="secondary" onclick="retryTask(\'' + t.id + '\')">Retry</button>';
+            }
+            // Share/Delete act on the whole task group, on the parent's URL row.
+            if (!t.parentId) {
+                actionsHtml += '<button class="secondary" onclick="shareTask(\'' + t.id + '\')">Share</button>';
+                actionsHtml += '<button class="danger" onclick="askDelete(\'' + t.id + '\')">Delete</button>';
+            }
+            const actions = actionsHtml ? '<span class="url-actions">' + actionsHtml + '</span>' : '';
+            return '<td colspan="4" class="group-url-cell"><span class="url-row"><span class="url-text">' +
+                esc(t.url) + '</span>' + actions + '</span></td>';
         }
 
         function contentRowHtml(t) {
-            return '<td colspan="5" class="content-cell">' + esc(t.contentText) + '</td>';
+            return '<td colspan="4" class="content-cell">' + esc(t.contentText) + '</td>';
         }
 
-        function taskRowHtml(t, index) {
+        // One file row: name (numbered in multi-file groups), size, status,
+        // created time. Actions live on the URL row above.
+        function fileRowHtml(t, index) {
             const statusClass = t.status === 2 ? 'ok' : t.status === 3 ? 'err' : 'warn';
             const statusText = STATUS[t.status] || ('Unknown(' + t.status + ')');
             const errHtml = t.errorMessage
                 ? '<span class="error-inline">' + esc(t.errorMessage) + '</span>'
                 : '';
-            const actions = [];
-            // Show Retry for failed tasks and for tasks still sitting queued
-            // (e.g. after an unexpected service stop the status may be left
-            // queued without an error message — retry restarts them).
-            if (t.status === 3 || t.status === 0) {
-                actions.push('<button class="secondary" onclick="retryTask(\'' + t.id + '\')">Retry</button>');
-            }
-            // Share/Delete act on the whole task group, so they appear only
-            // on the parent row — not on child (single-file) rows.
-            if (!t.parentId) {
-                actions.push('<button class="secondary" onclick="shareTask(\'' + t.id + '\')">Share</button>');
-                actions.push('<button class="danger" onclick="askDelete(\'' + t.id + '\')">Delete</button>');
-            }
 
             // Multiple files of one group are numbered in front of the name.
             const indexHtml = index ? '<span class="file-index">' + index + '.</span> ' : '';
 
-            let nameHtml;
-            if (t.status === 2 && t.fileName) {
-                nameHtml = '<a class="file-link" href="/api/tasks/' + encodeURIComponent(t.id) + '/file">' + esc(t.fileName) + '</a>';
-            } else {
-                nameHtml = '<span class="file-name">' + esc(t.fileName || t.url) + '</span>';
+            let nameHtml = '';
+            if (t.fileName) {
+                if (t.status === 2) {
+                    nameHtml = '<a class="file-link" href="/api/tasks/' + encodeURIComponent(t.id) + '/file">' + esc(t.fileName) + '</a>';
+                } else {
+                    nameHtml = '<span class="file-name">' + esc(t.fileName) + '</span>';
+                }
             }
+            // No fileName: placeholder row (no file list yet) — the File cell
+            // stays empty, errors are still shown inline.
 
             return '<td data-label="File">' + indexHtml + nameHtml + errHtml + '</td>' +
                 '<td data-label="Size">' + formatTaskSize(t) + '</td>' +
                 '<td data-label="Status"><span class="badge ' + statusClass + '">' + statusText + '</span></td>' +
-                '<td data-label="Created" class="muted">' + esc(formatTime(t.createdAt)) + '</td>' +
-                '<td class="actions">' + actions.join(' ') + '</td>';
+                '<td data-label="Created">' + esc(formatTime(t.createdAt)) + '</td>';
         }
 
         function formatTaskSize(t) {
@@ -388,6 +404,13 @@
 
         document.getElementById('logout-link').onclick = logout;
 
+        // Pressing Enter in the username or password field signs in.
+        for (const id of ['username', 'password']) {
+            document.getElementById(id).addEventListener('keydown', e => {
+                if (e.key === 'Enter') login();
+            });
+        }
+
         // When the user types or pastes text into the URL field, extract the
         // first http(s) link from it (e.g. pasted text with surrounding words).
         const urlInput = document.getElementById('url');
@@ -396,6 +419,11 @@
             if (match && match[0] !== urlInput.value) {
                 urlInput.value = match[0];
             }
+        });
+
+        // Pressing Enter in the URL field submits a new download task.
+        urlInput.addEventListener('keydown', e => {
+            if (e.key === 'Enter') submitTask();
         });
 
         // Pause background refreshing while the tab is hidden.

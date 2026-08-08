@@ -19,7 +19,9 @@ public static class TasksApi
         group.MapGet("/", (TaskService tasks, HttpContext ctx) =>
         {
             var userId = GetUserId(ctx);
-            return Results.Ok(tasks.GetByOwner(userId));
+            // Newest first: a stable, predictable order (task ids are random
+            // high-entropy strings and must never be exposed as a sequence).
+            return Results.Ok(tasks.GetByOwner(userId).OrderByDescending(t => t.CreatedAt));
         });
 
         group.MapPost("/", (SubmitTaskRequest req, TaskService tasks, HttpContext ctx) =>
@@ -84,7 +86,12 @@ public static class TasksApi
             }
 
             var stream = File.OpenRead(path);
-            return Results.File(stream, FileMime.For(task.FileName), task.FileName, enableRangeProcessing: true);
+            // Media (video/audio) is served without a download name so the
+            // browser plays it inline; other types keep the name and download.
+            var mime = FileMime.For(task.FileName);
+            return FileMime.IsMedia(task.FileName)
+                ? Results.File(stream, mime, enableRangeProcessing: true)
+                : Results.File(stream, mime, task.FileName, enableRangeProcessing: true);
         });
 
         group.MapPost("/{id}/share", (string id, TaskService tasks, IShareRepository shares, IConfigRepository config, HttpContext ctx) =>
