@@ -67,51 +67,76 @@ public sealed class GenericFileDownloader : IDownloader
         var partPath = _storage.GetTaskFilePath(task.Id, $"{task.Id}.part");
         var resumeFrom = File.Exists(partPath) ? new FileInfo(partPath).Length : 0;
 
-        using var response = await SendWithReferrerRetryAsync(client, url, resumeFrom, analysis, cancellationToken);
-        response.EnsureSuccessStatusCode();
-
-        if (resumeFrom > 0 && response.StatusCode != HttpStatusCode.PartialContent)
+        HttpResponseMessage response;
+        try
         {
-            // Server ignored the Range request; start over.
-            resumeFrom = 0;
+            response = await SendWithReferrerRetryAsync(client, url, resumeFrom, analysis, cancellationToken);
+        }
+        catch (HttpRequestException ex)
+        {
+            // Connection-level failure (DNS, refused, proxy): transient.
+            throw new RetryableException($"Connection failed for {url}: {ex.Message}", ex);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // HttpClient timeout (not a user cancellation): transient.
+            throw new RetryableException($"Request timed out for {url}");
         }
 
-        var contentLength = response.Content.Headers.ContentLength ?? 0;
-        var totalLength = resumeFrom + contentLength;
-        task.FileSize = totalLength;
-
-        var fileName = ResolveFileName(response, analysis, url);
-        task.FileName = fileName;
-        _log.Information("Downloading {Url} to {File} ({Total} bytes)", url, fileName, totalLength);
-
-        await using (var fileStream = new FileStream(
-            partPath,
-            resumeFrom > 0 ? FileMode.Append : FileMode.Create,
-            FileAccess.Write,
-            FileShare.None))
+        using (response)
         {
-            await using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            var buffer = new byte[16 * 1024];
-            long written = resumeFrom;
-            int bytesRead;
-            while ((bytesRead = await responseStream.ReadAsync(buffer, cancellationToken)) > 0)
+            var status = (int)response.StatusCode;
+            if (!response.IsSuccessStatusCode)
             {
-                await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
-                written += bytesRead;
-                if (totalLength > 0)
+                // 5xx / 429 may recover on retry; other 4xx are deterministic.
+                throw status >= 500 || status == 429
+                    ? new RetryableException($"HTTP {status} for {url}")
+                    : new InvalidOperationException($"HTTP {status} for {url}");
+            }
+
+            if (resumeFrom > 0 && response.StatusCode != HttpStatusCode.PartialContent)
+            {
+                // Server ignored the Range request; start over.
+                resumeFrom = 0;
+            }
+
+            var contentLength = response.Content.Headers.ContentLength ?? 0;
+            var totalLength = resumeFrom + contentLength;
+            task.FileSize = totalLength;
+
+            var fileName = ResolveFileName(response, analysis, url);
+            task.FileName = fileName;
+            _log.Information("Downloading {Url} to {File} ({Total} bytes)", url, fileName, totalLength);
+
+            await using (var fileStream = new FileStream(
+                partPath,
+                resumeFrom > 0 ? FileMode.Append : FileMode.Create,
+                FileAccess.Write,
+                FileShare.None))
+            {
+                await using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken);
+                var buffer = new byte[16 * 1024];
+                long written = resumeFrom;
+                int bytesRead;
+                while ((bytesRead = await responseStream.ReadAsync(buffer, cancellationToken)) > 0)
                 {
-                    progress(Math.Min(1.0, (double)written / totalLength));
+                    await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
+                    written += bytesRead;
+                    if (totalLength > 0)
+                    {
+                        progress(Math.Min(1.0, (double)written / totalLength));
+                    }
                 }
             }
-        }
 
-        // Move the finished part file to its final name.
-        var finalPath = _storage.GetTaskFilePath(task.Id, fileName);
-        if (File.Exists(finalPath))
-        {
-            File.Delete(finalPath);
+            // Move the finished part file to its final name.
+            var finalPath = _storage.GetTaskFilePath(task.Id, fileName);
+            if (File.Exists(finalPath))
+            {
+                File.Delete(finalPath);
+            }
+            File.Move(partPath, finalPath);
         }
-        File.Move(partPath, finalPath);
     }
 
     private async Task<HttpResponseMessage> SendWithReferrerRetryAsync(

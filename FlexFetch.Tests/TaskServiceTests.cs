@@ -2,6 +2,7 @@
 using FlexFetch.Data;
 using FlexFetch.Entities;
 using FlexFetch.Services;
+using FlexFetch.Services.Downloaders;
 using FlexFetch.Services.Tasks;
 using Serilog;
 using TaskStatus = FlexFetch.Enums.TaskStatus;
@@ -73,7 +74,7 @@ public sealed class TaskServiceTests
     public async Task Submit_FailedTask_RetriesUpToLimitThenFails()
     {
         _config!.Set(ConfigKeys.MaxRetries, "2");
-        _executor!.Handler = (task, progress, ct) => throw new InvalidOperationException("boom");
+        _executor!.Handler = (task, progress, ct) => throw new RetryableException("boom");
 
         var id = _service!.Submit("user-1", "https://example.com/bad.bin");
 
@@ -82,6 +83,27 @@ public sealed class TaskServiceTests
         Assert.AreEqual(TaskStatus.Failed, task!.Status);
         Assert.IsGreaterThanOrEqualTo(3, task.Attempts);
         Assert.AreEqual("boom", task.ErrorMessage);
+    }
+
+    [TestMethod]
+    public async Task Submit_DeterministicError_FailsImmediatelyWithoutRetry()
+    {
+        // Only transient (RetryableException) errors are retried; a plain
+        // failure fails the task right away with a single attempt.
+        var calls = 0;
+        _executor!.Handler = (task, progress, ct) =>
+        {
+            calls++;
+            throw new InvalidOperationException("boom");
+        };
+
+        var id = _service!.Submit("user-1", "https://example.com/bad.bin");
+
+        await WaitForStatusAsync(id, TaskStatus.Failed);
+        var task = _service.GetById(id);
+        Assert.AreEqual(TaskStatus.Failed, task!.Status);
+        Assert.AreEqual(1, calls);
+        Assert.AreEqual(1, task.Attempts);
     }
 
     [TestMethod]

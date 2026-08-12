@@ -145,6 +145,29 @@ public sealed class YtdlpDownloaderTests
         Assert.AreEqual(1, calls); // no cookie retry on the generic downloader
     }
 
+    [TestMethod]
+    public async Task AnalyzeAsync_TimeoutError_ThrowsRetryable()
+    {
+        // A transient failure (timeout) is wrapped in RetryableException so
+        // the task service can retry it.
+        var downloader = CreateDownloader(async (_, _, _) =>
+            new RunResult<VideoData>(false, new[] { "ERROR: [site] abc: Connection timed out" }, null!));
+
+        await Assert.ThrowsExactlyAsync<RetryableException>(
+            () => downloader.AnalyzeAsync("https://www.example.com/video/xyz789", "task-1", CancellationToken.None));
+    }
+
+    [TestMethod]
+    public async Task AnalyzeAsync_NotFoundError_ThrowsInvalidOperation()
+    {
+        // A deterministic error (resource gone) is not retryable.
+        var downloader = CreateDownloader(async (_, _, _) =>
+            new RunResult<VideoData>(false, new[] { "ERROR: [site] abc: Video unavailable" }, null!));
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => downloader.AnalyzeAsync("https://www.example.com/video/xyz789", "task-1", CancellationToken.None));
+    }
+
     private sealed class InMemoryConfigRepository : IConfigRepository
     {
         private readonly Dictionary<string, string> _values = new();

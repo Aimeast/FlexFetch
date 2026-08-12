@@ -189,8 +189,46 @@ public class YtdlpDownloader : IDownloader
         CookieFile.Delete(Storage.DataDir, taskId);
     }
 
-    private static Exception BuildFailure(IReadOnlyList<string> errorOutput, string prefix) =>
-        new InvalidOperationException(BuildFailureMessage(errorOutput, prefix));
+    private static Exception BuildFailure(IReadOnlyList<string> errorOutput, string prefix)
+    {
+        var message = BuildFailureMessage(errorOutput, prefix);
+        return TryClassifyRetryableError(errorOutput)
+            ? new RetryableException(message)
+            : new InvalidOperationException(message);
+    }
+
+    /// <summary>
+    /// True when the yt-dlp error indicates a transient failure worth
+    /// retrying (timeout, connection failure, proxy fault, server 5xx, rate
+    /// limiting). Deterministic errors are not classified here.
+    /// </summary>
+    private static bool TryClassifyRetryableError(IReadOnlyList<string> errorOutput)
+    {
+        foreach (var line in errorOutput)
+        {
+            if (!line.StartsWith("ERROR:", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (line.Contains("timed out", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("timeout", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("unable to connect", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("connection error", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("connection refused", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("failed to establish", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("could not connect", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("socks", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("too many requests", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("http error 429", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("http error 5", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     private static string BuildFailureMessage(IReadOnlyList<string> errorOutput, string prefix) =>
         $"{prefix}: {string.Join(';', errorOutput.Where(l => l.StartsWith("ERROR:", StringComparison.OrdinalIgnoreCase)).Take(3))}";

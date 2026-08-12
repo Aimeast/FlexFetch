@@ -140,7 +140,17 @@ ConfigApi.Map(app);
 
 // Static web UI: "/" serves wwwroot/index.html via UseDefaultFiles.
 app.UseDefaultFiles();
-app.UseStaticFiles();
+app.UseStaticFiles(new StaticFileOptions
+{
+    OnPrepareResponse = ctx =>
+    {
+        if (builder.Environment.IsDevelopment())
+        {
+            ctx.Context.Response.Headers.CacheControl = "no-cache, no-store, must-revalidate";
+            ctx.Context.Response.Headers.Pragma = "no-cache";
+        }
+    },
+});
 
 app.Run();
 

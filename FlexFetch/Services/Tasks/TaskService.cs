@@ -387,10 +387,12 @@ public sealed class TaskService : IDisposable
                 }
                 return;
             }
-            catch (Exception ex)
+            catch (RetryableException ex)
             {
+                // Transient failure (timeout, connection, 5xx, rate limit):
+                // retry up to maxRetries with backoff.
                 task.ErrorMessage = ex.Message;
-                _log.Warning(ex, "Task {TaskId} attempt {Attempt} failed", task.Id, attempt);
+                _log.Warning(ex, "Task {TaskId} attempt {Attempt} failed (retryable)", task.Id, attempt);
 
                 if (attempt <= maxRetries)
                 {
@@ -409,6 +411,20 @@ public sealed class TaskService : IDisposable
 
                 task.Status = TaskStatus.Failed;
                 _tasks.Update(task);
+                if (task.ParentId is not null)
+                {
+                    AggregateParent(task.ParentId);
+                }
+                return;
+            }
+            catch (Exception ex)
+            {
+                // Deterministic error (bad URL, unsupported format, 4xx):
+                // fail immediately without automatic retry.
+                task.ErrorMessage = ex.Message;
+                task.Status = TaskStatus.Failed;
+                _tasks.Update(task);
+                _log.Warning(ex, "Task {TaskId} failed (not retried)", task.Id);
                 if (task.ParentId is not null)
                 {
                     AggregateParent(task.ParentId);

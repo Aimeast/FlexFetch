@@ -68,6 +68,28 @@ public sealed class GenericFileDownloaderTests
     }
 
     [TestMethod]
+    public async Task Download_Http500_ThrowsRetryable()
+    {
+        using var server = new TestHttpServer(_ => new TestHttpServer.HttpResponse(500, Array.Empty<byte>()));
+        var task = new TaskItem { Id = "t5", Url = server.BaseUrl + "/file", OwnerUserId = "u" };
+        var analysis = new FlexFetch.Services.Downloaders.AnalysisResult { Title = "f", DirectUrl = task.Url };
+
+        await Assert.ThrowsExactlyAsync<RetryableException>(
+            () => _downloader!.DownloadAsync(task, analysis, _ => { }, CancellationToken.None));
+    }
+
+    [TestMethod]
+    public async Task Download_Http404_ThrowsInvalidOperation()
+    {
+        using var server = new TestHttpServer(_ => new TestHttpServer.HttpResponse(404, Array.Empty<byte>()));
+        var task = new TaskItem { Id = "t6", Url = server.BaseUrl + "/missing", OwnerUserId = "u" };
+        var analysis = new FlexFetch.Services.Downloaders.AnalysisResult { Title = "f", DirectUrl = task.Url };
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => _downloader!.DownloadAsync(task, analysis, _ => { }, CancellationToken.None));
+    }
+
+    [TestMethod]
     public async Task Download_InfersFileNameFromUrl()
     {
         using var server = new TestHttpServer(_ => new TestHttpServer.HttpResponse(200, new byte[] { 1 }));

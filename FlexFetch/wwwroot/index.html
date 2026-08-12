@@ -112,7 +112,10 @@
                 const body = await res.json().catch(() => ({}));
                 throw new Error(body.error || ("HTTP " + res.status));
             }
-            return res.json();
+            // Some endpoints (e.g. retry) return 200 with an empty body;
+            // parsing that as JSON throws "Unexpected end of JSON input".
+            const text = await res.text();
+            return text ? JSON.parse(text) : null;
         }
 
         function showAuth() {
