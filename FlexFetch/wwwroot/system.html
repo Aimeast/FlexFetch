@@ -17,7 +17,7 @@
         </nav>
     </header>
     <main>
-        <div class="msg error" id="msg"></div>
+        <div class="msg" id="msg"></div>
 
         <div class="card">
             <h2>System information</h2>
@@ -26,6 +26,13 @@
 
         <div class="card">
             <h2>Anti-detection self-check</h2>
+            <div class="muted" style="margin-bottom:0.5rem">
+                Probes the browser for anti-bot fingerprints (webdriver, cdc_,
+                User-Agent, ...). The browser starts on first use.
+            </div>
+            <div class="row" style="margin-bottom:0.5rem">
+                <button class="secondary" onclick="runSelfCheck()">Run self-check</button>
+            </div>
             <table>
                 <thead><tr><th>Vector</th><th>Result</th><th>Detail</th></tr></thead>
                 <tbody id="check-tbody"></tbody>
@@ -36,7 +43,7 @@
             <h2>Operations</h2>
             <div class="row">
                 <button class="danger" onclick="shutdown()">Graceful shutdown</button>
-                <button class="secondary" onclick="upgrade()">Upgrade components</button>
+                <button class="secondary" onclick="upgrade(this)">Upgrade components</button>
             </div>
         </div>
     </main>
@@ -52,10 +59,16 @@
             return res.json();
         }
 
+        let msgTimer = null;
+
         function show(text, ok) {
             msg.textContent = text;
             msg.className = ok ? 'msg ok' : 'msg error';
-            setTimeout(() => { msg.className = 'msg'; }, 4000);
+            // Clear the previous timer first: during polling (upgrade status)
+            // many show() calls overlap, and stale timers would flip the bar
+            // to hidden mid-update, making it (and the layout) flicker.
+            if (msgTimer) clearTimeout(msgTimer);
+            msgTimer = setTimeout(() => { msg.className = 'msg'; }, 4000);
         }
 
         async function loadInfo() {
@@ -73,6 +86,8 @@
                     'Running tasks': info.runningTasks,
                     'Queued tasks': info.queuedTasks,
                     'yt-dlp': info.ytdlpVersion || 'not installed',
+                    'deno': info.denoVersion || 'not installed',
+                    'ffmpeg': info.ffmpegVersion || 'not installed',
                     'Browser': info.browser,
                 };
                 for (const [k, v] of Object.entries(entries)) {
@@ -83,7 +98,31 @@
 
                 const tbody = document.getElementById('check-tbody');
                 tbody.innerHTML = '';
-                for (const r of (info.browserSelfCheck || [])) {
+                const checks = info.browserSelfCheck || [];
+                if (!checks.length) {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = '<td colspan="3" class="muted">Browser not running - run the self-check to start it.</td>';
+                    tbody.appendChild(tr);
+                }
+                for (const r of checks) {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML =
+                        '<td>' + esc(r.name) + '</td>' +
+                        '<td><span class="badge ' + (r.passed ? 'ok' : 'err') + '">' + (r.passed ? 'PASS' : 'FAIL') + '</span></td>' +
+                        '<td class="muted">' + esc(r.detail || '') + '</td>';
+                    tbody.appendChild(tr);
+                }
+            } catch (e) { show(e.message); }
+        }
+
+        async function runSelfCheck() {
+            try {
+                show('Running self-check...', true);
+                const results = await api('/api/system/self-check', { method: 'POST' });
+                if (!results) return;
+                const tbody = document.getElementById('check-tbody');
+                tbody.innerHTML = '';
+                for (const r of results) {
                     const tr = document.createElement('tr');
                     tr.innerHTML =
                         '<td>' + esc(r.name) + '</td>' +
@@ -96,16 +135,55 @@
 
         async function shutdown() {
             if (!confirm('Shut down the service?')) return;
-            try { await api('/api/system/shutdown', { method: 'POST' }); show('Shutting down...', true); }
-            catch (e) { show(e.message); }
+            try {
+                await api('/api/system/shutdown', { method: 'POST' });
+            } catch (e) {
+                // The server stops right after responding; an aborted
+                // response (connection reset) is expected, not an error.
+                if (!(e instanceof TypeError)) { show(e.message); return; }
+            }
+            show('Shutting down...', true);
+            setTimeout(() => { location.href = '/index.html'; }, 800);
         }
 
-        async function upgrade() {
+        async function upgrade(btn) {
+            if (btn.disabled) return;
+            btn.disabled = true;
+            show('Starting upgrade...', true);
             try {
-                const body = await api('/api/system/upgrade', { method: 'POST' });
-                show('Upgraded, yt-dlp ' + (body.version || 'unknown'), true);
-                loadInfo();
-            } catch (e) { show(e.message); }
+                const res = await api('/api/system/upgrade', { method: 'POST' });
+                if (!res) { btn.disabled = false; return; }
+                // Poll upgrade status so the message stays visible with the
+                // component currently being upgraded.
+                const poll = setInterval(async () => {
+                    let status;
+                    try {
+                        status = await api('/api/system/upgrade/status');
+                    } catch (e) {
+                        clearInterval(poll);
+                        btn.disabled = false;
+                        show(e.message);
+                        return;
+                    }
+                    if (!status) { clearInterval(poll); btn.disabled = false; return; }
+                    if (status.upgrading) {
+                        show('Upgrading ' + (status.component || 'components') + '...', true);
+                    } else if (status.lastError) {
+                        clearInterval(poll);
+                        btn.disabled = false;
+                        show('Upgrade failed: ' + status.lastError);
+                        loadInfo();
+                    } else {
+                        clearInterval(poll);
+                        btn.disabled = false;
+                        show('Upgrade finished', true);
+                        loadInfo();
+                    }
+                }, 700);
+            } catch (e) {
+                btn.disabled = false;
+                show(e.message);
+            }
         }
 
         function formatSize(bytes) {

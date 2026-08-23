@@ -95,6 +95,7 @@ public sealed class StartupTasksHostedService : BackgroundService
         var toInstall = new List<string>();
         if (_ytdlp.IsYtDlpInstalled()) ready.Add("yt-dlp"); else toInstall.Add("yt-dlp");
         if (_ytdlp.IsDenoInstalled()) ready.Add("deno"); else toInstall.Add("deno");
+        if (_ytdlp.IsFfmpegInstalled()) ready.Add("ffmpeg"); else toInstall.Add("ffmpeg");
         if (_browser.IsSystemBrowserDetected()) ready.Add("browser"); else toInstall.Add("browser");
 
         if (ready.Count > 0)
@@ -113,8 +114,8 @@ public sealed class StartupTasksHostedService : BackgroundService
             _log.Information("Installing missing components: {Components}", string.Join(", ", toInstall));
             try
             {
-                // yt-dlp/deno: only missing ones are installed (installed are silent).
-                if (!_ytdlp.IsYtDlpInstalled() || !_ytdlp.IsDenoInstalled())
+                // yt-dlp/deno/ffmpeg: only missing ones are installed (installed are silent).
+                if (!_ytdlp.IsYtDlpInstalled() || !_ytdlp.IsDenoInstalled() || !_ytdlp.IsFfmpegInstalled())
                 {
                     await _ytdlp.EnsureInstalledAsync(stoppingToken);
                 }

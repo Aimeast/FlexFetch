@@ -424,6 +424,11 @@ public sealed class StealthBrowserService : IAsyncDisposable
                 ExecutablePath = SystemBrowserPath,
                 Args = args.ToArray(),
                 IgnoreHTTPSErrors = true,
+                // Headless Chromium reports window.outerWidth/Height from the
+                // viewport (default 1280x720), so set it explicitly to match a
+                // common desktop window and keep the self-check window-size
+                // probe green.
+                ViewportSize = new ViewportSize { Width = 1366, Height = 768 },
             };
 
             Directory.CreateDirectory(Path.GetDirectoryName(_profileDir)!);

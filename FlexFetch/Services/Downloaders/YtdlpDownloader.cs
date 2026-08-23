@@ -367,6 +367,13 @@ public class YtdlpDownloader : IDownloader
         await Ytdlp.EnsureInstalledAsync(cancellationToken);
 
         var ytdlp = new YoutubeDL { YoutubeDLPath = Ytdlp.BinaryPath };
+        if (File.Exists(Ytdlp.FfmpegPath))
+        {
+            // Prefer the bundled ffmpeg (kept up to date by the upgrade
+            // command); fall back to the system PATH one when absent.
+            ytdlp.FFmpegPath = Ytdlp.FfmpegPath;
+        }
+
         var dlProgress = new Progress<DownloadProgress>(p =>
         {
             // Progress is a percentage (0-100); normalize to 0..1.
@@ -396,6 +403,13 @@ public class YtdlpDownloader : IDownloader
         await Ytdlp.EnsureInstalledAsync(cancellationToken);
 
         var ytdlp = new YoutubeDL { YoutubeDLPath = Ytdlp.BinaryPath };
+        if (File.Exists(Ytdlp.FfmpegPath))
+        {
+            // Prefer the bundled ffmpeg (kept up to date by the upgrade
+            // command); fall back to the system PATH one when absent.
+            ytdlp.FFmpegPath = Ytdlp.FfmpegPath;
+        }
+
         return await ytdlp.RunVideoDataFetch(url, ct: cancellationToken, overrideOptions: options);
     }
 }

@@ -3,6 +3,7 @@ using FlexFetch.Data;
 using FlexFetch.Services;
 using FlexFetch.Services.Downloaders;
 using FlexFetch.Services.Tasks;
+using ILogger = Serilog.ILogger;
 
 namespace FlexFetch.Api;
 
@@ -33,24 +34,62 @@ public static class SystemApi
                 runningTasks = tasks.RunningCount,
                 queuedTasks = tasks.QueuedCount,
                 ytdlpVersion = ytdlp.GetVersionAsync().GetAwaiter().GetResult(),
-                browser = browser.SystemBrowserPath ?? "not-detected",
+                denoVersion = ytdlp.GetDenoVersionAsync().GetAwaiter().GetResult(),
+                ffmpegVersion = ytdlp.GetFfmpegVersionAsync().GetAwaiter().GetResult(),
+                browser = StealthBrowserService.FindFirstExisting(StealthBrowserService.GetBrowserCandidates()) ?? "not-detected",
                 browserSelfCheck = browser.IsRunning ? browser.SelfCheckAsync().GetAwaiter().GetResult() : Array.Empty<DetectionCheckResult>(),
             });
         });
 
         var admin = app.MapGroup("/api/system").RequireAuthorization("Admin");
 
-        admin.MapPost("/shutdown", (IHostApplicationLifetime lifetime) =>
+        admin.MapPost("/self-check", async (StealthBrowserService browser) =>
         {
-            _ = Task.Run(() => lifetime.StopApplication());
-            return Results.Ok();
+            // Runs the anti-detection probes even when the browser has not
+            // been started yet (it initializes on first use).
+            var results = await browser.SelfCheckAsync();
+            return Results.Ok(results);
         });
 
-        admin.MapPost("/upgrade", async (YtdlpService ytdlp) =>
+        admin.MapPost("/shutdown", (IHostApplicationLifetime lifetime) =>
         {
-            await ytdlp.UpgradeYtDlpAsync();
-            return Results.Ok(new { version = await ytdlp.GetVersionAsync() });
+            // Mark the stop as API-initiated so the stop log can distinguish
+            // it from Ctrl+C / host signals.
+            Program.ShutdownByApi = true;
+            _ = Task.Run(() => lifetime.StopApplication());
+            return Results.Ok(new { shuttingDown = true });
         });
+
+        admin.MapPost("/upgrade", (YtdlpService ytdlp, ILogger log) =>
+        {
+            if (ytdlp.IsUpgrading)
+            {
+                return Results.Conflict(new { error = "An upgrade is already in progress" });
+            }
+
+            // Run in the background so the page can poll /upgrade/status and
+            // show live progress; the response returns immediately.
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await ytdlp.UpgradeAllAsync();
+                }
+                catch (Exception ex)
+                {
+                    log.Warning(ex, "Component upgrade failed");
+                }
+            });
+            return Results.Accepted((string?)null, new { upgrading = true });
+        });
+
+        admin.MapGet("/upgrade/status", (YtdlpService ytdlp) =>
+            Results.Ok(new
+            {
+                upgrading = ytdlp.IsUpgrading,
+                component = ytdlp.CurrentUpgradeComponent,
+                lastError = ytdlp.LastUpgradeError,
+            }));
     }
 
     private static (long FreeBytes, long TotalBytes) GetDiskInfo(string path)

@@ -99,6 +99,13 @@ button.danger:hover { background: #b91c1c; }
 .row { display: flex; gap: 0.5rem; align-items: center; }
 .row input { flex: 1; }
 
+/* Key-value list (e.g. System information): label right-aligned at a
+   fixed width, value left-aligned beside it for easy scanning. */
+.kv { display: flex; flex-direction: column; gap: 0.4rem; }
+.kv div { display: flex; gap: 1rem; align-items: baseline; }
+.kv b { flex: 0 0 10rem; text-align: right; white-space: nowrap; }
+.kv span { text-align: left; word-break: break-all; }
+
 .table-wrap {
     overflow-x: auto;
     width: 100%;

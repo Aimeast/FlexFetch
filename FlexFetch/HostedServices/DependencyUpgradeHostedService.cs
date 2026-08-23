@@ -44,6 +44,7 @@ public sealed class DependencyUpgradeHostedService : IntervalHostedService
 
         await _ytdlp.UpgradeYtDlpAsync(cancellationToken);
         await _ytdlp.UpgradeDenoAsync(cancellationToken);
+        await _ytdlp.UpgradeFfmpegAsync(cancellationToken);
     }
 
     private string Get(string key) => _config.Get(key) ?? ConfigRegistry.GetDefault(key);

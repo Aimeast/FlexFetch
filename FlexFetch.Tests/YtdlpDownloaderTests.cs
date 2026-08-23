@@ -78,6 +78,57 @@ public sealed class YtdlpDownloaderTests
     }
 
     [TestMethod]
+    public void ExtractFfmpegVersionNumber_ParsesStableVersion()
+    {
+        Assert.AreEqual("7.1", YtdlpService.ExtractFfmpegVersionNumber(
+            "ffmpeg version 7.1-essentials_build-www.gyan.dev Copyright (c) 2000-2025 the FFmpeg developers"));
+        // Patch-level versions (9.0.1) must not be truncated to 9.0.
+        Assert.AreEqual("9.0.1", YtdlpService.ExtractFfmpegVersionNumber(
+            "ffmpeg version 9.0.1-essentials_build-www.gyan.dev Copyright (c) 2000-2026 the FFmpeg developers"));
+        Assert.IsNull(YtdlpService.ExtractFfmpegVersionNumber(null));
+        Assert.IsNull(YtdlpService.ExtractFfmpegVersionNumber("garbage output"));
+    }
+
+    [TestMethod]
+    public void IsFfmpegUpToDate_ComparesInstalledVsLatest()
+    {
+        const string latest = "7.1";
+        var installed = "ffmpeg version 7.1-essentials_build-www.gyan.dev Copyright (c) 2000-2025 the FFmpeg developers";
+
+        Assert.IsTrue(YtdlpService.IsFfmpegUpToDate(installed, latest));
+        Assert.IsFalse(YtdlpService.IsFfmpegUpToDate("ffmpeg version 7.0-essentials_build", latest));
+        Assert.IsFalse(YtdlpService.IsFfmpegUpToDate(null, latest));
+
+        // 9.0.1 vs 9.0.1: equal (the earlier truncation bug made this false).
+        Assert.IsTrue(YtdlpService.IsFfmpegUpToDate(
+            "ffmpeg version 9.0.1-essentials_build-www.gyan.dev", "9.0.1"));
+        Assert.IsFalse(YtdlpService.IsFfmpegUpToDate(
+            "ffmpeg version 9.0-essentials_build-www.gyan.dev", "9.0.1"));
+    }
+
+    [TestMethod]
+    public async Task UpgradeFfmpeg_RemoteQueryFailure_KeepsInstalledBinary()
+    {
+        var dir = TestApp.CreateTempDataDir();
+        var components = Path.Combine(dir, "components");
+        Directory.CreateDirectory(components);
+        var ffmpegPath = Path.Combine(components, "ffmpeg.exe");
+        File.WriteAllBytes(ffmpegPath, new byte[] { 1, 2, 3 });
+
+        var config = new InMemoryConfigRepository();
+        var proxy = new DirectProxyService();
+        // The remote version query fails: the upgrade must not download
+        // blindly and must leave the installed binary untouched.
+        var service = new YtdlpService(
+            proxy, config, Log, dir,
+            _ => throw new InvalidOperationException("network down"));
+
+        await service.UpgradeFfmpegAsync(CancellationToken.None);
+
+        CollectionAssert.AreEqual(new byte[] { 1, 2, 3 }, File.ReadAllBytes(ffmpegPath));
+    }
+
+    [TestMethod]
     public void BuildAnalysis_Playlist_ExpandsChildren()
     {
         var downloader = CreateDownloader();

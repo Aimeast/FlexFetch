@@ -152,6 +152,15 @@ app.UseStaticFiles(new StaticFileOptions
     },
 });
 
+// Distinguish an API-triggered shutdown (SystemApi) from Ctrl+C / host
+// signals, so the stop log line identifies who asked the process to stop.
+app.Lifetime.ApplicationStopping.Register(() =>
+{
+    Log.Information(Program.ShutdownByApi
+        ? "Application stopping: graceful shutdown requested via system page"
+        : "Application stopping: interrupted by Ctrl+C or host signal");
+});
+
 app.Run();
 
 // Expose the generated Program class for integration tests (WebApplicationFactory).
@@ -159,4 +168,8 @@ public partial class Program
 {
     /// <summary>Process start time (UTC), surfaced by the system info API.</summary>
     public static readonly DateTime StartedAt = DateTime.UtcNow;
+
+    /// <summary>True when shutdown was requested via the system API, so the
+    /// stop log can distinguish it from Ctrl+C / host signals.</summary>
+    public static volatile bool ShutdownByApi;
 }
