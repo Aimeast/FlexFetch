@@ -108,6 +108,42 @@ public sealed class TaskService : IDisposable
             return false;
         }
 
+        // Virtual parents are aggregation containers for their children:
+        // retrying them must re-queue the failed children, not re-run the
+        // parent (re-expanding the list would duplicate the child tasks).
+        if (task.IsVirtual)
+        {
+            var children = _tasks.GetChildren(id);
+            var retried = 0;
+            foreach (var child in children)
+            {
+                if (child.Status is not (TaskStatus.Failed or TaskStatus.Queued))
+                {
+                    continue;
+                }
+
+                child.Status = TaskStatus.Queued;
+                child.Attempts = 0;
+                child.ErrorMessage = null;
+                _tasks.Update(child);
+                if (_queue.Writer.TryWrite(child))
+                {
+                    Interlocked.Increment(ref _queuedCount);
+                }
+
+                retried++;
+            }
+
+            if (retried > 0)
+            {
+                _log.Information("Task {TaskId} re-queued {Count} child tasks for retry", id, retried);
+                AggregateParent(id);
+                return true;
+            }
+
+            return false;
+        }
+
         // Retry applies to failed tasks and to tasks still sitting queued
         // (e.g. after an unexpected service stop the status may be left
         // queued without an error message): re-queueing restarts them.

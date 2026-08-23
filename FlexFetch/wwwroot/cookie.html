@@ -17,29 +17,25 @@
         </nav>
     </header>
     <main>
-        <div class="msg error" id="msg"></div>
+        <div class="msg" id="msg"></div>
 
         <div class="card">
-            <h2>Import cookies</h2>
-            <label for="group">Group name (optional)</label>
-            <input id="group" placeholder="youtube">
+            <h2>Parse cookies</h2>
             <label for="url">Site URL (optional, for Set-Cookie text)</label>
             <input id="url" placeholder="https://www.youtube.com">
-            <label for="text">Cookie text (Netscape file content or Set-Cookie header)</label>
-            <textarea id="text" rows="8" placeholder="# Netscape HTTP Cookie File&#10;.example.com&#9;TRUE&#9;/&#9;FALSE&#9;4102444800&#9;SID&#9;abc"></textarea>
+            <label for="text">Cookie text (JSON export, Netscape file, or Set-Cookie/url-encoded header)</label>
+            <textarea id="text" rows="8" placeholder='JSON: [{"domain":".example.com","name":"SID","value":"x","path":"/","secure":true,"httpOnly":true,"expirationDate":4102444800}]&#10;Netscape: .example.com&#9;TRUE&#9;/&#9;FALSE&#9;4102444800&#9;SID&#9;abc&#10;Set-Cookie: SID=abc; Path=/; Domain=.example.com; Secure; HttpOnly'></textarea>
             <div class="row" style="margin-top:0.75rem">
-                <button onclick="importCookies()">Import</button>
+                <button onclick="parseCookies()">Parse</button>
+                <button class="secondary" onclick="saveAll()">Save</button>
             </div>
         </div>
 
         <div class="card">
-            <h2>Groups</h2>
-            <div class="row" style="margin-bottom:0.75rem">
-                <input id="new-group" placeholder="New group name">
-                <button class="secondary" onclick="createGroup()">Create</button>
-            </div>
+            <h2>Cookies</h2>
+            <div class="muted" style="margin-bottom:0.5rem">Mark rows or whole groups for deletion, then press Save to apply.</div>
             <table>
-                <thead><tr><th>Name</th><th>URLs</th><th>Cookies</th><th></th></tr></thead>
+                <thead><tr><th>Domain</th><th>Cookies</th><th></th></tr></thead>
                 <tbody id="group-tbody"></tbody>
             </table>
         </div>
@@ -65,62 +61,461 @@
             setTimeout(() => { msg.className = 'msg'; }, 4000);
         }
 
-        async function importCookies() {
-            try {
-                const body = await api('/api/cookies/import', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        text: document.getElementById('text').value,
-                        groupName: document.getElementById('group').value || null,
-                        url: document.getElementById('url').value || null,
-                    }),
-                });
-                show('Imported ' + body.imported + ' cookies' + (body.skipped ? ', skipped ' + body.skipped : ''), true);
-                loadGroups();
-            } catch (e) { show(e.message); }
+        function esc(s) {
+            return (s || '').replace(/[&<>"']/g, c =>
+                ({ '&': '&', '<': '<', '>': '>', '"': '"', "'": '&#39;' }[c]));
         }
 
-        async function createGroup() {
-            const name = document.getElementById('new-group').value.trim();
-            if (!name) return;
-            try {
-                await api('/api/cookies/groups', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, urls: [] }),
-                });
-                document.getElementById('new-group').value = '';
-                loadGroups();
-            } catch (e) { show(e.message); }
+        function normDomain(d) {
+            return (d || '').replace(/^\.+/, '').toLowerCase();
         }
 
-        async function deleteGroup(id) {
+        function isActive(c) {
+            return !c.expiresAt || new Date(c.expiresAt).getTime() > Date.now();
+        }
+
+        // Convert unix seconds to a datetime-local input value (local time).
+        function toLocalInput(unixSecs) {
+            if (!unixSecs) return '';
+            const d = new Date(unixSecs * 1000);
+            const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
+            return local.toISOString().slice(0, 16);
+        }
+
+        // Convert a datetime-local input value back to unix seconds.
+        function fromLocalInput(value) {
+            if (!value) return null;
+            const t = new Date(value).getTime();
+            return isNaN(t) ? null : Math.floor(t / 1000);
+        }
+
+        // --- Client-side parsing (no server round-trip) ---
+
+        function parseTextLocal(text, url) {
+            const trimmed = text.trimStart();
+            if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+                return parseJsonText(text);
+            }
+            if (text.includes('\t') && looksLikeNetscape(text)) {
+                return parseNetscapeText(text);
+            }
+            return parseSetCookieText(text, url);
+        }
+
+        function parseJsonText(text) {
+            let doc;
             try {
-                await api('/api/cookies/groups/' + id, { method: 'DELETE' });
-                loadGroups();
-            } catch (e) { show(e.message); }
+                doc = JSON.parse(text);
+            } catch (e) {
+                return { cookies: [], errors: ['Invalid JSON: ' + e.message] };
+            }
+
+            const arr = Array.isArray(doc) ? doc : (doc && Array.isArray(doc.cookies) ? doc.cookies : null);
+            if (!arr) {
+                return { cookies: [], errors: ['JSON must be a cookie array or { cookies: [...] }'] };
+            }
+
+            const errors = [];
+            const cookies = [];
+            for (const item of arr) {
+                const domain = item && typeof item.domain === 'string' ? item.domain : null;
+                const name = item && typeof item.name === 'string' ? item.name : null;
+                if (!domain || !name) {
+                    errors.push('Cookie entry missing domain or name');
+                    continue;
+                }
+                const expires = item && typeof item.expirationDate === 'number' ? item.expirationDate : 0;
+                const session = !!(item && item.session);
+                cookies.push({
+                    domain: domain,
+                    name: name,
+                    value: item && typeof item.value === 'string' ? item.value : '',
+                    path: item && typeof item.path === 'string' && item.path ? item.path : '/',
+                    secure: !!(item && item.secure),
+                    httpOnly: !!(item && item.httpOnly),
+                    expirationDate: !session && expires > 0 ? Math.floor(expires) : null,
+                });
+            }
+            return { cookies: cookies, errors: errors };
+        }
+
+        function looksLikeNetscape(text) {
+            for (const line of text.split('\n')) {
+                const t = line.trim();
+                if (!t || t.startsWith('#')) continue;
+                return t.split('\t').length >= 7;
+            }
+            return false;
+        }
+
+        function parseNetscapeText(text) {
+            const errors = [];
+            const cookies = [];
+            for (const line of text.split('\n')) {
+                const trimmed = line.trim();
+                if (!trimmed) continue;
+
+                let httpOnly = false;
+                let body = trimmed;
+                if (body.startsWith('#HttpOnly_')) {
+                    httpOnly = true;
+                    body = body.slice('#HttpOnly_'.length);
+                } else if (body.startsWith('#')) {
+                    continue;
+                }
+
+                const parts = body.split('\t');
+                if (parts.length < 7) {
+                    errors.push('Malformed line: ' + trimmed.slice(0, 60));
+                    continue;
+                }
+
+                const expires = parseInt(parts[4], 10) || 0;
+                cookies.push({
+                    domain: parts[0],
+                    name: parts[5],
+                    value: parts[6],
+                    path: parts[2] || '/',
+                    secure: /^true$/i.test(parts[3]),
+                    httpOnly: httpOnly,
+                    expirationDate: expires > 0 ? expires : null,
+                });
+            }
+            return { cookies: cookies, errors: errors };
+        }
+
+        function parseSetCookieText(text, url) {
+            const errors = [];
+            const parts = text.split(';');
+            const nv = parts[0].split('=', 2);
+            if (nv.length !== 2) {
+                return { cookies: [], errors: ['Malformed Set-Cookie: ' + text.slice(0, 60)] };
+            }
+
+            const name = nv[0].trim();
+            const value = nv[1].trim();
+            if (!name) return { cookies: [], errors: errors };
+
+            let domain = '';
+            if (url) {
+                try { domain = new URL(url).hostname; } catch (e) { errors.push('Invalid URL'); }
+            }
+            let path = '/';
+            let secure = false;
+            let httpOnly = false;
+            let expiresAt = null;
+            let maxAge = null;
+
+            for (let i = 1; i < parts.length; i++) {
+                const pair = parts[i].split('=', 2);
+                const attr = pair[0].trim().toLowerCase();
+                const attrValue = pair.length > 1 ? pair[1].trim().replace(/^"|"$/g, '') : '';
+
+                if (attr === 'domain' && attrValue) domain = attrValue.replace(/^\./, '');
+                else if (attr === 'path' && attrValue) path = attrValue;
+                else if (attr === 'secure') secure = true;
+                else if (attr === 'httponly') httpOnly = true;
+                else if (attr === 'expires') {
+                    const d = new Date(attrValue);
+                    if (!isNaN(d.getTime())) expiresAt = d;
+                } else if (attr === 'max-age' && attrValue) {
+                    const age = parseInt(attrValue, 10);
+                    if (!isNaN(age)) maxAge = age;
+                }
+            }
+
+            if (!domain) {
+                errors.push('Site URL is required for Set-Cookie text');
+                return { cookies: [], errors: errors };
+            }
+            if (maxAge !== null) {
+                expiresAt = maxAge <= 0 ? new Date(Date.now() - 1000) : new Date(Date.now() + maxAge * 1000);
+            }
+
+            return {
+                cookies: [{
+                    domain: domain,
+                    name: name,
+                    value: value,
+                    path: path,
+                    secure: secure,
+                    httpOnly: httpOnly,
+                    expirationDate: expiresAt ? Math.floor(expiresAt.getTime() / 1000) : null,
+                }],
+                errors: errors,
+            };
+        }
+
+        // --- Groups rendering + delete-to-save marking ---
+
+        let groupRows = {}; // group id -> editable cookie rows
+        let groupNames = {}; // group id -> group name
+        let deletedCookies = []; // snapshots of cookie rows marked for deletion
+        let deletedGroups = new Set(); // group ids marked for deletion
+
+        function markKey(m) {
+            return m.gid + '\u0001' + normDomain(m.domain) + '\u0001' + (m.path || '/') + '\u0001' + (m.name || '');
+        }
+
+        function cookieSnapshot(gid, c) {
+            return { gid: gid, domain: c.domain, path: c.path, name: c.name };
+        }
+
+        function isCookieMarked(gid, i) {
+            const c = (groupRows[gid] || [])[i];
+            if (!c) return false;
+            const key = markKey(cookieSnapshot(gid, c));
+            return deletedCookies.some(m => markKey(m) === key);
+        }
+
+        function toggleDeleteCookie(gid, i) {
+            const c = (groupRows[gid] || [])[i];
+            if (!c) return;
+            const mark = cookieSnapshot(gid, c);
+            const key = markKey(mark);
+            const idx = deletedCookies.findIndex(m => markKey(m) === key);
+            if (idx >= 0) deletedCookies.splice(idx, 1);
+            else deletedCookies.push(mark);
+            renderGroups();
+        }
+
+        function toggleDeleteGroup(gid) {
+            if (deletedGroups.has(gid)) deletedGroups.delete(gid);
+            else deletedGroups.add(gid);
+            renderGroups();
         }
 
         async function loadGroups() {
             const groups = await api('/api/cookies');
             if (!groups) return;
+            groupRows = {};
+            groupNames = {};
+            deletedCookies = [];
+            deletedGroups = new Set();
+            for (const g of groups) {
+                const active = (g.cookies || [])
+                    .filter(c => isActive(c))
+                    .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+                groupRows[g.id] = active.map(c => ({
+                    domain: c.domain, name: c.name, value: c.value, path: c.path,
+                    secure: c.secure, httpOnly: c.httpOnly,
+                    expirationDate: c.expiresAt ? Math.floor(new Date(c.expiresAt).getTime() / 1000) : null,
+                }));
+                groupNames[g.id] = g.name;
+            }
+            renderGroups();
+        }
+
+        function renderGroups() {
             const tbody = document.getElementById('group-tbody');
             tbody.innerHTML = '';
-            for (const g of groups) {
+            for (const gid in groupRows) {
+                const rows = groupRows[gid];
+                const domain = (rows[0] && rows[0].domain) || groupNames[gid];
+                const marked = deletedGroups.has(gid);
                 const tr = document.createElement('tr');
+                if (marked) tr.className = 'marked-delete';
+                // Only saved groups can be marked for deletion (local new-
+                // groups have no backend id yet; abandon them by removing rows).
+                const groupBtn = !marked
+                    ? '<button class="danger" onclick="toggleDeleteGroup(\'' + gid + '\')">Delete</button>'
+                    : '<button class="secondary" onclick="toggleDeleteGroup(\'' + gid + '\')">Keep</button>';
+                const domainHtml = marked ? '<span class="deltxt">' + esc(domain) + '</span>' : esc(domain);
                 tr.innerHTML =
-                    '<td>' + esc(g.name) + '</td>' +
-                    '<td class="muted">' + esc((g.urls || []).join(', ')) + '</td>' +
-                    '<td>' + (g.cookies || []).length + '</td>' +
-                    '<td><button class="danger" onclick="deleteGroup(\'' + g.id + '\')">Delete</button></td>';
+                    '<td>' + domainHtml + '</td>' +
+                    '<td>' + rows.length + '</td>' +
+                    '<td>' + groupBtn + '</td>';
                 tbody.appendChild(tr);
+                tbody.appendChild(buildCookieDetail(gid));
             }
         }
 
-        function esc(s) {
-            return (s || '').replace(/[&<>"']/g, c =>
-                ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+        function buildCookieDetail(gid) {
+            const detail = document.createElement('tr');
+            detail.className = 'group-detail';
+            const td = document.createElement('td');
+            td.colSpan = 3;
+            const rows = groupRows[gid];
+            if (!rows.length) {
+                td.innerHTML = '<span class="muted">No active cookies</span>';
+            } else {
+                const table = document.createElement('table');
+                table.className = 'cookie-table';
+                table.innerHTML =
+                    '<thead><tr><th>Name</th><th>Value</th><th>Path</th>' +
+                    '<th>Secure</th><th>HttpOnly</th><th>Expires</th><th></th></tr></thead>';
+                const rowsTbody = document.createElement('tbody');
+                for (let i = 0; i < rows.length; i++) {
+                    const c = rows[i];
+                    const marked = isCookieMarked(gid, i);
+                    const row = document.createElement('tr');
+                    if (marked) row.className = 'marked-delete';
+                    const delBtn = marked
+                        ? '<button class="secondary" onclick="toggleDeleteCookie(\'' + gid + '\',' + i + ')">Keep</button>'
+                        : '<button class="danger" onclick="toggleDeleteCookie(\'' + gid + '\',' + i + ')">Delete</button>';
+                    row.innerHTML =
+                        '<td><input data-g="' + gid + '" data-i="' + i + '" data-f="name" value="' + esc(c.name) + '"></td>' +
+                        '<td><input data-g="' + gid + '" data-i="' + i + '" data-f="value" value="' + esc(c.value) + '"></td>' +
+                        '<td><input data-g="' + gid + '" data-i="' + i + '" data-f="path" value="' + esc(c.path) + '"></td>' +
+                        '<td><input type="checkbox" data-g="' + gid + '" data-i="' + i + '" data-f="secure"' + (c.secure ? ' checked' : '') + '></td>' +
+                        '<td><input type="checkbox" data-g="' + gid + '" data-i="' + i + '" data-f="httpOnly"' + (c.httpOnly ? ' checked' : '') + '></td>' +
+                        '<td><input type="datetime-local" data-g="' + gid + '" data-i="' + i + '" data-f="expirationDate" value="' +
+                        toLocalInput(c.expirationDate) + '"></td>' +
+                        '<td>' + delBtn + '</td>';
+                    rowsTbody.appendChild(row);
+                }
+                table.appendChild(rowsTbody);
+                td.appendChild(table);
+            }
+            detail.appendChild(td);
+            return detail;
+        }
+
+        document.getElementById('group-tbody').addEventListener('change', (e) => {
+            const gid = e.target.dataset.g;
+            const i = Number(e.target.dataset.i);
+            const f = e.target.dataset.f;
+            if (!gid || !groupRows[gid] || !groupRows[gid][i] || !f) return;
+            const c = groupRows[gid][i];
+            if (f === 'secure' || f === 'httpOnly') c[f] = e.target.checked;
+            else if (f === 'expirationDate') c[f] = fromLocalInput(e.target.value);
+            else c[f] = e.target.value;
+        });
+
+        // --- Parse + merge into the loaded groups ---
+
+        async function parseCookies() {
+            const text = document.getElementById('text').value;
+            const url = document.getElementById('url').value || null;
+            const result = parseTextLocal(text, url);
+            const cookies = result.cookies;
+            const errors = result.errors || [];
+
+            if (!cookies.length) {
+                show(errors.length ? errors.join('; ') : 'No cookies parsed', false);
+                return;
+            }
+
+            let added = 0;
+            let updated = 0;
+            for (const c of cookies) {
+                const gid = findGroupForDomain(c.domain);
+                if (gid) {
+                    const rows = groupRows[gid];
+                    const existing = rows.find(r =>
+                        normDomain(r.domain) === normDomain(c.domain)
+                        && (r.path || '/') === (c.path || '/')
+                        && r.name === c.name);
+                    if (existing) {
+                        existing.value = c.value;
+                        existing.secure = c.secure;
+                        existing.httpOnly = c.httpOnly;
+                        existing.expirationDate = c.expirationDate;
+                        updated++;
+                    } else {
+                        rows.push(c);
+                        added++;
+                    }
+                } else {
+                    // No group for this domain yet: create a local group so the
+                    // parsed cookie is visible immediately and saved on demand.
+                    const newGid = 'new-' + normDomain(c.domain);
+                    if (!groupRows[newGid]) {
+                        groupRows[newGid] = [];
+                        groupNames[newGid] = normDomain(c.domain);
+                    }
+                    groupRows[newGid].push(c);
+                    added++;
+                }
+            }
+
+            show('Parsed ' + cookies.length + ' cookies (' + added + ' added, ' + updated + ' updated)' +
+                (errors.length ? ' - ' + errors.join('; ') : ''), errors.length === 0);
+            renderGroups();
+        }
+
+        function findGroupForDomain(domain) {
+            const norm = normDomain(domain);
+            for (const gid in groupRows) {
+                if (groupRows[gid].some(c => normDomain(c.domain) === norm)) return gid;
+            }
+            return null;
+        }
+
+        async function saveAll() {
+            let imported = 0;
+            let skipped = 0;
+            let deleted = 0;
+            const errors = [];
+
+            // 1) Delete whole groups marked for deletion (synced groups only).
+            for (const gid of Array.from(deletedGroups)) {
+                if (gid.startsWith('new-')) continue;
+                try {
+                    await api('/api/cookies/groups/' + gid, { method: 'DELETE' });
+                    deleted++;
+                    delete groupRows[gid];
+                    delete groupNames[gid];
+                } catch (e) {
+                    errors.push('Delete group: ' + e.message);
+                }
+            }
+
+            // 2) Delete cookie rows marked for deletion (in surviving groups).
+            for (const m of Array.from(deletedCookies)) {
+                if (!groupRows[m.gid]) continue; // parent group was deleted above
+                if (!m.gid.startsWith('new-')) {
+                    try {
+                        await api('/api/cookies/items/delete', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                groupName: groupNames[m.gid],
+                                domain: m.domain,
+                                path: m.path,
+                                name: m.name,
+                            }),
+                        });
+                        deleted++;
+                    } catch (e) {
+                        errors.push('Delete cookie: ' + e.message);
+                    }
+                }
+                const rows = groupRows[m.gid];
+                const ri = rows.findIndex(r =>
+                    normDomain(r.domain) === normDomain(m.domain)
+                    && (r.path || '/') === (m.path || '/')
+                    && (r.name || '') === (m.name || ''));
+                if (ri >= 0) rows.splice(ri, 1);
+            }
+
+            // 3) Import the remaining rows (deleted rows already removed).
+            for (const gid in groupRows) {
+                const rows = groupRows[gid];
+                if (!rows.length) continue;
+                try {
+                    const body = await api('/api/cookies/import-items', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            groupName: groupNames[gid] || null,
+                            cookies: rows,
+                        }),
+                    });
+                    imported += body.imported;
+                    skipped += body.skipped;
+                    if (body.errors && body.errors.length) errors.push(...body.errors);
+                } catch (e) {
+                    errors.push(e.message);
+                }
+            }
+
+            show('Saved ' + imported + ' cookies' + (deleted ? ', deleted ' + deleted : '') +
+                (skipped ? ', skipped ' + skipped : '') +
+                (errors.length ? ' - ' + errors.join('; ') : ''), errors.length === 0);
+            deletedCookies = [];
+            deletedGroups = new Set();
+            loadGroups();
         }
 
         document.getElementById('logout-link').onclick = async () => {

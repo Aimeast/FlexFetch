@@ -25,6 +25,7 @@ public class YtdlpDownloader : IDownloader
     protected readonly ILogger Log;
 
     private readonly Func<string, OptionSet, CancellationToken, Task<RunResult<VideoData>>> _fetchData;
+    private readonly Func<string, OptionSet, Action<double>, CancellationToken, Task<RunResult<string>>> _downloadVideo;
 
     public YtdlpDownloader(
         YtdlpService ytdlp,
@@ -32,7 +33,8 @@ public class YtdlpDownloader : IDownloader
         StorageService storage,
         ILogger log,
         CookiePoolService cookies,
-        Func<string, OptionSet, CancellationToken, Task<RunResult<VideoData>>>? fetchData = null)
+        Func<string, OptionSet, CancellationToken, Task<RunResult<VideoData>>>? fetchData = null,
+        Func<string, OptionSet, Action<double>, CancellationToken, Task<RunResult<string>>>? download = null)
     {
         Ytdlp = ytdlp;
         Proxy = proxy;
@@ -40,6 +42,7 @@ public class YtdlpDownloader : IDownloader
         Log = log;
         Cookies = cookies;
         _fetchData = fetchData ?? DefaultFetchDataAsync;
+        _downloadVideo = download ?? DefaultDownloadVideoAsync;
     }
 
     public virtual string Type => "Ytdlp";
@@ -51,7 +54,7 @@ public class YtdlpDownloader : IDownloader
         || url.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Builds the yt-dlp option set for a fetch/download call.</summary>
-    public OptionSet BuildOptions(Uri url, string? outputPath = null, string? cookieFile = null)
+    public virtual OptionSet BuildOptions(Uri url, string? outputPath = null, string? cookieFile = null)
     {
         var options = new OptionSet
         {
@@ -83,8 +86,11 @@ public class YtdlpDownloader : IDownloader
     {
         if (data.Entries is { Length: > 0 })
         {
+            // Skip entries without a URL or a title: unavailable/dead videos
+            // (e.g. terminated accounts) still appear in playlist output but
+            // would only fail during the child download.
             var children = data.Entries
-                .Where(e => !string.IsNullOrEmpty(e.Url))
+                .Where(e => !string.IsNullOrEmpty(e.Url) && !string.IsNullOrEmpty(e.Title))
                 .Select(e => new MediaChild { Url = e.Url, Title = e.Title })
                 .ToList();
             return new AnalysisResult
@@ -173,6 +179,10 @@ public class YtdlpDownloader : IDownloader
         {
             return null;
         }
+
+        var domains = cookies.Select(c => c.Domain).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        Log.Information("Task {TaskId}: attaching {Count} cookies for {Url} (domains: {Domains})",
+            taskId, cookies.Count, url, string.Join(", ", domains));
 
         CookieFile.Write(Storage.DataDir, taskId, cookies);
         return CookieFile.GetPath(Storage.DataDir, taskId);
@@ -286,39 +296,88 @@ public class YtdlpDownloader : IDownloader
 
     public async Task DownloadAsync(TaskItem task, AnalysisResult analysis, Action<double> progress, CancellationToken cancellationToken)
     {
-        // Ensure yt-dlp is available before using it (lazy install).
+        // Prefer the analyzed file name (title + extension) so downloads keep
+        // their extension; the stored name is only a fallback for cases where
+        // analysis produced no suggestion.
+        var outputPath = Storage.GetTaskDir(task.Id) + Path.DirectorySeparatorChar
+            + (analysis.SuggestedFileName ?? task.FileName ?? "video.mp4");
+        var options = BuildOptions(new Uri(task.Url), outputPath);
+
+        string? cookieFile = null;
+        try
+        {
+            // Attach pool cookies up front: the analysis phase already used
+            // them, so the download must carry the same authenticated state.
+            cookieFile = AttachCookiesIfAny(task.Url, task.Id);
+            if (cookieFile is not null)
+            {
+                options.Cookies = cookieFile;
+            }
+
+            var result = await _downloadVideo(task.Url, options, progress, cancellationToken);
+            if (!result.Success && cookieFile is null && TryClassifyAuthError(result.ErrorOutput, out var reason))
+            {
+                // First attempt had no cookies; retry once with the pool cookies.
+                cookieFile = AttachCookiesIfAny(task.Url, task.Id);
+                if (cookieFile is not null)
+                {
+                    options.Cookies = cookieFile;
+                    result = await _downloadVideo(task.Url, options, progress, cancellationToken);
+                }
+
+                if (!result.Success)
+                {
+                    throw new AuthRequiredException(
+                        reason, BuildFailureMessage(result.ErrorOutput, "yt-dlp download failed with cookies"));
+                }
+            }
+
+            if (!result.Success)
+            {
+                if (TryClassifyAuthError(result.ErrorOutput, out var authReason))
+                {
+                    throw new AuthRequiredException(
+                        authReason, BuildFailureMessage(result.ErrorOutput, "yt-dlp download failed"));
+                }
+
+                throw BuildFailure(result.ErrorOutput, "yt-dlp download failed");
+            }
+
+            task.FileName = Path.GetFileName(outputPath);
+            task.FileSize = File.Exists(outputPath) ? new FileInfo(outputPath).Length : null;
+        }
+        finally
+        {
+            if (cookieFile is not null)
+            {
+                WriteBackCookiesAndCleanup(cookieFile, task.Id);
+            }
+        }
+    }
+
+    /// <summary>Runs the real yt-dlp binary to download the video (injectable in tests).</summary>
+    private async Task<RunResult<string>> DefaultDownloadVideoAsync(
+        string url,
+        OptionSet options,
+        Action<double> progress,
+        CancellationToken cancellationToken)
+    {
+        // Ensure yt-dlp is available before invoking the real binary
+        // (lazy install; tests inject a fake download delegate and skip this).
         await Ytdlp.EnsureInstalledAsync(cancellationToken);
 
         var ytdlp = new YoutubeDL { YoutubeDLPath = Ytdlp.BinaryPath };
-        var outputPath = Storage.GetTaskDir(task.Id) + Path.DirectorySeparatorChar
-            + (task.FileName ?? analysis.SuggestedFileName ?? "video.mp4");
-        var options = BuildOptions(new Uri(task.Url), outputPath);
-
         var dlProgress = new Progress<DownloadProgress>(p =>
         {
             // Progress is a percentage (0-100); normalize to 0..1.
             progress(Math.Clamp(p.Progress / 100f, 0f, 1f));
         });
 
-        var result = await ytdlp.RunVideoDownload(
-            task.Url,
+        return await ytdlp.RunVideoDownload(
+            url,
             ct: cancellationToken,
             progress: dlProgress,
             overrideOptions: options);
-
-        if (!result.Success)
-        {
-            if (TryClassifyAuthError(result.ErrorOutput, out var reason))
-            {
-                throw new AuthRequiredException(
-                    reason, BuildFailureMessage(result.ErrorOutput, "yt-dlp download failed"));
-            }
-
-            throw BuildFailure(result.ErrorOutput, "yt-dlp download failed");
-        }
-
-        task.FileName = Path.GetFileName(outputPath);
-        task.FileSize = File.Exists(outputPath) ? new FileInfo(outputPath).Length : null;
     }
 
     protected static string SanitizeTitle(string? title)

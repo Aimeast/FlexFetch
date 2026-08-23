@@ -132,6 +132,57 @@ th:nth-child(2), td:nth-child(2) { width: 9rem; min-width: 9rem; }
 th:nth-child(3), td:nth-child(3) { width: 6.5rem; min-width: 6.5rem; }
 th:nth-child(4), td:nth-child(4) { width: 9.5rem; min-width: 9.5rem; }
 
+/* Cookie pool page: per-group cookie detail table (nested under the group row).
+   Value takes the remaining space, boolean flags stay narrow, and the
+   expiration column is wide enough for a datetime-local picker. */
+table.cookie-table {
+    table-layout: fixed;
+    width: 100%;
+    font-size: 0.78rem;
+}
+
+table.cookie-table th,
+table.cookie-table td {
+    padding: 0.25rem 0.5rem;
+}
+
+table.cookie-table th:nth-child(1),
+table.cookie-table td:nth-child(1) { width: 22%; }
+table.cookie-table th:nth-child(2),
+table.cookie-table td:nth-child(2) { width: auto; min-width: 0; }
+table.cookie-table th:nth-child(3),
+table.cookie-table td:nth-child(3) { width: 8%; }
+table.cookie-table th:nth-child(4),
+table.cookie-table td:nth-child(4) { width: 4.5rem; }
+table.cookie-table th:nth-child(5),
+table.cookie-table td:nth-child(5) { width: 5.5rem; }
+table.cookie-table th:nth-child(6),
+table.cookie-table td:nth-child(6) { width: 13rem; }
+table.cookie-table th:nth-child(7),
+table.cookie-table td:nth-child(7) { width: 5rem; white-space: nowrap; }
+
+/* Zebra striping and focus highlight for the cookie rows. */
+table.cookie-table tbody tr:nth-child(odd) { background: #f8fafc; }
+table.cookie-table tbody tr:focus-within { background: #e0f2fe; }
+
+/* Rows/groups marked for deletion: strike-through + faded background.
+   The inline inputs keep a normal background so they stay readable. */
+.marked-delete,
+.marked-delete td {
+    background: #ffebeb;
+    text-decoration: line-through;
+    color: var(--danger);
+}
+
+.marked-delete input,
+.marked-delete td input {
+    background: #ffebeb;
+    text-decoration: line-through;
+    color: var(--danger);
+}
+
+.marked-delete .deltxt { text-decoration: line-through; }
+
 /* Group header row: the original download URL spanning all columns.
    Flex layout: URL text takes the remaining space (wraps, never overlaps
    the right-aligned actions). */

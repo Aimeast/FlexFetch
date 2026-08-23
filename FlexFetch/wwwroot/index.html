@@ -302,8 +302,8 @@
                 actionsHtml += '<button class="danger" onclick="askDelete(\'' + t.id + '\')">Delete</button>';
             }
             const actions = actionsHtml ? '<span class="url-actions">' + actionsHtml + '</span>' : '';
-            return '<td colspan="4" class="group-url-cell"><span class="url-row"><span class="url-text">' +
-                esc(t.url) + '</span>' + actions + '</span></td>';
+            return '<td colspan="4" class="group-url-cell"><span class="url-row"><a class="url-text" href="' +
+                esc(t.url) + '" target="_blank" rel="noopener noreferrer">' + esc(t.url) + '</a>' + actions + '</span></td>';
         }
 
         function contentRowHtml(t) {

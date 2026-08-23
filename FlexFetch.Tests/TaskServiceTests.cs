@@ -246,6 +246,53 @@ public sealed class TaskServiceTests
     }
 
     [TestMethod]
+    public async Task Retry_VirtualParent_RequeuesFailedChildrenInsteadOfReexpanding()
+    {
+        // A playlist parent already expanded into children (IsVirtual): retry
+        // must re-queue the failed children, not re-run the parent (which
+        // would create a second set of child tasks).
+        var parentCalls = 0;
+        var childCalls = 0;
+        _executor!.Handler = (task, progress, ct) =>
+        {
+            if (task.IsVirtual)
+            {
+                parentCalls++;
+                return Task.CompletedTask;
+            }
+
+            childCalls++;
+            task.FileName = "child.bin";
+            return Task.CompletedTask;
+        };
+
+        var parent = new TaskItem
+        {
+            OwnerUserId = "user-1",
+            Url = "https://example.com/playlist",
+            DownloaderType = "Playlist",
+            Status = TaskStatus.Failed,
+            IsVirtual = true,
+            ErrorMessage = "#child-x: boom",
+        };
+        _tasks!.Insert(parent);
+        var failedChild = new TaskItem { OwnerUserId = "user-1", Url = "https://example.com/a.mp4", ParentId = parent.Id, Status = TaskStatus.Failed, ErrorMessage = "boom" };
+        var doneChild = new TaskItem { OwnerUserId = "user-1", Url = "https://example.com/b.mp4", ParentId = parent.Id, Status = TaskStatus.Completed };
+        _tasks.Insert(failedChild);
+        _tasks.Insert(doneChild);
+
+        Assert.IsTrue(_service!.Retry(parent.Id));
+        await WaitForStatusAsync(failedChild.Id, TaskStatus.Completed);
+        await WaitForStatusAsync(doneChild.Id, TaskStatus.Completed);
+
+        // The parent itself is never re-executed; only its failed child ran.
+        Assert.AreEqual(0, parentCalls);
+        Assert.AreEqual(1, childCalls);
+        var reloadedParent = _service.GetById(parent.Id)!;
+        Assert.IsTrue(reloadedParent.IsVirtual);
+    }
+
+    [TestMethod]
     public async Task Delete_RemovesTaskAndFiles()
     {
         _executor!.Handler = (task, progress, ct) =>

@@ -1,4 +1,5 @@
-﻿using FlexFetch.Data;
+﻿using System.Text.Json;
+using FlexFetch.Data;
 using FlexFetch.Entities;
 using FlexFetch.Enums;
 
@@ -145,17 +146,128 @@ public sealed class CookiePoolService
         return new CookieImportResult(imported, skipped, errors);
     }
 
-    /// <summary>Imports pasted text, auto-detecting the format (Netscape file or Set-Cookie header).</summary>
-    public CookieImportResult ImportText(Uri url, string text, string? groupName = null)
+    /// <summary>Imports pasted text, auto-detecting the format (JSON, Netscape file or Set-Cookie header).</summary>
+    public CookieImportResult ImportText(Uri? url, string text, string? groupName = null)
     {
+        var trimmed = text.TrimStart();
+        if (trimmed.StartsWith('{') || trimmed.StartsWith('['))
+        {
+            return ImportJson(text, groupName);
+        }
+
         if (text.Contains('\t') && (text.Contains("# HttpOnly") || text.Contains("#HttpOnly_") || LooksLikeNetscape(text)))
         {
             return ImportNetscape(text, groupName);
         }
 
         // Fall back to Set-Cookie style ("name=value; Path=...; Domain=...").
+        if (url is null)
+        {
+            return new CookieImportResult(0, 0, new List<string> { "Site URL is required for Set-Cookie text" });
+        }
+
         return ImportSetCookie(url, new[] { text }, groupName);
     }
+
+    /// <summary>Imports cookies from a browser-extension JSON export (array or { cookies: [...] }).</summary>
+    public CookieImportResult ImportJson(string content, string? groupName = null)
+    {
+        var errors = new List<string>();
+        var imported = 0;
+        var skipped = 0;
+
+        foreach (var cookie in ParseJson(content, errors))
+        {
+            var ok = AddToGroup(groupName, cookie, errors);
+            if (ok) imported++; else skipped++;
+        }
+
+        return new CookieImportResult(imported, skipped, errors);
+    }
+
+    /// <summary>Imports an already-edited cookie list into the pool.</summary>
+    public CookieImportResult ImportItems(IEnumerable<CookieItem> cookies, string? groupName = null)
+    {
+        var errors = new List<string>();
+        var imported = 0;
+        var skipped = 0;
+
+        foreach (var cookie in cookies)
+        {
+            var ok = AddToGroup(groupName, cookie, errors);
+            if (ok) imported++; else skipped++;
+        }
+
+        return new CookieImportResult(imported, skipped, errors);
+    }
+
+    private static List<CookieItem> ParseJson(string content, List<string> errors)
+    {
+        var result = new List<CookieItem>();
+        try
+        {
+            using var doc = JsonDocument.Parse(content);
+            var root = doc.RootElement;
+
+            // Accept either a bare array or { "cookies": [...] }.
+            JsonElement array;
+            if (root.ValueKind == JsonValueKind.Array)
+            {
+                array = root;
+            }
+            else if (root.TryGetProperty("cookies", out var wrapped) && wrapped.ValueKind == JsonValueKind.Array)
+            {
+                array = wrapped;
+            }
+            else
+            {
+                errors.Add("JSON must be a cookie array or { cookies: [...] }");
+                return result;
+            }
+
+            foreach (var item in array.EnumerateArray())
+            {
+                var domain = GetString(item, "domain");
+                var name = GetString(item, "name");
+                if (string.IsNullOrEmpty(domain) || string.IsNullOrEmpty(name))
+                {
+                    errors.Add("Cookie entry missing domain or name");
+                    continue;
+                }
+
+                var expires = item.TryGetProperty("expirationDate", out var exp) && exp.ValueKind == JsonValueKind.Number
+                    ? exp.GetDouble()
+                    : 0;
+                var session = item.TryGetProperty("session", out var sess) && sess.ValueKind == JsonValueKind.True;
+                result.Add(new CookieItem
+                {
+                    Domain = domain,
+                    Path = string.IsNullOrEmpty(GetString(item, "path")) ? "/" : GetString(item, "path")!,
+                    Secure = GetBool(item, "secure"),
+                    HttpOnly = GetBool(item, "httpOnly"),
+                    ExpiresAt = !session && expires > 0
+                        ? DateTimeOffset.FromUnixTimeSeconds((long)expires).UtcDateTime
+                        : null,
+                    Name = name,
+                    Value = GetString(item, "value") ?? string.Empty,
+                });
+            }
+        }
+        catch (JsonException ex)
+        {
+            errors.Add($"Invalid JSON: {ex.Message}");
+        }
+
+        return result;
+    }
+
+    private static string? GetString(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+
+    private static bool GetBool(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.True;
 
     // --- Groups ---
 
@@ -176,6 +288,34 @@ public sealed class CookiePoolService
 
     public bool DeleteGroup(string id) => _repo.DeleteGroup(id);
 
+    /// <summary>Removes a single cookie from a group (matched by normalized domain, path and name).</summary>
+    public bool RemoveCookie(string? groupName, string domain, string path, string name)
+    {
+        lock (_lock)
+        {
+            var group = string.IsNullOrWhiteSpace(groupName)
+                ? FindGroupFor(domain)
+                : _repo.GetGroupByName(groupName!);
+            if (group is null)
+            {
+                return false;
+            }
+
+            var removed = group.Cookies.RemoveAll(c =>
+                string.Equals(NormalizeDomain(c.Domain), NormalizeDomain(domain), StringComparison.Ordinal)
+                && string.Equals(c.Path ?? "/", path ?? "/", StringComparison.Ordinal)
+                && string.Equals(c.Name, name, StringComparison.Ordinal));
+            if (removed == 0)
+            {
+                return false;
+            }
+
+            group.UpdatedAt = DateTime.UtcNow;
+            _repo.UpdateGroup(group);
+            return true;
+        }
+    }
+
     // --- Internals ---
 
     private bool AddToGroup(string? groupName, CookieItem cookie, List<string> errors)
@@ -183,16 +323,25 @@ public sealed class CookiePoolService
         lock (_lock)
         {
             var group = string.IsNullOrWhiteSpace(groupName)
-                ? FindGroupFor(cookie.Domain) ?? GetOrCreateGroup(DefaultGroupName)
+                ? FindGroupFor(cookie.Domain) ?? GetOrCreateGroup(NormalizeDomain(cookie.Domain))
                 : GetOrCreateGroup(groupName!);
 
+            // One domain per group: refuse cookies for a different domain,
+            // so the group list can show the domain name instead of a column.
+            if (group.Cookies.Count > 0
+                && !string.Equals(NormalizeDomain(group.Cookies[0].Domain), NormalizeDomain(cookie.Domain), StringComparison.Ordinal))
+            {
+                errors.Add($"Group '{group.Name}' is for domain '{group.Cookies[0].Domain}', not '{cookie.Domain}'");
+                return false;
+            }
+
             if (group.Cookies.Any(c =>
-                    string.Equals(c.Domain, cookie.Domain, StringComparison.OrdinalIgnoreCase)
+                    string.Equals(NormalizeDomain(c.Domain), NormalizeDomain(cookie.Domain), StringComparison.Ordinal)
                     && string.Equals(c.Path ?? "/", cookie.Path ?? "/", StringComparison.Ordinal)
                     && string.Equals(c.Name, cookie.Name, StringComparison.Ordinal)))
             {
                 var existing = group.Cookies.First(c =>
-                    string.Equals(c.Domain, cookie.Domain, StringComparison.OrdinalIgnoreCase)
+                    string.Equals(NormalizeDomain(c.Domain), NormalizeDomain(cookie.Domain), StringComparison.Ordinal)
                     && string.Equals(c.Path ?? "/", cookie.Path ?? "/", StringComparison.Ordinal)
                     && string.Equals(c.Name, cookie.Name, StringComparison.Ordinal));
                 existing.Value = cookie.Value;
@@ -214,9 +363,10 @@ public sealed class CookiePoolService
 
     private CookieGroup? FindGroupFor(string domain)
     {
+        var normalized = NormalizeDomain(domain);
         foreach (var group in _repo.GetAllGroups())
         {
-            if (group.Cookies.Any(c => string.Equals(c.Domain, domain, StringComparison.OrdinalIgnoreCase)))
+            if (group.Cookies.Any(c => string.Equals(NormalizeDomain(c.Domain), normalized, StringComparison.Ordinal)))
             {
                 return group;
             }
@@ -226,7 +376,10 @@ public sealed class CookiePoolService
 
     private CookieGroup GetOrCreateGroup(string name)
     {
-        var existing = _repo.GetGroupByName(name);
+        var normalized = NormalizeDomain(name);
+        var existing = _repo.GetGroupByName(name)
+            ?? _repo.GetAllGroups().FirstOrDefault(g =>
+                string.Equals(NormalizeDomain(g.Name), normalized, StringComparison.Ordinal));
         if (existing is not null)
         {
             return existing;
@@ -236,6 +389,10 @@ public sealed class CookiePoolService
         _repo.InsertGroup(group);
         return group;
     }
+
+    /// <summary>Canonical form of a cookie domain: no leading dot, lowercase.</summary>
+    private static string NormalizeDomain(string? domain) =>
+        (domain ?? string.Empty).TrimStart('.').ToLowerInvariant();
 
     private static bool IsExpired(CookieItem cookie) =>
         cookie.ExpiresAt is not null && cookie.ExpiresAt.Value.ToUniversalTime() <= DateTime.UtcNow;

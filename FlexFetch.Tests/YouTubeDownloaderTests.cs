@@ -32,7 +32,8 @@ public sealed class YouTubeDownloaderTests
     }
 
     private static (YouTubeDownloader Downloader, CookiePoolService Pool) CreateDownloaderWithPool(
-        Func<string, OptionSet, CancellationToken, Task<RunResult<VideoData>>>? fetch = null)
+        Func<string, OptionSet, CancellationToken, Task<RunResult<VideoData>>>? fetch = null,
+        Func<string, OptionSet, Action<double>, CancellationToken, Task<RunResult<string>>>? download = null)
     {
         var dir = TestApp.CreateTempDataDir();
         var config = new InMemoryConfigRepository();
@@ -41,7 +42,7 @@ public sealed class YouTubeDownloaderTests
         var storage = new StorageService(dir);
         var store = new LiteDbStore(Path.Combine(dir, "flexfetch.db"));
         var pool = new CookiePoolService(new CookieRepository(store));
-        return (new YouTubeDownloader(ytdlp, proxy, storage, Log, pool, fetch), pool);
+        return (new YouTubeDownloader(ytdlp, proxy, storage, Log, pool, fetch, download), pool);
     }
 
     [TestMethod]
@@ -74,6 +75,20 @@ public sealed class YouTubeDownloaderTests
         var options = downloader.BuildOptions(new Uri("https://www.youtube.com/watch?v=abc"));
 
         Assert.IsNull(options.Proxy);
+    }
+
+    [TestMethod]
+    public void BuildOptions_SetsResilientPlayerClients()
+    {
+        var downloader = CreateDownloader();
+
+        var options = downloader.BuildOptions(new Uri("https://www.youtube.com/watch?v=abc"));
+
+        // A bot-challenge ("The page needs to be reloaded") is common on
+        // datacenter IPs. web_safari additionally demands a po_token and
+        // fails without one, so only clients that do not require it are used;
+        // the cookie attach-and-retry flow is unchanged.
+        Assert.AreEqual("youtube:player_client=android,tv,mweb", (string)options.ExtractorArgs);
     }
 
     [TestMethod]
@@ -236,6 +251,116 @@ public sealed class YouTubeDownloaderTests
 
         Assert.AreEqual(AuthFailureReason.Private, ex.Reason);
         Assert.AreEqual(1, calls); // no matching cookie -> no retry
+    }
+
+    [TestMethod]
+    public async Task DownloadAsync_WithPoolCookies_AttachesCookieFile()
+    {
+        string? cookieFileSeen = null;
+        var existsDuringDownload = false;
+        var (downloader, pool) = CreateDownloaderWithPool(
+            download: async (_, options, _, _) =>
+            {
+                cookieFileSeen = options.Cookies;
+                existsDuringDownload = cookieFileSeen is not null && File.Exists(cookieFileSeen);
+                return new RunResult<string>(true, Array.Empty<string>(), "video.mp4");
+            });
+        pool.UpsertCookies(new[] { new CookieItem { Domain = ".youtube.com", Name = "SID", Value = "x" } });
+
+        var task = new TaskItem { Id = "task-dl-1", Url = "https://www.youtube.com/watch?v=abc" };
+        var analysis = new AnalysisResult { Title = "T", SuggestedFileName = "T.mp4" };
+
+        await downloader.DownloadAsync(task, analysis, _ => { }, CancellationToken.None);
+
+        // The download carried the pool cookies and the file was cleaned up.
+        Assert.IsNotNull(cookieFileSeen);
+        Assert.IsTrue(existsDuringDownload, "cookie file should exist during the download");
+        Assert.IsFalse(File.Exists(cookieFileSeen), "cookie file should be deleted after the download");
+    }
+
+    [TestMethod]
+    public async Task DownloadAsync_AuthError_NoCookies_ThrowsAuthRequired()
+    {
+        var calls = 0;
+        var (downloader, _) = CreateDownloaderWithPool(
+            download: async (_, _, _, _) =>
+            {
+                calls++;
+                return new RunResult<string>(
+                    false,
+                    new[] { "ERROR: [youtube] abc: Sign in to confirm you're not a bot. Use --cookies." },
+                    null!);
+            });
+
+        var task = new TaskItem { Id = "task-dl-2", Url = "https://www.youtube.com/watch?v=abc" };
+        var analysis = new AnalysisResult { Title = "T", SuggestedFileName = "T.mp4" };
+
+        var ex = await Assert.ThrowsExactlyAsync<AuthRequiredException>(
+            () => downloader.DownloadAsync(task, analysis, _ => { }, CancellationToken.None));
+
+        Assert.AreEqual(AuthFailureReason.LoginRequired, ex.Reason);
+        Assert.AreEqual(1, calls); // no matching cookie -> no retry
+    }
+
+    [TestMethod]
+    public async Task DownloadAsync_AuthError_RetriesWithCookiesThenSucceeds()
+    {
+        var calls = 0;
+        string? cookieFileSeen = null;
+        CookiePoolService? poolRef = null;
+        var (downloader, pool) = CreateDownloaderWithPool(
+            download: async (_, options, _, _) =>
+            {
+                calls++;
+                if (calls == 1)
+                {
+                    // The first attempt has no pool cookies yet; simulate the
+                    // cookies appearing before the retry (e.g. manual import).
+                    poolRef!.UpsertCookies(new[] { new CookieItem { Domain = ".youtube.com", Name = "SID", Value = "x" } });
+                    return new RunResult<string>(
+                        false,
+                        new[] { "ERROR: [youtube] abc: Sign in to confirm you're not a bot. Use --cookies." },
+                        null!);
+                }
+
+                cookieFileSeen = options.Cookies;
+                return new RunResult<string>(true, Array.Empty<string>(), "video.mp4");
+            });
+        poolRef = pool;
+
+        var task = new TaskItem { Id = "task-dl-3", Url = "https://www.youtube.com/watch?v=abc" };
+        var analysis = new AnalysisResult { Title = "T", SuggestedFileName = "T.mp4" };
+
+        await downloader.DownloadAsync(task, analysis, _ => { }, CancellationToken.None);
+
+        // Retried exactly once, and the retry carried the cookie file.
+        Assert.AreEqual(2, calls);
+        Assert.IsNotNull(cookieFileSeen);
+        Assert.IsFalse(File.Exists(cookieFileSeen), "cookie file should be deleted after the retry");
+    }
+
+    [TestMethod]
+    public async Task DownloadAsync_AuthError_RetryStillFails_ThrowsAuthRequired()
+    {
+        var calls = 0;
+        var (downloader, pool) = CreateDownloaderWithPool(
+            download: async (_, _, _, _) =>
+            {
+                calls++;
+                return new RunResult<string>(
+                    false,
+                    new[] { "ERROR: [youtube] abc: Sign in to confirm you're not a bot. Use --cookies." },
+                    null!);
+            });
+        pool.UpsertCookies(new[] { new CookieItem { Domain = ".youtube.com", Name = "SID", Value = "x" } });
+
+        var task = new TaskItem { Id = "task-dl-4", Url = "https://www.youtube.com/watch?v=abc" };
+        var analysis = new AnalysisResult { Title = "T", SuggestedFileName = "T.mp4" };
+
+        var ex = await Assert.ThrowsExactlyAsync<AuthRequiredException>(
+            () => downloader.DownloadAsync(task, analysis, _ => { }, CancellationToken.None));
+
+        Assert.AreEqual(AuthFailureReason.LoginRequired, ex.Reason);
     }
 
     private sealed class InMemoryConfigRepository : IConfigRepository

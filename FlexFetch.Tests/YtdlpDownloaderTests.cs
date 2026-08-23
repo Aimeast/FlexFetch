@@ -99,6 +99,30 @@ public sealed class YtdlpDownloaderTests
     }
 
     [TestMethod]
+    public void BuildAnalysis_Playlist_SkipsDeadEntries()
+    {
+        var downloader = CreateDownloader();
+        var data = new VideoData
+        {
+            Title = "Collection",
+            Entries = new[]
+            {
+                new VideoData { Title = "Live", Url = "https://example.com/1" },
+                // Dead/unavailable videos (terminated accounts) still appear in
+                // playlist output with a URL but no title; they must not become
+                // child tasks.
+                new VideoData { Url = "https://example.com/dead" },
+                new VideoData { Title = "Also dead", Url = "" },
+            },
+        };
+
+        var analysis = downloader.BuildAnalysis(data);
+
+        Assert.HasCount(1, analysis.Children);
+        Assert.AreEqual("Live", analysis.Children[0].Title);
+    }
+
+    [TestMethod]
     public async Task AnalyzeAsync_UsesFetchedData()
     {
         var downloader = CreateDownloader(async (_, _, _) =>
