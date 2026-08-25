@@ -2,6 +2,7 @@
 using FlexFetch.Entities;
 using FlexFetch.Services;
 using FlexFetch.Services.Downloaders;
+using FlexFetch.Services.Refresh;
 using FlexFetch.Services.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Serilog;
@@ -112,12 +113,15 @@ public sealed class DownloaderFactoryTests
                 sp.GetRequiredService<IConfigRepository>(),
                 sp.GetRequiredService<Serilog.ILogger>(),
                 dir));
+            services.AddSingleton<ICookieRefreshStrategy, DefaultCookieRefreshStrategy>();
+            services.AddSingleton<ICookieRefreshStrategy, YouTubeCookieRefreshStrategy>();
             services.AddSingleton(sp => new StealthBrowserService(
                 sp.GetRequiredService<IProxyService>(),
                 new CookiePoolService(sp.GetRequiredService<ICookieRepository>()),
                 sp.GetRequiredService<StorageService>(),
                 sp.GetRequiredService<IConfigRepository>(),
-                sp.GetRequiredService<Serilog.ILogger>()));
+                sp.GetRequiredService<Serilog.ILogger>(),
+                sp.GetServices<ICookieRefreshStrategy>()));
             var provider = services.BuildServiceProvider();
 
             var factory = DownloaderFactory.Create(provider);

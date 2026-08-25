@@ -7,6 +7,7 @@ using FlexFetch.Data;
 using FlexFetch.Entities;
 using FlexFetch.Enums;
 using FlexFetch.Services;
+using FlexFetch.Services.Refresh;
 using FlexFetch.Services.Routing;
 using Microsoft.Playwright;
 using ILogger = Serilog.ILogger;
@@ -33,6 +34,8 @@ public sealed class StealthBrowserService : IAsyncDisposable
     private readonly SemaphoreSlim _initLock = new(1, 1);
     private readonly SemaphoreSlim _installLock = new(1, 1);
     private readonly Random _random = new();
+    private readonly ICookieRefreshStrategy[] _strategies;
+    private readonly ICookieRefreshStrategy _default;
 
     private IPlaywright? _playwright;
     private IBrowserContext? _context;
@@ -45,7 +48,8 @@ public sealed class StealthBrowserService : IAsyncDisposable
         CookiePoolService cookiePool,
         StorageService storage,
         IConfigRepository config,
-        ILogger log)
+        ILogger log,
+        IEnumerable<ICookieRefreshStrategy> strategies)
     {
         _proxy = proxy;
         _cookiePool = cookiePool;
@@ -53,6 +57,9 @@ public sealed class StealthBrowserService : IAsyncDisposable
         _log = log;
         _profileDir = Path.Combine(storage.DataDir, "profiles", "Chromium");
         _idleMinutes = 10;
+        _strategies = strategies.ToArray();
+        _default = _strategies.OfType<DefaultCookieRefreshStrategy>().FirstOrDefault()
+            ?? new DefaultCookieRefreshStrategy();
     }
 
     /// <summary>Detected system browser executable, or null when none is found.</summary>
@@ -299,6 +306,10 @@ public sealed class StealthBrowserService : IAsyncDisposable
         await _context!.AddCookiesAsync(cookies.Select(ToPlaywrightCookie).ToArray());
     }
 
+    /// <summary>Selects the refresh strategy for a group, falling back to the default.</summary>
+    private ICookieRefreshStrategy SelectStrategy(CookieGroup group) =>
+        _strategies.FirstOrDefault(s => s.IsMatch(group)) ?? _default;
+
     /// <summary>
     /// Humanized group refresh: injects the group's cookies, visits each site
     /// with random waits and scrolling, then exports the updated cookies and
@@ -310,6 +321,10 @@ public sealed class StealthBrowserService : IAsyncDisposable
         {
             return;
         }
+
+        // Site-specific checks (e.g. YouTube session rejection) come from the
+        // strategy selected for this group; other sites use the default.
+        var strategy = SelectStrategy(group);
 
         // Expose the in-progress state so the UI can show "Refreshing...".
         _cookiePool.MarkGroupRefreshing(group.Id);
@@ -335,7 +350,7 @@ public sealed class StealthBrowserService : IAsyncDisposable
                     .Take(Math.Min(3, group.Urls.Count))
                     .ToList();
                 var visited = 0;
-                var sessionRejected = false;
+                var sessionRejection = (string?)null;
                 foreach (var url in picks)
                 {
                     try
@@ -376,10 +391,7 @@ public sealed class StealthBrowserService : IAsyncDisposable
                         // Landing on a login / verification page means the
                         // presented session was not accepted: the refresh
                         // cannot renew it and must not fake success.
-                        if (IsLoginRedirectUrl(page.Url))
-                        {
-                            sessionRejected = true;
-                        }
+                        sessionRejection ??= strategy.GetSessionRejectionReason(page.Url);
                     }
                     catch (Exception ex)
                     {
@@ -396,16 +408,14 @@ public sealed class StealthBrowserService : IAsyncDisposable
                     return;
                 }
 
-                // The session is flagged by YouTube (InnerTube API calls were
-                // made but login was rejected): a refresh cannot revive it.
-                // Fail honestly so the pool keeps its old cookies and the user
-                // knows to re-export from a real browser.
-                if (sessionRejected)
+                // The site flagged the session (e.g. YouTube logged in=false):
+                // a refresh cannot revive it. Fail honestly so the pool keeps
+                // its old cookies and the user knows to re-export from a real
+                // browser.
+                if (sessionRejection is not null)
                 {
-                    _cookiePool.MarkGroupRefreshFailed(
-                        group.Id,
-                        "Session not recognized by YouTube (logged in=false); re-export cookies from a real browser");
-                    _log.Warning("Group {Group} refresh failed: session flagged by YouTube (logged in=false)", group.Name);
+                    _cookiePool.MarkGroupRefreshFailed(group.Id, sessionRejection);
+                    _log.Warning("Group {Group} refresh failed: session rejected ({Reason})", group.Name, sessionRejection);
                     return;
                 }
 
@@ -421,14 +431,11 @@ public sealed class StealthBrowserService : IAsyncDisposable
                 // of them -> the site rejected the session (flagged). Fail
                 // without touching the pool, so the old cookies stay for the
                 // user to re-export from a real browser.
-                var identityBefore = before.Where(c => IsIdentityCookieName(c.Name)).ToList();
-                var identityAfter = items.Where(c => IsIdentityCookieName(c.Name)).ToList();
-                if (identityBefore.Count > 0 && identityAfter.Count == 0)
+                var exportRejection = strategy.GetSessionRejectionReason(before, items);
+                if (exportRejection is not null)
                 {
-                    _cookiePool.MarkGroupRefreshFailed(
-                        group.Id,
-                        "Session cookies removed by site; re-export cookies from a real browser");
-                    _log.Warning("Group {Group} refresh failed: identity cookies vanished from browser", group.Name);
+                    _cookiePool.MarkGroupRefreshFailed(group.Id, exportRejection);
+                    _log.Warning("Group {Group} refresh failed: session rejected ({Reason})", group.Name, exportRejection);
                     return;
                 }
 
@@ -756,37 +763,6 @@ public sealed class StealthBrowserService : IAsyncDisposable
 
         return urls.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
     }
-
-    /// <summary>
-    /// True when the landing URL indicates a login or verification page
-    /// (accounts.google.com, Google servicelogin, /sorry challenge, generic
-    /// signin/login paths), meaning the presented session was not accepted.
-    /// </summary>
-    public static bool IsLoginRedirectUrl(string url)
-    {
-        if (string.IsNullOrWhiteSpace(url))
-        {
-            return false;
-        }
-
-        return url.Contains("accounts.google.com", StringComparison.OrdinalIgnoreCase)
-            || url.Contains("servicelogin", StringComparison.OrdinalIgnoreCase)
-            || url.Contains("/sorry/", StringComparison.OrdinalIgnoreCase)
-            || url.Contains("signin", StringComparison.OrdinalIgnoreCase)
-            || url.Contains("/login", StringComparison.OrdinalIgnoreCase);
-    }
-
-    /// <summary>
-    /// True for cookies that carry the session identity (auth/session tokens).
-    /// If these all vanish from the browser after a refresh visit, the site
-    /// rejected the presented session (flagged), and the refresh cannot
-    /// renew it - the pool should keep its old cookies instead of syncing
-    /// the deletions.
-    /// </summary>
-    private static bool IsIdentityCookieName(string name) =>
-        name.Contains("SID", StringComparison.OrdinalIgnoreCase)
-        || name.Contains("APISID", StringComparison.OrdinalIgnoreCase)
-        || name.Contains("LOGIN_INFO", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Forces HTTPS on a URL: Secure and __Secure-* cookies are only attached

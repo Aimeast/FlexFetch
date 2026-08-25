@@ -200,18 +200,6 @@ public sealed class StealthBrowserServiceTests
     }
 
     [TestMethod]
-    public void IsLoginRedirectUrl_DetectsLoginAndChallengePages()
-    {
-        Assert.IsTrue(StealthBrowserService.IsLoginRedirectUrl("https://accounts.google.com/signin"));
-        Assert.IsTrue(StealthBrowserService.IsLoginRedirectUrl("https://accounts.google.com/servicelogin"));
-        Assert.IsTrue(StealthBrowserService.IsLoginRedirectUrl("https://www.google.com/sorry/index"));
-        Assert.IsTrue(StealthBrowserService.IsLoginRedirectUrl("https://example.com/login"));
-        Assert.IsFalse(StealthBrowserService.IsLoginRedirectUrl("https://www.youtube.com/"));
-        Assert.IsFalse(StealthBrowserService.IsLoginRedirectUrl(null));
-        Assert.IsFalse(StealthBrowserService.IsLoginRedirectUrl(""));
-    }
-
-    [TestMethod]
     public void IsMediaResponse_FallsBackToExtension()
     {
         // Unknown binary content type with a media extension still counts.

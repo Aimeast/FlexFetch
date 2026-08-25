@@ -6,6 +6,7 @@ using FlexFetch.Enums;
 using FlexFetch.HostedServices;
 using FlexFetch.Services;
 using FlexFetch.Services.Downloaders;
+using FlexFetch.Services.Refresh;
 using FlexFetch.Services.Routing;
 using FlexFetch.Services.Tasks;
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -75,6 +76,10 @@ builder.Services.AddSingleton(sp => new YtdlpService(
     sp.GetRequiredService<ILogger>(),
     dataDir));
 builder.Services.AddSingleton<StealthBrowserService>();
+// Cookie refresh strategies: site-specific checks (YouTube session rejection)
+// are picked per group at refresh time; the default applies to other sites.
+builder.Services.AddSingleton<ICookieRefreshStrategy, DefaultCookieRefreshStrategy>();
+builder.Services.AddSingleton<ICookieRefreshStrategy, YouTubeCookieRefreshStrategy>();
 // Downloader plugins are self-discovered via reflection; no manual registration.
 builder.Services.AddSingleton(sp => DownloaderFactory.Create(sp));
 builder.Services.AddSingleton<ITaskExecutor>(sp => new DownloaderTaskExecutor(
