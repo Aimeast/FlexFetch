@@ -24,4 +24,10 @@ public interface IRouteRule
 
     /// <summary>Returns true when the rule matches the request.</summary>
     bool IsMatch(Uri url, IReadOnlyList<IPAddress> resolvedIps);
+
+    /// <summary>
+    /// True when the rule's domain suffixes match the host, without needing
+    /// DNS/IP resolution (used for fast, blocking-free route decisions).
+    /// </summary>
+    bool IsDomainMatch(string host);
 }

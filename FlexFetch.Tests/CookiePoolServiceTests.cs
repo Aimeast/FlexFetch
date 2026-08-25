@@ -1,5 +1,6 @@
 ﻿using FlexFetch.Data;
 using FlexFetch.Entities;
+using FlexFetch.Enums;
 using FlexFetch.Services;
 
 namespace FlexFetch.Tests;
@@ -377,6 +378,81 @@ public sealed class CookiePoolServiceTests
     }
 
     [TestMethod]
+    public void UpdateGroupUrls_ReplacesUrls()
+    {
+        var group = _pool!.CreateGroup("youtube", new[] { "https://www.youtube.com" });
+        Assert.HasCount(1, _pool.GetGroups().Single(g => g.Id == group.Id).Urls);
+
+        Assert.IsTrue(_pool.UpdateGroupUrls(group.Id, new[]
+        {
+            "  https://www.youtube.com/feed/trending  ",
+            "https://www.youtube.com/watch?v=abc",
+            "https://www.youtube.com",
+        }));
+
+        var urls = _pool.GetGroups().Single(g => g.Id == group.Id).Urls;
+        // Trimmed, blank filtered, deduplicated case-insensitively.
+        Assert.HasCount(3, urls);
+        Assert.AreEqual("https://www.youtube.com/feed/trending", urls[0]);
+        Assert.AreEqual("https://www.youtube.com/watch?v=abc", urls[1]);
+        Assert.AreEqual("https://www.youtube.com", urls[2]);
+
+        // Clearing the list empties the group's refresh targets.
+        Assert.IsTrue(_pool.UpdateGroupUrls(group.Id, Array.Empty<string>()));
+        Assert.HasCount(0, _pool.GetGroups().Single(g => g.Id == group.Id).Urls);
+
+        // Unknown group id -> false.
+        Assert.IsFalse(_pool.UpdateGroupUrls("missing", new[] { "https://x.com" }));
+    }
+
+    [TestMethod]
+    public void RefreshStatus_TransitionsRunningOkFailed()
+    {
+        var group = _pool!.CreateGroup("youtube", new[] { "https://www.youtube.com" });
+
+        // Running: error cleared, no timestamp yet.
+        Assert.IsTrue(_pool.MarkGroupRefreshing(group.Id));
+        var running = _pool.GetGroups().Single(g => g.Id == group.Id);
+        Assert.AreEqual(CookieRefreshStatus.Running, running.LastRefreshStatus);
+        Assert.IsNull(running.LastRefreshError);
+        Assert.IsNull(running.LastRefreshedAt);
+
+        // Ok: status + timestamp recorded.
+        Assert.IsTrue(_pool.MarkGroupRefreshed(group.Id));
+        var ok = _pool.GetGroups().Single(g => g.Id == group.Id);
+        Assert.AreEqual(CookieRefreshStatus.Ok, ok.LastRefreshStatus);
+        Assert.IsNotNull(ok.LastRefreshedAt);
+        Assert.IsNull(ok.LastRefreshError);
+
+        // Failed: status + error recorded, timestamp unchanged from Ok.
+        Assert.IsTrue(_pool.MarkGroupRefreshFailed(group.Id, "boom"));
+        var failed = _pool.GetGroups().Single(g => g.Id == group.Id);
+        Assert.AreEqual(CookieRefreshStatus.Failed, failed.LastRefreshStatus);
+        Assert.AreEqual("boom", failed.LastRefreshError);
+        Assert.AreEqual(ok.LastRefreshedAt, failed.LastRefreshedAt);
+
+        // Unknown id -> false.
+        Assert.IsFalse(_pool.MarkGroupRefreshing("missing"));
+        Assert.IsFalse(_pool.MarkGroupRefreshed("missing"));
+        Assert.IsFalse(_pool.MarkGroupRefreshFailed("missing", "x"));
+    }
+
+    [TestMethod]
+    public void RefreshGate_SerializesConcurrentRuns()
+    {
+        // First acquisition succeeds; a second concurrent one is rejected.
+        Assert.IsTrue(_pool!.TryStartRefresh());
+        Assert.IsTrue(_pool.IsRefreshing);
+        Assert.IsFalse(_pool.TryStartRefresh());
+
+        // After EndRefresh the gate is free again.
+        _pool.EndRefresh();
+        Assert.IsFalse(_pool.IsRefreshing);
+        Assert.IsTrue(_pool.TryStartRefresh());
+        _pool.EndRefresh();
+    }
+
+    [TestMethod]
     public void UpsertCookies_ReflowsIntoPool()
     {
         _pool!.ImportNetscape(".a.com\tTRUE\t/\tFALSE\t4102444800\tA\told\n");
@@ -384,6 +460,38 @@ public sealed class CookiePoolServiceTests
         _pool.UpsertCookies(new[] { Cookie(".a.com", "A", "new") });
 
         StringAssert.Contains(_pool.GetCookieHeader(new Uri("https://a.com/")), "A=new");
+    }
+
+    [TestMethod]
+    public void SyncGroupCookies_RemovesSiteDeletedAndExpired_KeepsConcurrentAndPresent()
+    {
+        // Pool starts with: A (site keeps it), B (site deletes it),
+        // C (already expired - browsers never export expired cookies).
+        _pool!.UpsertCookies(new[]
+        {
+            Cookie(".a.com", "A", "1"),
+            Cookie(".a.com", "B", "2"),
+            Cookie(".a.com", "C", "3", expiresAt: DateTime.UtcNow.AddDays(-1)),
+        });
+        var group = _pool.GetGroups().Single();
+        var before = group.Cookies.ToList();
+
+        // A concurrent task writes D after the snapshot was taken.
+        _pool.UpsertCookies(new[] { Cookie(".a.com", "D", "4") });
+
+        // The browser exports only A (B was removed by the site, C expired,
+        // D was not part of this refresh at all).
+        var removed = _pool.SyncGroupCookies(group.Id, before, new[] { Cookie(".a.com", "A", "new") });
+
+        Assert.AreEqual(2, removed); // B and C removed
+        var remaining = _pool.GetGroups().Single().Cookies;
+        Assert.HasCount(2, remaining);
+        Assert.IsTrue(remaining.Any(c => c.Name == "A")); // kept (still exported)
+        Assert.IsTrue(remaining.Any(c => c.Name == "D")); // kept (concurrent write, not in snapshot)
+        Assert.IsFalse(remaining.Any(c => c.Name is "B" or "C")); // removed
+
+        // Unknown group id -> nothing removed.
+        Assert.AreEqual(0, _pool.SyncGroupCookies("missing", before, Array.Empty<CookieItem>()));
     }
 
     [TestMethod]

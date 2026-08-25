@@ -1,4 +1,5 @@
 ﻿using FlexFetch.Entities;
+using FlexFetch.Enums;
 
 namespace FlexFetch.Entities;
 
@@ -18,4 +19,13 @@ public sealed class CookieGroup
     public List<CookieItem> Cookies { get; set; } = new();
 
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+
+    /// <summary>State of the latest browser refresh cycle.</summary>
+    public CookieRefreshStatus LastRefreshStatus { get; set; } = CookieRefreshStatus.Never;
+
+    /// <summary>When the last successful refresh completed, or null.</summary>
+    public DateTime? LastRefreshedAt { get; set; }
+
+    /// <summary>Error message of the last failed refresh, or null.</summary>
+    public string? LastRefreshError { get; set; }
 }

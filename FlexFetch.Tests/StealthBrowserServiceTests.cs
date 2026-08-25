@@ -1,11 +1,64 @@
 ﻿using FlexFetch.Services;
 using FlexFetch.Services.Downloaders;
+using Microsoft.Playwright;
 
 namespace FlexFetch.Tests;
 
 [TestClass]
 public sealed class StealthBrowserServiceTests
 {
+    [TestMethod]
+    public void BuildLaunchOptions_BlocksServiceWorkersAndUsesSystemBrowser()
+    {
+        var options = StealthBrowserService.BuildLaunchOptions("C:\\browsers\\msedge.exe");
+
+        // Service workers must be blocked so a stale worker registered in the
+        // persistent profile cannot intercept requests and bypass the proxy
+        // routing (Playwright route handlers never see such requests).
+        Assert.AreEqual(ServiceWorkerPolicy.Block, options.ServiceWorkers);
+        Assert.AreEqual("C:\\browsers\\msedge.exe", options.ExecutablePath);
+        Assert.IsTrue(options.Headless);
+        Assert.IsNotNull(options.Args);
+        CollectionAssert.Contains(options.Args!.ToArray(), "--no-sandbox");
+        CollectionAssert.Contains(options.Args.ToArray(), "--disable-dev-shm-usage");
+    }
+
+    [TestMethod]
+    public void CleanStaleServiceWorkers_RemovesExistingStore()
+    {
+        var dir = TestApp.CreateTempDataDir();
+        try
+        {
+            var store = Path.Combine(dir, "Default", "Service Worker");
+            Directory.CreateDirectory(Path.Combine(store, "Database"));
+            File.WriteAllText(Path.Combine(store, "Database", "000003.log"), "x");
+
+            StealthBrowserService.CleanStaleServiceWorkers(dir);
+
+            Assert.IsFalse(Directory.Exists(store));
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public void CleanStaleServiceWorkers_NoOpWhenStoreAbsent()
+    {
+        var dir = TestApp.CreateTempDataDir();
+        try
+        {
+            // Must not throw when the profile has no service-worker store yet.
+            StealthBrowserService.CleanStaleServiceWorkers(dir);
+            StealthBrowserService.CleanStaleServiceWorkers(Path.Combine(dir, "missing"));
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
+    }
+
     [TestMethod]
     public void FindFirstExisting_ReturnsExistingPath()
     {
@@ -107,6 +160,29 @@ public sealed class StealthBrowserServiceTests
     }
 
     [TestMethod]
+    public void BuildSocks5Greeting_IsNoAuthHandshake()
+    {
+        var greeting = StealthBrowserService.BuildSocks5Greeting();
+
+        CollectionAssert.AreEqual(new byte[] { 0x05, 0x01, 0x00 }, greeting);
+    }
+
+    [TestMethod]
+    public void BuildSocks5ConnectRequest_UsesDomainNameAtyp()
+    {
+        var request = StealthBrowserService.BuildSocks5ConnectRequest("youtube.com", 443);
+
+        Assert.AreEqual(0x05, request[0]); // version
+        Assert.AreEqual(0x01, request[1]); // CONNECT
+        Assert.AreEqual(0x00, request[2]); // reserved
+        Assert.AreEqual(0x03, request[3]); // ATYP: domain name (proxy-side DNS)
+        Assert.AreEqual(11, request[4]);   // hostname length
+        Assert.AreEqual("youtube.com", System.Text.Encoding.ASCII.GetString(request, 5, 11));
+        Assert.AreEqual(0x01, request[^2]); // port high byte (443)
+        Assert.AreEqual(0xBB, request[^1]); // port low byte (443)
+    }
+
+    [TestMethod]
     public void IsMediaResponse_DetectsByContentType()
     {
         Assert.IsTrue(BrowserParsingDownloader.IsMediaResponse(
@@ -121,6 +197,18 @@ public sealed class StealthBrowserServiceTests
             new Dictionary<string, string> { ["Content-Type"] = "text/html" }, "https://example.com/page"));
         Assert.IsFalse(BrowserParsingDownloader.IsMediaResponse(
             new Dictionary<string, string> { ["Content-Type"] = "application/json" }, "https://example.com/api"));
+    }
+
+    [TestMethod]
+    public void IsLoginRedirectUrl_DetectsLoginAndChallengePages()
+    {
+        Assert.IsTrue(StealthBrowserService.IsLoginRedirectUrl("https://accounts.google.com/signin"));
+        Assert.IsTrue(StealthBrowserService.IsLoginRedirectUrl("https://accounts.google.com/servicelogin"));
+        Assert.IsTrue(StealthBrowserService.IsLoginRedirectUrl("https://www.google.com/sorry/index"));
+        Assert.IsTrue(StealthBrowserService.IsLoginRedirectUrl("https://example.com/login"));
+        Assert.IsFalse(StealthBrowserService.IsLoginRedirectUrl("https://www.youtube.com/"));
+        Assert.IsFalse(StealthBrowserService.IsLoginRedirectUrl(null));
+        Assert.IsFalse(StealthBrowserService.IsLoginRedirectUrl(""));
     }
 
     [TestMethod]

@@ -25,6 +25,7 @@ public static class ConfigKeys
     public const string CookieAutoRefresh = "cookie.autoRefreshEnabled";
     public const string CookieRefreshHours = "cookie.refreshPeriodHours";
     public const string CookieRefreshRandomize = "cookie.refreshRandomize";
+    public const string CookieRefreshOnStartup = "cookie.refreshOnStartup";
 
     // Browser
     public const string BrowserUseSystem = "browser.useSystemBrowser";

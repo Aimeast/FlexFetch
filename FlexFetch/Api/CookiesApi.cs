@@ -1,6 +1,7 @@
 ﻿using FlexFetch.Entities;
 using FlexFetch.Enums;
 using FlexFetch.Services;
+using ILogger = Serilog.ILogger;
 
 namespace FlexFetch.Api;
 
@@ -33,7 +34,7 @@ public static class CookiesApi
 
         group.MapGet("/", (CookiePoolService pool) => Results.Ok(pool.GetGroups()));
 
-        group.MapPost("/import", (ImportCookiesRequest req, CookiePoolService pool) =>
+        group.MapPost("/import", (ImportCookiesRequest req, CookiePoolService pool, ILogger log) =>
         {
             if (string.IsNullOrWhiteSpace(req.Text))
             {
@@ -51,19 +52,31 @@ public static class CookiesApi
                 result = pool.ImportText(url: null, req.Text, req.GroupName);
             }
 
+            log.Information("Cookie import: {Imported} imported, {Skipped} skipped{Errors}",
+                result.Imported, result.Skipped,
+                result.Errors.Count > 0 ? $", errors: {string.Join("; ", result.Errors)}" : string.Empty);
             return Results.Ok(result);
         });
 
-        group.MapPost("/import-items", (ImportItemsRequest req, CookiePoolService pool) =>
+        group.MapPost("/import-items", (ImportItemsRequest req, CookiePoolService pool, ILogger log) =>
         {
             var cookies = (req.Cookies ?? Array.Empty<CookieEditDto>()).Select(ToItem).ToList();
-            return Results.Ok(pool.ImportItems(cookies, req.GroupName));
+            var result = pool.ImportItems(cookies, req.GroupName);
+            log.Information("Cookie items import: {Imported} imported, {Skipped} skipped{Errors}",
+                result.Imported, result.Skipped,
+                result.Errors.Count > 0 ? $", errors: {string.Join("; ", result.Errors)}" : string.Empty);
+            return Results.Ok(result);
         });
 
-        group.MapPost("/items/delete", (DeleteCookieRequest req, CookiePoolService pool) =>
-            pool.RemoveCookie(req.GroupName, req.Domain, req.Path, req.Name)
+        group.MapPost("/items/delete", (DeleteCookieRequest req, CookiePoolService pool, ILogger log) =>
+        {
+            var removed = pool.RemoveCookie(req.GroupName, req.Domain, req.Path, req.Name);
+            log.Information("Cookie delete: {Domain}{Path}{Name} removed={Removed}",
+                req.Domain, req.Path, req.Name, removed);
+            return removed
                 ? Results.Ok(new { deleted = true })
-                : Results.NotFound(new { error = "Cookie not found" }));
+                : Results.NotFound(new { error = "Cookie not found" });
+        });
 
         group.MapPost("/groups", (CookieGroupDto dto, CookiePoolService pool) =>
         {
@@ -74,6 +87,76 @@ public static class CookiesApi
 
             var group = pool.CreateGroup(dto.Name, dto.Urls ?? Array.Empty<string>());
             return Results.Ok(new { id = group.Id });
+        });
+
+        // Manual refresh: runs in the background so the page can poll
+        // /refresh/status and show per-group progress; returns immediately.
+        group.MapPost("/refresh", (CookiePoolService pool, StealthBrowserService browser, ILogger log) =>
+        {
+            if (!pool.TryStartRefresh())
+            {
+                return Results.Conflict(new { error = "A refresh is already in progress" });
+            }
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    // Refresh groups one by one; each group updates its own
+                    // status (Running -> Ok/Failed), so the UI shows progress.
+                    var groups = pool.GetGroups();
+                    log.Information("Manual cookie refresh started ({GroupCount} groups)", groups.Count);
+                    var okCount = 0;
+                    foreach (var g in groups)
+                    {
+                        try
+                        {
+                            await browser.RefreshGroupAsync(g);
+                            okCount++;
+                        }
+                        catch (Exception ex)
+                        {
+                            log.Warning("Group {Group} refresh failed: {Message}", g.Name, ex.Message);
+                        }
+                    }
+
+                    log.Information("Manual cookie refresh finished ({Ok}/{GroupCount} groups)", okCount, groups.Count);
+                }
+                finally
+                {
+                    pool.EndRefresh();
+                }
+            });
+            return Results.Accepted((string?)null, new { refreshing = true });
+        });
+
+        // Per-group refresh status for the cookie page progress display.
+        group.MapGet("/refresh/status", (CookiePoolService pool) =>
+        {
+            var groups = pool.GetGroups();
+            var running = groups.FirstOrDefault(g => g.LastRefreshStatus == CookieRefreshStatus.Running);
+            return Results.Ok(new
+            {
+                refreshing = pool.IsRefreshing,
+                currentGroup = running?.Name,
+                groups = groups.Select(g => new
+                {
+                    id = g.Id,
+                    name = g.Name,
+                    status = g.LastRefreshStatus.ToString(),
+                    lastRefreshedAt = g.LastRefreshedAt,
+                    lastError = g.LastRefreshError,
+                }),
+            });
+        });
+
+        group.MapPut("/groups/{id}", (string id, CookieGroupDto dto, CookiePoolService pool, ILogger log) =>
+        {
+            var updated = pool.UpdateGroupUrls(id, dto.Urls ?? Array.Empty<string>());
+            log.Information("Group URLs update: {Id} urls={Count} updated={Updated}", id, (dto.Urls ?? Array.Empty<string>()).Count, updated);
+            return updated
+                ? Results.Ok(new { updated = true })
+                : Results.NotFound(new { error = "Group not found" });
         });
 
         group.MapDelete("/groups/{id}", (string id, CookiePoolService pool) =>

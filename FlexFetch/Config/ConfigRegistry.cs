@@ -116,6 +116,13 @@ public static class ConfigRegistry
             },
             new()
             {
+                Key = ConfigKeys.CookieRefreshOnStartup,
+                Category = "Cookie pool",
+                DefaultValue = "false",
+                Validator = BoolValidator("Must be true or false"),
+            },
+            new()
+            {
                 Key = ConfigKeys.BrowserUseSystem,
                 Category = "Browser",
                 DefaultValue = "true",

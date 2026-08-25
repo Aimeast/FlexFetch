@@ -30,4 +30,24 @@ public sealed class RouteRuleChain
 
         return _defaultAction;
     }
+
+    /// <summary>
+    /// Evaluates the chain using domain-suffix rules only (no DNS/IP
+    /// resolution). Rules that match solely by CIDR are skipped, so the
+    /// result may be "stricter" than Evaluate: it is meant for fast, blocking-
+    /// free decisions on paths that must not wait on DNS (e.g. the browser
+    /// route predicate).
+    /// </summary>
+    public RouteAction EvaluateDomainsOnly(Uri url)
+    {
+        foreach (var rule in _rules)
+        {
+            if (rule.IsDomainMatch(url.Host))
+            {
+                return rule.Action;
+            }
+        }
+
+        return _defaultAction;
+    }
 }

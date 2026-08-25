@@ -185,6 +185,96 @@ public sealed class ProxyServiceTests
         Assert.IsNotNull(handler.Proxy);
     }
 
+    [TestMethod]
+    public void ShouldProxyFast_NoProxy_ReturnsFalse()
+    {
+        var config = new InMemoryConfigRepository();
+        var service = new ProxyService(config, Log, DataDir);
+
+        Assert.IsFalse(service.ShouldProxyFast(new Uri("https://example.com/file")));
+    }
+
+    [TestMethod]
+    public void ShouldProxyFast_DomainRule_MatchesWithoutDns()
+    {
+        var rules = "[{\"Action\":\"Direct\",\"Domains\":[\"cn\"]}]";
+        var config = new InMemoryConfigRepository();
+        config.Set(ConfigKeys.Proxy, "socks5://127.0.0.1:1080");
+        config.Set(ConfigKeys.RouteRules, rules);
+        var service = new ProxyService(config, Log, DataDir);
+
+        // .cn domains match the Direct rule -> fast decision says no proxy.
+        Assert.IsFalse(service.ShouldProxyFast(new Uri("https://example.cn/path")));
+        Assert.IsFalse(service.ShouldProxyFast(new Uri("https://www.example.com.cn/path")));
+
+        // Non-.cn hosts fall through to the default UseProxy action.
+        Assert.IsTrue(service.ShouldProxyFast(new Uri("https://example.com/path")));
+    }
+
+    [TestMethod]
+    public void ShouldProxyFast_DefaultDirect_ReturnsFalse()
+    {
+        var config = new InMemoryConfigRepository();
+        config.Set(ConfigKeys.Proxy, "socks5://127.0.0.1:1080");
+        config.Set(ConfigKeys.DefaultAction, "Direct");
+        var service = new ProxyService(config, Log, DataDir);
+
+        // No rules, default Direct -> fast decision says direct.
+        Assert.IsFalse(service.ShouldProxyFast(new Uri("https://example.com/file")));
+    }
+
+    [TestMethod]
+    public void ShouldProxyFast_CidrRule_SkippedWithoutDns()
+    {
+        var dir = TestApp.CreateTempDataDir();
+        try
+        {
+            var bypassFile = Path.Combine(dir, "bypass.txt");
+            File.WriteAllLines(bypassFile, new[] { "10.0.0.0/8" });
+
+            var rules = $"[{{\"Action\":\"Direct\",\"CidrFiles\":[\"{bypassFile.Replace("\\", "\\\\")}\"]}}]";
+            var config = new InMemoryConfigRepository();
+            config.Set(ConfigKeys.Proxy, "socks5://127.0.0.1:1080");
+            config.Set(ConfigKeys.RouteRules, rules);
+            var service = new ProxyService(config, Log, DataDir);
+
+            // The fast decision must not resolve IPs: the CIDR rule is not
+            // evaluated, so the default action (UseProxy) applies.
+            Assert.IsTrue(service.ShouldProxyFast(new Uri("https://example.com/file")));
+        }
+        finally
+        {
+            if (Directory.Exists(dir))
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    public void EvaluateDomainsOnly_IgnoresCidrOnlyRules()
+    {
+        var cidr = new CidrMatcher();
+        cidr.Load(new[] { "10.0.0.0/8" });
+        var chain = new RouteRuleChain(
+            new IRouteRule[] { new RouteRule(RouteAction.Direct, null, cidr) },
+            RouteAction.UseProxy);
+
+        // Without resolved IPs the CIDR rule cannot match: default applies.
+        Assert.AreEqual(RouteAction.UseProxy, chain.EvaluateDomainsOnly(new Uri("https://example.com/")));
+    }
+
+    [TestMethod]
+    public void EvaluateDomainsOnly_MatchesDomainRules()
+    {
+        var chain = new RouteRuleChain(
+            new IRouteRule[] { new RouteRule(RouteAction.Direct, new DomainSuffixMatcher(new[] { "cn" }), null) },
+            RouteAction.UseProxy);
+
+        Assert.AreEqual(RouteAction.Direct, chain.EvaluateDomainsOnly(new Uri("https://example.cn/")));
+        Assert.AreEqual(RouteAction.UseProxy, chain.EvaluateDomainsOnly(new Uri("https://example.com/")));
+    }
+
     private sealed class InMemoryConfigRepository : IConfigRepository
     {
         private readonly Dictionary<string, string> _values = new();

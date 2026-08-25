@@ -187,6 +187,8 @@ public sealed class GenericFileDownloaderTests
     {
         public bool ShouldProxy(Uri url) => false;
 
+        public bool ShouldProxyFast(Uri url) => false;
+
         public HttpMessageHandler CreateHandler(Uri url) => new SocketsHttpHandler
         {
             AllowAutoRedirect = false,
@@ -194,6 +196,8 @@ public sealed class GenericFileDownloaderTests
         };
 
         public string? GetProxyUri(Uri url) => null;
+
+        public string? GetBrowserProxyAddress() => null;
     }
 
     private sealed class InMemoryConfigRepository : IConfigRepository

@@ -75,6 +75,26 @@ public sealed class ProxyService : IProxyService
     public string? GetProxyUri(Uri url) =>
         ShouldProxy(url) ? GetProxyAddress() : null;
 
+    public string? GetBrowserProxyAddress() => GetProxyAddress();
+
+    /// <summary>
+    /// Fast, DNS-free proxy decision for the browser route predicate: only
+    /// domain-suffix rules and the default action are consulted. CIDR rules
+    /// are skipped here (they need IP resolution); the browser handler
+    /// forwards every request the predicate matches, so no DNS resolution
+    /// ever runs on the Playwright routing path.
+    /// </summary>
+    public bool ShouldProxyFast(Uri url)
+    {
+        var proxy = GetProxyAddress();
+        if (string.IsNullOrWhiteSpace(proxy))
+        {
+            return false;
+        }
+
+        return _chain.EvaluateDomainsOnly(url) == RouteAction.UseProxy;
+    }
+
     private string? GetProxyAddress()
     {
         var raw = GetConfig(ConfigKeys.Proxy);
@@ -192,7 +212,24 @@ public sealed class ProxyService : IProxyService
     private string ResolveFilePath(string file) =>
         Path.IsPathRooted(file) ? file : Path.Combine(_dataDir, file);
 
-    private static IReadOnlyList<IPAddress> ResolveIps(Uri url)
+    /// <summary>
+    /// Resolves the URL host to IPs for CIDR route matching. Hostnames are
+    /// resolved with a bounded timeout: the lookup feeds the route decision
+    /// (proxy vs direct), so a slow or poisoned local resolver must not hang
+    /// the request path - on timeout the route falls back to domain rules +
+    /// the default action. The actual SOCKS5 tunnel still sends the hostname
+    /// to the proxy (ATYP=3) for remote resolution.
+    /// </summary>
+    private static IReadOnlyList<IPAddress> ResolveIps(Uri url) =>
+        ResolveIpsAsync(url).GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Async IP resolution with a bounded timeout, for the route decision
+    /// (proxy vs direct). On timeout the route falls back to domain rules +
+    /// the default action. The actual SOCKS5 tunnel still sends the hostname
+    /// to the proxy (ATYP=3) for remote resolution.
+    /// </summary>
+    private static async Task<IReadOnlyList<IPAddress>> ResolveIpsAsync(Uri url)
     {
         // If the host is already an IP literal, use it directly.
         if (IPAddress.TryParse(url.Host, out var literal))
@@ -202,9 +239,10 @@ public sealed class ProxyService : IProxyService
 
         try
         {
-            return Dns.GetHostAddresses(url.Host);
+            return await Dns.GetHostAddressesAsync(url.Host)
+                .WaitAsync(TimeSpan.FromSeconds(2));
         }
-        catch (Exception ex) when (ex is System.Net.Sockets.SocketException or ArgumentException)
+        catch (Exception ex) when (ex is System.Net.Sockets.SocketException or ArgumentException or TimeoutException)
         {
             return Array.Empty<IPAddress>();
         }

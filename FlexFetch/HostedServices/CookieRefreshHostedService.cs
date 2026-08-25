@@ -15,6 +15,7 @@ public sealed class CookieRefreshHostedService : IntervalHostedService
     private readonly IConfigRepository _config;
     private readonly CookiePoolService _pool;
     private readonly StealthBrowserService _browser;
+    private readonly ILogger _log;
 
     public CookieRefreshHostedService(
         IConfigRepository config,
@@ -27,9 +28,11 @@ public sealed class CookieRefreshHostedService : IntervalHostedService
         _config = config;
         _pool = pool;
         _browser = browser;
+        _log = log;
     }
 
-    protected override bool RunImmediately => false;
+    protected override bool RunImmediately =>
+        bool.TryParse(Get(ConfigKeys.CookieRefreshOnStartup), out var onStartup) && onStartup;
 
     protected override TimeSpan GetInterval()
     {
@@ -50,15 +53,30 @@ public sealed class CookieRefreshHostedService : IntervalHostedService
             return;
         }
 
-        foreach (var group in _pool.GetGroups())
+        var groups = _pool.GetGroups();
+        _log.Information("Cookie refresh run started ({GroupCount} groups)", groups.Count);
+        var refreshed = 0;
+        foreach (var group in groups)
         {
             if (cancellationToken.IsCancellationRequested)
             {
-                return;
+                break;
             }
 
-            await _browser.RefreshGroupAsync(group);
+            try
+            {
+                await _browser.RefreshGroupAsync(group);
+                refreshed++;
+            }
+            catch (Exception ex)
+            {
+                // RefreshGroupAsync marks the group Failed and rethrows;
+                // keep the periodic run going for the remaining groups.
+                _log.Warning(ex, "Cookie refresh skipped group {Group}", group.Name);
+            }
         }
+
+        _log.Information("Cookie refresh run finished ({Refreshed}/{GroupCount} groups)", refreshed, groups.Count);
     }
 
     private string Get(string key) => _config.Get(key) ?? ConfigRegistry.GetDefault(key);

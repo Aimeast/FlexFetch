@@ -20,6 +20,8 @@ public sealed class CookiePoolService
 
     private readonly ICookieRepository _repo;
     private readonly object _lock = new();
+    private readonly object _refreshLock = new();
+    private bool _refreshing;
 
     public CookiePoolService(ICookieRepository repo)
     {
@@ -286,7 +288,107 @@ public sealed class CookiePoolService
 
     public bool UpdateGroup(CookieGroup group) => _repo.UpdateGroup(group);
 
+    /// <summary>Replaces the refresh URLs of a group (normalized, deduplicated).</summary>
+    public bool UpdateGroupUrls(string id, IEnumerable<string> urls)
+    {
+        lock (_lock)
+        {
+            var group = _repo.GetGroupById(id);
+            if (group is null)
+            {
+                return false;
+            }
+
+            group.Urls = urls
+                .Select(u => u.Trim())
+                .Where(u => u.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            group.UpdatedAt = DateTime.UtcNow;
+            return _repo.UpdateGroup(group);
+        }
+    }
+
     public bool DeleteGroup(string id) => _repo.DeleteGroup(id);
+
+    /// <summary>True while a refresh run (manual or scheduled) is in progress.</summary>
+    public bool IsRefreshing => _refreshing;
+
+    /// <summary>Attempts to start a refresh run; false when one is already running.</summary>
+    public bool TryStartRefresh()
+    {
+        lock (_refreshLock)
+        {
+            if (_refreshing)
+            {
+                return false;
+            }
+
+            _refreshing = true;
+            return true;
+        }
+    }
+
+    /// <summary>Ends a refresh run, allowing the next one to start.</summary>
+    public void EndRefresh()
+    {
+        lock (_refreshLock)
+        {
+            _refreshing = false;
+        }
+    }
+
+    /// <summary>Marks a group as currently being refreshed.</summary>
+    public bool MarkGroupRefreshing(string id)
+    {
+        lock (_lock)
+        {
+            var group = _repo.GetGroupById(id);
+            if (group is null)
+            {
+                return false;
+            }
+
+            group.LastRefreshStatus = CookieRefreshStatus.Running;
+            group.LastRefreshError = null;
+            return _repo.UpdateGroup(group);
+        }
+    }
+
+    /// <summary>Marks a group refresh as completed successfully.</summary>
+    public bool MarkGroupRefreshed(string id)
+    {
+        lock (_lock)
+        {
+            var group = _repo.GetGroupById(id);
+            if (group is null)
+            {
+                return false;
+            }
+
+            group.LastRefreshStatus = CookieRefreshStatus.Ok;
+            group.LastRefreshedAt = DateTime.UtcNow;
+            group.LastRefreshError = null;
+            return _repo.UpdateGroup(group);
+        }
+    }
+
+    /// <summary>Marks a group refresh as failed.</summary>
+    public bool MarkGroupRefreshFailed(string id, string error)
+    {
+        lock (_lock)
+        {
+            var group = _repo.GetGroupById(id);
+            if (group is null)
+            {
+                return false;
+            }
+
+            group.LastRefreshStatus = CookieRefreshStatus.Failed;
+            group.LastRefreshError = error;
+            return _repo.UpdateGroup(group);
+        }
+    }
 
     /// <summary>Removes a single cookie from a group (matched by normalized domain, path and name).</summary>
     public bool RemoveCookie(string? groupName, string domain, string path, string name)
@@ -315,6 +417,40 @@ public sealed class CookiePoolService
             return true;
         }
     }
+
+    /// <summary>
+    /// Deletes cookies that existed in the pool when the refresh started
+    /// (the before snapshot) but are no longer exported by the browser
+    /// (removed by the site, or expired). Cookies written by concurrent
+    /// tasks after the snapshot was taken are not in "before", so they are
+    /// kept. Returns the number of cookies removed.
+    /// </summary>
+    public int SyncGroupCookies(string groupId, IReadOnlyList<CookieItem> before, IReadOnlyList<CookieItem> exported)
+    {
+        lock (_lock)
+        {
+            var group = _repo.GetGroupById(groupId);
+            if (group is null)
+            {
+                return 0;
+            }
+
+            var removed = group.Cookies.RemoveAll(c =>
+                before.Any(b => Matches(b, c)) && !exported.Any(e => Matches(e, c)));
+            if (removed > 0)
+            {
+                group.UpdatedAt = DateTime.UtcNow;
+                _repo.UpdateGroup(group);
+            }
+
+            return removed;
+        }
+    }
+
+    private static bool Matches(CookieItem a, CookieItem b) =>
+        string.Equals(NormalizeDomain(a.Domain), NormalizeDomain(b.Domain), StringComparison.Ordinal)
+        && string.Equals(a.Path ?? "/", b.Path ?? "/", StringComparison.Ordinal)
+        && string.Equals(a.Name, b.Name, StringComparison.Ordinal);
 
     // --- Internals ---
 

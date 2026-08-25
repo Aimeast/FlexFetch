@@ -38,4 +38,7 @@ public sealed class RouteRule : IRouteRule
     public bool IsMatch(Uri url, IReadOnlyList<IPAddress> resolvedIps) =>
         (_domains is not null && _domains.IsMatch(url.Host))
         || (_cidrs is not null && resolvedIps.Any(_cidrs.IsMatch));
+
+    /// <summary>True when the host matches the rule's domain suffixes (no DNS needed).</summary>
+    public bool IsDomainMatch(string host) => _domains is not null && _domains.IsMatch(host);
 }

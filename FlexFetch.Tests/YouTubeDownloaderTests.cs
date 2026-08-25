@@ -380,8 +380,12 @@ public sealed class YouTubeDownloaderTests
     {
         public bool ShouldProxy(Uri url) => false;
 
+        public bool ShouldProxyFast(Uri url) => false;
+
         public HttpMessageHandler CreateHandler(Uri url) => new SocketsHttpHandler { UseProxy = false };
 
         public string? GetProxyUri(Uri url) => null;
+
+        public string? GetBrowserProxyAddress() => null;
     }
 }

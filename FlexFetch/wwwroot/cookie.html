@@ -32,10 +32,12 @@
         </div>
 
         <div class="card">
-            <h2>Cookies</h2>
-            <div class="muted" style="margin-bottom:0.5rem">Mark rows or whole groups for deletion, then press Save to apply.</div>
+            <h2>Cookies <span id="last-refresh" class="muted"></span></h2>
+            <div class="row" style="margin-bottom:0.5rem">
+                <button class="secondary" id="refresh-btn" onclick="refreshNow(this)">Refresh now</button>
+            </div>
             <table>
-                <thead><tr><th>Domain</th><th>Cookies</th><th></th></tr></thead>
+                <thead><tr><th>Domain</th><th>Cookies</th><th>Last refreshed</th><th></th></tr></thead>
                 <tbody id="group-tbody"></tbody>
             </table>
         </div>
@@ -55,10 +57,16 @@
             return res.json();
         }
 
+        let msgTimer = null;
+
         function show(text, ok) {
             msg.textContent = text;
             msg.className = ok ? 'msg ok' : 'msg error';
-            setTimeout(() => { msg.className = 'msg'; }, 4000);
+            // Clear the previous timer first: during polling (refresh status)
+            // many show() calls overlap, and stale timers would flip the bar
+            // to hidden mid-update, making it (and the layout) flicker.
+            if (msgTimer) clearTimeout(msgTimer);
+            msgTimer = setTimeout(() => { msg.className = 'msg'; }, 4000);
         }
 
         function esc(s) {
@@ -250,6 +258,8 @@
 
         let groupRows = {}; // group id -> editable cookie rows
         let groupNames = {}; // group id -> group name
+        let groupUrls = {}; // group id -> refresh URLs
+        let groupStatus = {}; // group id -> { status, lastRefreshedAt, lastError }
         let deletedCookies = []; // snapshots of cookie rows marked for deletion
         let deletedGroups = new Set(); // group ids marked for deletion
 
@@ -290,6 +300,8 @@
             if (!groups) return;
             groupRows = {};
             groupNames = {};
+            groupUrls = {};
+            groupStatus = {};
             deletedCookies = [];
             deletedGroups = new Set();
             for (const g of groups) {
@@ -302,8 +314,49 @@
                     expirationDate: c.expiresAt ? Math.floor(new Date(c.expiresAt).getTime() / 1000) : null,
                 }));
                 groupNames[g.id] = g.name;
+                groupUrls[g.id] = (g.urls || []).slice();
+                groupStatus[g.id] = {
+                    status: refreshStatusToNumber(g.lastRefreshStatus),
+                    lastRefreshedAt: g.lastRefreshedAt || null,
+                    lastError: g.lastRefreshError || null,
+                };
             }
+            updateLastRefresh();
             renderGroups();
+        }
+
+        // Global last-refresh time: newest LastRefreshedAt across groups.
+        function updateLastRefresh() {
+            const el = document.getElementById('last-refresh');
+            let newest = null;
+            for (const gid in groupStatus) {
+                const t = groupStatus[gid].lastRefreshedAt;
+                if (t && (!newest || new Date(t) > new Date(newest))) newest = t;
+            }
+            el.textContent = newest ? '- last refreshed ' + new Date(newest).toLocaleString() : '';
+        }
+
+        // Normalize a group refresh status coming from either source into a
+        // number (0=Never, 1=Running, 2=Ok, 3=Failed): /api/cookies may
+        // serialize the enum as a number, /refresh/status as a string.
+        function refreshStatusToNumber(s) {
+            if (typeof s === 'number') return s;
+            if (s === 'Running') return 1;
+            if (s === 'Ok') return 2;
+            if (s === 'Failed') return 3;
+            return 0;
+        }
+
+        function refreshStatusHtml(gid) {
+            const s = groupStatus[gid] || {};
+            const t = s.lastRefreshedAt ? new Date(s.lastRefreshedAt).toLocaleString() : '';
+            if (s.status === 1) return '<span class="badge warn">Refreshing...</span>';
+            if (s.status === 3) {
+                return '<span class="badge err" title="' + esc(s.lastError || '') + '">Failed</span>' +
+                    (t ? ' <span class="muted">' + esc(t) + '</span>' : '');
+            }
+            if (s.status === 2 && t) return '<span class="badge ok">OK</span> <span class="muted">' + esc(t) + '</span>';
+            return '<span class="muted">Never</span>';
         }
 
         function renderGroups() {
@@ -324,6 +377,7 @@
                 tr.innerHTML =
                     '<td>' + domainHtml + '</td>' +
                     '<td>' + rows.length + '</td>' +
+                    '<td id="status-' + gid + '">' + refreshStatusHtml(gid) + '</td>' +
                     '<td>' + groupBtn + '</td>';
                 tbody.appendChild(tr);
                 tbody.appendChild(buildCookieDetail(gid));
@@ -334,8 +388,22 @@
             const detail = document.createElement('tr');
             detail.className = 'group-detail';
             const td = document.createElement('td');
-            td.colSpan = 3;
+            td.colSpan = 4;
             const rows = groupRows[gid];
+
+            // Refresh URLs editor: only for saved groups (local new- groups
+            // have no backend id yet). Saved together with the cookies via
+            // the page Save button.
+            if (!gid.startsWith('new-')) {
+                const urlsRow = document.createElement('div');
+                urlsRow.className = 'group-urls';
+                urlsRow.innerHTML =
+                    '<span class="muted">Refresh URLs:</span> ' +
+                    '<input class="urls-input" data-g="' + gid + '" data-f="urls" value="' +
+                    esc((groupUrls[gid] || []).join(', ')) + '" placeholder="https://example.com, https://example.com/page">';
+                td.appendChild(urlsRow);
+            }
+
             if (!rows.length) {
                 td.innerHTML = '<span class="muted">No active cookies</span>';
             } else {
@@ -381,6 +449,58 @@
             else if (f === 'expirationDate') c[f] = fromLocalInput(e.target.value);
             else c[f] = e.target.value;
         });
+
+        async function refreshNow(btn) {
+            if (btn.disabled) return;
+            btn.disabled = true;
+            show('Starting refresh...', true);
+            try {
+                const res = await api('/api/cookies/refresh', { method: 'POST' });
+                if (!res) { btn.disabled = false; return; }
+                // Poll refresh status: keep the message visible with the group
+                // currently being refreshed; stop when done.
+                const poll = setInterval(async () => {
+                    let status;
+                    try {
+                        status = await api('/api/cookies/refresh/status');
+                    } catch (e) {
+                        clearInterval(poll);
+                        btn.disabled = false;
+                        show(e.message);
+                        return;
+                    }
+                    if (!status) { clearInterval(poll); btn.disabled = false; return; }
+                    if (status.refreshing) {
+                        show('Refreshing ' + (status.currentGroup || 'cookies') + '...', true);
+                    } else {
+                        clearInterval(poll);
+                        btn.disabled = false;
+                        show('Refresh finished', true);
+                    }
+                    // Live-update each group's status cell and the global
+                    // last-refresh line without rebuilding the whole table
+                    // (rebuilding would drop unsaved edits in the URL inputs).
+                    for (const g of (status.groups || [])) {
+                        groupStatus[g.id] = {
+                            status: g.status === 'Never' ? 0
+                                : g.status === 'Running' ? 1
+                                : g.status === 'Ok' ? 2
+                                : g.status === 'Failed' ? 3
+                                : 0,
+                            lastRefreshedAt: g.lastRefreshedAt || null,
+                            lastError: g.lastError || null,
+                        };
+                        const cell = document.getElementById('status-' + g.id);
+                        if (cell) cell.innerHTML = refreshStatusHtml(g.id);
+                    }
+                    updateLastRefresh();
+                    if (!status.refreshing) loadGroups();
+                }, 700);
+            } catch (e) {
+                btn.disabled = false;
+                show(e.message);
+            }
+        }
 
         // --- Parse + merge into the loaded groups ---
 
@@ -507,6 +627,27 @@
                     if (body.errors && body.errors.length) errors.push(...body.errors);
                 } catch (e) {
                     errors.push(e.message);
+                }
+            }
+
+            // 4) Save refresh URLs of each surviving group (read from the
+            //    input row; skipped for local new- groups with no backend id).
+            for (const gid in groupRows) {
+                if (gid.startsWith('new-')) continue;
+                const input = document.querySelector('.urls-input[data-g="' + gid + '"]');
+                if (!input) continue;
+                const urls = input.value.split(',')
+                    .map(s => s.trim())
+                    .filter(Boolean);
+                try {
+                    await api('/api/cookies/groups/' + gid, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ urls: urls }),
+                    });
+                    groupUrls[gid] = urls;
+                } catch (e) {
+                    errors.push('Save URLs: ' + e.message);
                 }
             }
 
