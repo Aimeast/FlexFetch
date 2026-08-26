@@ -18,7 +18,7 @@ public sealed class CookiePoolServiceTests
         _dir = Path.Combine(Path.GetTempPath(), "flexfetch-test-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_dir);
         _store = new LiteDbStore(Path.Combine(_dir, "flexfetch.db"));
-        _pool = new CookiePoolService(new CookieRepository(_store));
+        _pool = new CookiePoolService(new CookieRepository(_store), new ICookieDomainMapping[] { new YouTubeCookieDomainMapping(), new DefaultCookieDomainMapping() });
     }
 
     [TestCleanup]
@@ -29,6 +29,87 @@ public sealed class CookiePoolServiceTests
         {
             Directory.Delete(_dir, recursive: true);
         }
+    }
+
+    // --- Cross-domain cookie sharing (SharedDomains) ---
+
+    [TestMethod]
+    public void ImportItems_SetsSharedDomainsOnSharedCookie()
+    {
+        var result = _pool!.ImportItems(new[] { Cookie(".youtube.com", "SID", "abc") }, "youtube.com");
+
+        Assert.AreEqual(1, result.Imported);
+        var group = _pool.GetGroups().Single();
+        var sid = group.Cookies.Single(c => c.Name == "SID");
+        CollectionAssert.Contains(sid.SharedDomains!.ToArray(), ".google.com");
+    }
+
+    [TestMethod]
+    public void ImportItems_DoesNotAnnotateSiteSpecificCookies()
+    {
+        _pool!.ImportItems(new[] { Cookie(".youtube.com", "PREF", "abc") }, "youtube.com");
+
+        var group = _pool.GetGroups().Single();
+        var pref = group.Cookies.Single(c => c.Name == "PREF");
+        Assert.IsNull(pref.SharedDomains);
+    }
+
+    [TestMethod]
+    public void GetCookiesForUrl_MatchesSharedSiblingDomain()
+    {
+        _pool!.ImportItems(new[] { Cookie(".youtube.com", "SID", "abc") }, "youtube.com");
+
+        var forGoogle = _pool.GetCookiesForUrl(new Uri("https://accounts.google.com/"));
+        var forYoutube = _pool.GetCookiesForUrl(new Uri("https://www.youtube.com/"));
+
+        Assert.HasCount(1, forGoogle);
+        Assert.AreEqual("SID", forGoogle[0].Name);
+        Assert.HasCount(1, forYoutube);
+    }
+
+    [TestMethod]
+    public void UpsertCookies_SiblingEntryUpdatesSharedOwner()
+    {
+        _pool!.ImportItems(new[] { Cookie(".youtube.com", "SID", "old") }, "youtube.com");
+
+        _pool.UpsertCookies(new[] { Cookie(".google.com", "SID", "new") });
+
+        // No stray group is created for .google.com: the sibling entry updates
+        // the single stored shared cookie.
+        var groups = _pool.GetGroups();
+        Assert.HasCount(1, groups);
+        var sid = groups[0].Cookies.Single(c => c.Name == "SID");
+        Assert.AreEqual("new", sid.Value);
+        CollectionAssert.Contains(sid.SharedDomains!.ToArray(), ".google.com");
+    }
+
+    [TestMethod]
+    public void SyncGroupCookies_KeepsSharedCookieWhenSiblingSurvives()
+    {
+        _pool!.ImportItems(new[] { Cookie(".youtube.com", "SID", "abc") }, "youtube.com");
+        var group = _pool.GetGroups().Single();
+        var before = group.Cookies.ToList();
+
+        // The export only carries the sibling-domain entry: the shared cookie
+        // is the same identity and must survive the sync-delete.
+        var exported = new List<CookieItem> { Cookie(".google.com", "SID", "abc") };
+        var removed = _pool.SyncGroupCookies(group.Id, before, exported);
+
+        Assert.AreEqual(0, removed);
+        Assert.HasCount(1, _pool.GetGroups().Single().Cookies);
+    }
+
+    [TestMethod]
+    public void SyncGroupCookies_RemovesVanishedCookie()
+    {
+        _pool!.ImportItems(new[] { Cookie(".youtube.com", "PREF", "abc") }, "youtube.com");
+        var group = _pool.GetGroups().Single();
+        var before = group.Cookies.ToList();
+
+        var removed = _pool.SyncGroupCookies(group.Id, before, new List<CookieItem>());
+
+        Assert.AreEqual(1, removed);
+        Assert.IsEmpty(_pool.GetGroups().Single().Cookies);
     }
 
     private static CookieItem Cookie(string domain, string name, string value = "v", string path = "/", DateTime? expiresAt = null, bool secure = false) =>

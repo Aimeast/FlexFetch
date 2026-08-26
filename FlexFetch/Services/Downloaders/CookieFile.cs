@@ -29,17 +29,31 @@ public static class CookieFile
         sb.AppendLine("# Netscape HTTP Cookie File");
         foreach (var c in cookies)
         {
-            var domain = c.HttpOnly ? "#HttpOnly_" + c.Domain : c.Domain;
             var secure = c.Secure ? "TRUE" : "FALSE";
             var expiry = c.ExpiresAt is { } exp
                 ? new DateTimeOffset(exp.ToUniversalTime()).ToUnixTimeSeconds().ToString()
                 : "0";
-            sb.Append(domain).Append('\t').Append("TRUE").Append('\t')
-                .Append(string.IsNullOrEmpty(c.Path) ? "/" : c.Path).Append('\t')
-                .Append(secure).Append('\t')
-                .Append(expiry).Append('\t')
-                .Append(c.Name).Append('\t')
-                .Append(c.Value).Append('\n');
+            var path = string.IsNullOrEmpty(c.Path) ? "/" : c.Path;
+
+            // A shared cookie exists on its primary domain plus its shared
+            // sibling domains (e.g. .youtube.com SID also on .google.com), so
+            // emit one line per domain - matching a real browser cookie jar.
+            var domains = new List<string> { c.Domain };
+            if (c.SharedDomains is { Count: > 0 })
+            {
+                domains.AddRange(c.SharedDomains);
+            }
+
+            foreach (var domain in domains.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                var lineDomain = c.HttpOnly ? "#HttpOnly_" + domain : domain;
+                sb.Append(lineDomain).Append('\t').Append("TRUE").Append('\t')
+                    .Append(path).Append('\t')
+                    .Append(secure).Append('\t')
+                    .Append(expiry).Append('\t')
+                    .Append(c.Name).Append('\t')
+                    .Append(c.Value).Append('\n');
+            }
         }
 
         return sb.ToString();

@@ -19,14 +19,24 @@ public sealed class CookiePoolService
     private const string DefaultGroupName = "default";
 
     private readonly ICookieRepository _repo;
+    private readonly IReadOnlyList<ICookieDomainMapping> _mappings;
+    private readonly ICookieDomainMapping _default = new DefaultCookieDomainMapping();
     private readonly object _lock = new();
     private readonly object _refreshLock = new();
     private bool _refreshing;
 
-    public CookiePoolService(ICookieRepository repo)
+    public CookiePoolService(ICookieRepository repo, IEnumerable<ICookieDomainMapping> mappings)
     {
         _repo = repo;
+        _mappings = mappings.ToList();
     }
+
+    /// <summary>
+    /// Selects the site-specific domain mapping for a group, falling back to
+    /// the default (no sharing) when none matches.
+    /// </summary>
+    private ICookieDomainMapping SelectMapping(CookieGroup group) =>
+        _mappings.FirstOrDefault(m => m.IsMatch(group)) ?? _default;
 
     // --- Read / match ---
 
@@ -48,7 +58,9 @@ public sealed class CookiePoolService
                 }
 
                 var domain = (cookie.Domain ?? string.Empty).TrimStart('.');
-                if (!IsDomainMatch(host, domain))
+                var sharedMatch = (cookie.SharedDomains ?? new())
+                    .Any(d => IsDomainMatch(host, d.TrimStart('.')));
+                if (!IsDomainMatch(host, domain) && !sharedMatch)
                 {
                     continue;
                 }
@@ -86,6 +98,24 @@ public sealed class CookiePoolService
         {
             foreach (var cookie in cookies.Where(c => !string.IsNullOrEmpty(c.Name) && !string.IsNullOrEmpty(c.Domain)))
             {
+                // A sibling-domain entry (e.g. .google.com SID) is the same shared
+                // cookie as the stored primary entry (e.g. .youtube.com SID with
+                // SharedDomains=[".google.com"]): update the single stored entry.
+                var ownerEntry = FindSharedOwnerEntry(cookie);
+                if (ownerEntry is not null)
+                {
+                    var owner = ownerEntry.Value.Cookie;
+                    owner.Value = cookie.Value;
+                    owner.ExpiresAt = cookie.ExpiresAt;
+                    owner.Secure = cookie.Secure;
+                    owner.HttpOnly = cookie.HttpOnly;
+                    owner.SameSite = cookie.SameSite;
+                    var ownerGroup = ownerEntry.Value.Group;
+                    ownerGroup.UpdatedAt = DateTime.UtcNow;
+                    _repo.UpdateGroup(ownerGroup);
+                    continue;
+                }
+
                 var group = FindGroupFor(cookie.Domain) ?? GetOrCreateGroup(DefaultGroupName);
                 var existing = group.Cookies.FirstOrDefault(c =>
                     string.Equals(c.Domain, cookie.Domain, StringComparison.OrdinalIgnoreCase)
@@ -93,6 +123,12 @@ public sealed class CookiePoolService
                     && string.Equals(c.Name, cookie.Name, StringComparison.Ordinal));
                 if (existing is null)
                 {
+                    var shared = SelectMapping(group).GetSharedDomains(cookie.Domain, cookie.Name);
+                    if (shared.Count > 0)
+                    {
+                        cookie.SharedDomains = shared.ToList();
+                    }
+
                     group.Cookies.Add(cookie);
                 }
                 else
@@ -436,7 +472,9 @@ public sealed class CookiePoolService
             }
 
             var removed = group.Cookies.RemoveAll(c =>
-                before.Any(b => Matches(b, c)) && !exported.Any(e => Matches(e, c)));
+                before.Any(b => Matches(b, c))
+                && !exported.Any(e => Matches(e, c))
+                && !exported.Any(e => IsSharedIdentity(e, c)));
             if (removed > 0)
             {
                 group.UpdatedAt = DateTime.UtcNow;
@@ -452,6 +490,56 @@ public sealed class CookiePoolService
         && string.Equals(a.Path ?? "/", b.Path ?? "/", StringComparison.Ordinal)
         && string.Equals(a.Name, b.Name, StringComparison.Ordinal);
 
+    /// <summary>
+    /// Finds the stored primary entry of a sibling-domain cookie (e.g. the
+    /// .youtube.com SID for an incoming .google.com SID) together with its
+    /// group, or null when the cookie is not a shared sibling of any stored
+    /// cookie. The group and cookie come from the same object graph so the
+    /// caller can modify the cookie and persist the group in one update.
+    /// </summary>
+    private (CookieGroup Group, CookieItem Cookie)? FindSharedOwnerEntry(CookieItem cookie)
+    {
+        var incomingDomain = NormalizeDomain(cookie.Domain);
+        foreach (var group in _repo.GetAllGroups())
+        {
+            foreach (var c in group.Cookies)
+            {
+                if (!string.Equals(NormalizeDomain(c.Name), NormalizeDomain(cookie.Name), StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if ((c.SharedDomains ?? new()).Select(NormalizeDomain)
+                    .Contains(incomingDomain, StringComparer.Ordinal))
+                {
+                    return (group, c);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// True when two cookies are the same shared identity (same name, and one
+    /// domain is the other's shared sibling), so a sibling-domain entry keeps
+    /// the primary entry alive during sync-delete.
+    /// </summary>
+    private static bool IsSharedIdentity(CookieItem a, CookieItem b)
+    {
+        if (!string.Equals(NormalizeDomain(a.Name), NormalizeDomain(b.Name), StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var aDomain = NormalizeDomain(a.Domain);
+        var bDomain = NormalizeDomain(b.Domain);
+        var aShared = (a.SharedDomains ?? new()).Select(NormalizeDomain);
+        var bShared = (b.SharedDomains ?? new()).Select(NormalizeDomain);
+        return aShared.Contains(bDomain, StringComparer.Ordinal)
+            || bShared.Contains(aDomain, StringComparer.Ordinal);
+    }
+
     // --- Internals ---
 
     private bool AddToGroup(string? groupName, CookieItem cookie, List<string> errors)
@@ -461,6 +549,14 @@ public sealed class CookiePoolService
             var group = string.IsNullOrWhiteSpace(groupName)
                 ? FindGroupFor(cookie.Domain) ?? GetOrCreateGroup(NormalizeDomain(cookie.Domain))
                 : GetOrCreateGroup(groupName!);
+
+            // Mark cross-domain shared cookies (e.g. Google identity cookies)
+            // with their sibling domains so reads can materialize them there.
+            var shared = SelectMapping(group).GetSharedDomains(cookie.Domain, cookie.Name);
+            if (shared.Count > 0)
+            {
+                cookie.SharedDomains = shared.ToList();
+            }
 
             // One domain per group: refuse cookies for a different domain,
             // so the group list can show the domain name instead of a column.

@@ -25,7 +25,7 @@ public sealed class YtdlpDownloaderTests
         var ytdlp = new YtdlpService(proxy, config, Log, dir);
         var storage = new StorageService(dir);
         var store = new LiteDbStore(Path.Combine(dir, "flexfetch.db"));
-        var cookies = new CookiePoolService(new CookieRepository(store));
+        var cookies = new CookiePoolService(new CookieRepository(store), new ICookieDomainMapping[] { new YouTubeCookieDomainMapping(), new DefaultCookieDomainMapping() });
         return new YtdlpDownloader(ytdlp, proxy, storage, Log, cookies, fetch);
     }
 
@@ -51,7 +51,7 @@ public sealed class YtdlpDownloaderTests
             new DirectProxyService(),
             new StorageService(ytDir),
             Log,
-            new CookiePoolService(new CookieRepository(ytStore)));
+            new CookiePoolService(new CookieRepository(ytStore), new ICookieDomainMapping[] { new YouTubeCookieDomainMapping(), new DefaultCookieDomainMapping() }));
 
         // YtdlpDownloader is part of the generic fallback chain; YouTube is
         // a domain-specific downloader used alone.

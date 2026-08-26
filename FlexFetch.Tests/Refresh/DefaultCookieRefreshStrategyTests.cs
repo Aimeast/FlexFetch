@@ -26,4 +26,19 @@ public sealed class DefaultCookieRefreshStrategyTests
 
         Assert.IsNull(Strategy.GetSessionRejectionReason(before, exported));
     }
+
+    [TestMethod]
+    public void GetRelatedCookieDomains_IsEmpty()
+    {
+        var group = new CookieGroup { Urls = new List<string> { "https://www.youtube.com" } };
+
+        Assert.IsEmpty(Strategy.GetRelatedCookieDomains(group));
+    }
+
+    [TestMethod]
+    public void GetPageContentRejectionReason_NeverRejects()
+    {
+        Assert.IsNull(Strategy.GetPageContentRejectionReason(new CookieRefreshPageSignals(null, null, false, false)));
+        Assert.IsNull(Strategy.GetPageContentRejectionReason(new CookieRefreshPageSignals("some text", false, true, true)));
+    }
 }

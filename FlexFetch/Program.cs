@@ -80,6 +80,8 @@ builder.Services.AddSingleton<StealthBrowserService>();
 // are picked per group at refresh time; the default applies to other sites.
 builder.Services.AddSingleton<ICookieRefreshStrategy, DefaultCookieRefreshStrategy>();
 builder.Services.AddSingleton<ICookieRefreshStrategy, YouTubeCookieRefreshStrategy>();
+builder.Services.AddSingleton<ICookieDomainMapping, DefaultCookieDomainMapping>();
+builder.Services.AddSingleton<ICookieDomainMapping, YouTubeCookieDomainMapping>();
 // Downloader plugins are self-discovered via reflection; no manual registration.
 builder.Services.AddSingleton(sp => DownloaderFactory.Create(sp));
 builder.Services.AddSingleton<ITaskExecutor>(sp => new DownloaderTaskExecutor(
@@ -125,6 +127,19 @@ builder.Services.AddAuthorizationBuilder()
 builder.Services.AddResponseCompression(options => options.EnableForHttps = true);
 
 var app = builder.Build();
+
+// Seed the runtime config store from appsettings (e.g. dev overrides like
+// cookie.refreshOnStartup). Only keys not already set in the DB are imported,
+// so values changed on the system page persist across restarts.
+var configRepo = app.Services.GetRequiredService<IConfigRepository>();
+foreach (var item in ConfigRegistry.All)
+{
+    var configValue = builder.Configuration[item.Key.Replace('.', ':')];
+    if (configValue is not null && configRepo.Get(item.Key) is null)
+    {
+        configRepo.Set(item.Key, configValue);
+    }
+}
 
 app.UseResponseCompression();
 if (!builder.Environment.IsDevelopment())

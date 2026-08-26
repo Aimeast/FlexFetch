@@ -16,7 +16,8 @@ public sealed record CookieEditDto(
     bool Secure,
     bool HttpOnly,
     long? ExpirationDate,
-    string? SameSite = null);
+    string? SameSite = null,
+    IReadOnlyList<string>? SharedDomains = null);
 
 public sealed record ImportItemsRequest(string? GroupName, IReadOnlyList<CookieEditDto>? Cookies);
 
@@ -179,6 +180,7 @@ public static class CookiesApi
         ExpiresAt = d.ExpirationDate is > 0
             ? DateTimeOffset.FromUnixTimeSeconds(d.ExpirationDate.Value).UtcDateTime
             : null,
+        SharedDomains = d.SharedDomains?.ToList(),
     };
 
     public sealed record CookieGroupDto(string Name, IReadOnlyList<string>? Urls);

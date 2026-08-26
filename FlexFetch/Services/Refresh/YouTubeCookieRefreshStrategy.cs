@@ -20,10 +20,58 @@ public sealed class YouTubeCookieRefreshStrategy : ICookieRefreshStrategy
             || group.Cookies.Any(c => IsYouTubeHost(c.Domain));
     }
 
+    /// <summary>
+    /// Google identity cookies live on the .google.com root domain, so a
+    /// YouTube refresh must push and export them alongside the group's own.
+    /// </summary>
+    public IReadOnlyList<string> GetRelatedCookieDomains(CookieGroup group) => new[] { "google.com" };
+
     public string? GetSessionRejectionReason(string? pageUrl) =>
         IsLoginRedirectUrl(pageUrl)
             ? "Session not recognized by YouTube (logged in=false); re-export cookies from a real browser"
             : null;
+
+    /// <summary>
+    /// Bot-check interstitials are served in-page (the URL stays on
+    /// youtube.com), so the landing-URL check cannot see them. Detect the
+    /// flag from the visible page text, YouTube's reported login state and
+    /// InnerTube API auth failures instead.
+    /// </summary>
+    public string? GetPageContentRejectionReason(CookieRefreshPageSignals signals)
+    {
+        if (signals.LoggedIn == false)
+        {
+            return "Session not recognized by YouTube (logged in=false); re-export cookies from a real browser";
+        }
+
+        if (signals.SignInButtonPresent)
+        {
+            return "YouTube shows a Sign in button (session logged out); re-export cookies from a real browser";
+        }
+
+        if (signals.ApiAuthFailed)
+        {
+            return "YouTube InnerTube API rejected the session (401/403); re-export cookies from a real browser";
+        }
+
+        if (!string.IsNullOrWhiteSpace(signals.PageText)
+            && BotMarkers.Any(m => signals.PageText.Contains(m, StringComparison.OrdinalIgnoreCase)))
+        {
+            return "YouTube bot-check page detected; session flagged; re-export cookies from a real browser";
+        }
+
+        return null;
+    }
+
+    /// <summary>Text markers that identify YouTube's in-page bot-check interstitial.</summary>
+    private static readonly string[] BotMarkers =
+    {
+        "confirm you're not a bot",
+        "Sign in to confirm",
+        "verify you're human",
+        "unusual traffic",
+        "Enable cookies and reload the page",
+    };
 
     public string? GetSessionRejectionReason(IReadOnlyList<CookieItem> before, IReadOnlyList<CookieItem> exported)
     {

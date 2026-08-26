@@ -107,7 +107,7 @@ public sealed class DownloaderFactoryTests
             services.AddSingleton(new LiteDbStore(Path.Combine(dir, "flexfetch.db")));
             services.AddSingleton<IConfigRepository>(sp => new ConfigRepository(sp.GetRequiredService<LiteDbStore>()));
             services.AddSingleton<ICookieRepository>(sp => new CookieRepository(sp.GetRequiredService<LiteDbStore>()));
-            services.AddSingleton(sp => new CookiePoolService(sp.GetRequiredService<ICookieRepository>()));
+            services.AddSingleton(sp => new CookiePoolService(sp.GetRequiredService<ICookieRepository>(), new ICookieDomainMapping[] { new YouTubeCookieDomainMapping(), new DefaultCookieDomainMapping() }));
             services.AddSingleton(sp => new YtdlpService(
                 sp.GetRequiredService<IProxyService>(),
                 sp.GetRequiredService<IConfigRepository>(),
@@ -117,7 +117,7 @@ public sealed class DownloaderFactoryTests
             services.AddSingleton<ICookieRefreshStrategy, YouTubeCookieRefreshStrategy>();
             services.AddSingleton(sp => new StealthBrowserService(
                 sp.GetRequiredService<IProxyService>(),
-                new CookiePoolService(sp.GetRequiredService<ICookieRepository>()),
+                new CookiePoolService(sp.GetRequiredService<ICookieRepository>(), new ICookieDomainMapping[] { new YouTubeCookieDomainMapping(), new DefaultCookieDomainMapping() }),
                 sp.GetRequiredService<StorageService>(),
                 sp.GetRequiredService<IConfigRepository>(),
                 sp.GetRequiredService<Serilog.ILogger>(),

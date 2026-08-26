@@ -36,10 +36,12 @@
             <div class="row" style="margin-bottom:0.5rem">
                 <button class="secondary" id="refresh-btn" onclick="refreshNow(this)">Refresh now</button>
             </div>
-            <table>
-                <thead><tr><th>Domain</th><th>Cookies</th><th>Last refreshed</th><th></th></tr></thead>
-                <tbody id="group-tbody"></tbody>
-            </table>
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>Domain</th><th>Cookies</th><th>Last refreshed</th><th></th></tr></thead>
+                    <tbody id="group-tbody"></tbody>
+                </table>
+            </div>
         </div>
     </main>
 
@@ -312,6 +314,7 @@
                     domain: c.domain, name: c.name, value: c.value, path: c.path,
                     secure: c.secure, httpOnly: c.httpOnly,
                     expirationDate: c.expiresAt ? Math.floor(new Date(c.expiresAt).getTime() / 1000) : null,
+                    sharedDomains: c.sharedDomains || [],
                 }));
                 groupNames[g.id] = g.name;
                 groupUrls[g.id] = (g.urls || []).slice();
@@ -375,9 +378,9 @@
                     : '<button class="secondary" onclick="toggleDeleteGroup(\'' + gid + '\')">Keep</button>';
                 const domainHtml = marked ? '<span class="deltxt">' + esc(domain) + '</span>' : esc(domain);
                 tr.innerHTML =
-                    '<td>' + domainHtml + '</td>' +
-                    '<td>' + rows.length + '</td>' +
-                    '<td id="status-' + gid + '">' + refreshStatusHtml(gid) + '</td>' +
+                    '<td data-label="Domain">' + domainHtml + '</td>' +
+                    '<td data-label="Cookies">' + rows.length + '</td>' +
+                    '<td data-label="Last refreshed" id="status-' + gid + '">' + refreshStatusHtml(gid) + '</td>' +
                     '<td>' + groupBtn + '</td>';
                 tbody.appendChild(tr);
                 tbody.appendChild(buildCookieDetail(gid));
@@ -410,7 +413,7 @@
                 const table = document.createElement('table');
                 table.className = 'cookie-table';
                 table.innerHTML =
-                    '<thead><tr><th>Name</th><th>Value</th><th>Path</th>' +
+                    '<thead><tr><th>Domain</th><th>Name</th><th>Value</th><th>Path</th>' +
                     '<th>Secure</th><th>HttpOnly</th><th>Expires</th><th></th></tr></thead>';
                 const rowsTbody = document.createElement('tbody');
                 for (let i = 0; i < rows.length; i++) {
@@ -422,12 +425,13 @@
                         ? '<button class="secondary" onclick="toggleDeleteCookie(\'' + gid + '\',' + i + ')">Keep</button>'
                         : '<button class="danger" onclick="toggleDeleteCookie(\'' + gid + '\',' + i + ')">Delete</button>';
                     row.innerHTML =
-                        '<td><input data-g="' + gid + '" data-i="' + i + '" data-f="name" value="' + esc(c.name) + '"></td>' +
-                        '<td><input data-g="' + gid + '" data-i="' + i + '" data-f="value" value="' + esc(c.value) + '"></td>' +
-                        '<td><input data-g="' + gid + '" data-i="' + i + '" data-f="path" value="' + esc(c.path) + '"></td>' +
-                        '<td><input type="checkbox" data-g="' + gid + '" data-i="' + i + '" data-f="secure"' + (c.secure ? ' checked' : '') + '></td>' +
-                        '<td><input type="checkbox" data-g="' + gid + '" data-i="' + i + '" data-f="httpOnly"' + (c.httpOnly ? ' checked' : '') + '></td>' +
-                        '<td><input type="datetime-local" data-g="' + gid + '" data-i="' + i + '" data-f="expirationDate" value="' +
+                        '<td data-label="Domain">' + esc(c.domain + ((c.sharedDomains || []).length ? ' \u2192 ' + (c.sharedDomains || []).join(', ') : '')) + '</td>' +
+                        '<td data-label="Name"><input data-g="' + gid + '" data-i="' + i + '" data-f="name" value="' + esc(c.name) + '"></td>' +
+                        '<td data-label="Value"><input data-g="' + gid + '" data-i="' + i + '" data-f="value" value="' + esc(c.value) + '"></td>' +
+                        '<td data-label="Path"><input data-g="' + gid + '" data-i="' + i + '" data-f="path" value="' + esc(c.path) + '"></td>' +
+                        '<td data-label="Secure"><input type="checkbox" data-g="' + gid + '" data-i="' + i + '" data-f="secure"' + (c.secure ? ' checked' : '') + '></td>' +
+                        '<td data-label="HttpOnly"><input type="checkbox" data-g="' + gid + '" data-i="' + i + '" data-f="httpOnly"' + (c.httpOnly ? ' checked' : '') + '></td>' +
+                        '<td data-label="Expires"><input type="datetime-local" data-g="' + gid + '" data-i="' + i + '" data-f="expirationDate" value="' +
                         toLocalInput(c.expirationDate) + '"></td>' +
                         '<td>' + delBtn + '</td>';
                     rowsTbody.appendChild(row);
@@ -449,6 +453,78 @@
             else if (f === 'expirationDate') c[f] = fromLocalInput(e.target.value);
             else c[f] = e.target.value;
         });
+
+        // --- Periodic refresh-status polling ---
+
+        let statusTimer = null;
+        let statusBusy = false;
+        let statusActive = false;
+        const STATUS_INTERVAL_MS = 3000;
+
+        // Chain with setTimeout instead of setInterval so slow responses never
+        // pile up concurrent polls; statusBusy skips a tick while one is in
+        // flight. Only the status badges are updated - never the table - so
+        // unsaved edits in the cookie/URL inputs are not clobbered.
+        async function statusLoop() {
+            if (!statusBusy) {
+                statusBusy = true;
+                try {
+                    await pollRefreshStatus();
+                } catch (e) {
+                    // A failed poll must not stop the loop.
+                } finally {
+                    statusBusy = false;
+                }
+            }
+            if (statusActive) {
+                statusTimer = setTimeout(statusLoop, STATUS_INTERVAL_MS);
+            }
+        }
+
+        function startStatusLoop() {
+            stopStatusLoop();
+            statusActive = true;
+            statusLoop();
+        }
+
+        function stopStatusLoop() {
+            statusActive = false;
+            if (statusTimer !== null) {
+                clearTimeout(statusTimer);
+                statusTimer = null;
+            }
+        }
+
+        async function pollRefreshStatus() {
+            let status;
+            try {
+                status = await api('/api/cookies/refresh/status');
+            } catch (e) {
+                return;
+            }
+            if (!status) return;
+            updateStatusCells(status);
+        }
+
+        // Live-update each group's status cell and the global last-refresh line
+        // without rebuilding the whole table (rebuilding would drop unsaved
+        // edits in the URL inputs).
+        function updateStatusCells(status) {
+            for (const g of (status.groups || [])) {
+                groupStatus[g.id] = {
+                    status: g.status === 'Never' ? 0
+                        : g.status === 'Running' ? 1
+                        : g.status === 'Ok' ? 2
+                        : g.status === 'Failed' ? 3
+                        : 0,
+                    lastRefreshedAt: g.lastRefreshedAt || null,
+                    lastError: g.lastError || null,
+                };
+                const cell = document.getElementById('status-' + g.id);
+                if (cell) cell.innerHTML = refreshStatusHtml(g.id);
+            }
+            updateLastRefresh();
+        }
 
         async function refreshNow(btn) {
             if (btn.disabled) return;
@@ -480,20 +556,7 @@
                     // Live-update each group's status cell and the global
                     // last-refresh line without rebuilding the whole table
                     // (rebuilding would drop unsaved edits in the URL inputs).
-                    for (const g of (status.groups || [])) {
-                        groupStatus[g.id] = {
-                            status: g.status === 'Never' ? 0
-                                : g.status === 'Running' ? 1
-                                : g.status === 'Ok' ? 2
-                                : g.status === 'Failed' ? 3
-                                : 0,
-                            lastRefreshedAt: g.lastRefreshedAt || null,
-                            lastError: g.lastError || null,
-                        };
-                        const cell = document.getElementById('status-' + g.id);
-                        if (cell) cell.innerHTML = refreshStatusHtml(g.id);
-                    }
-                    updateLastRefresh();
+                    updateStatusCells(status);
                     if (!status.refreshing) loadGroups();
                 }, 700);
             } catch (e) {
@@ -665,6 +728,7 @@
         };
 
         loadGroups();
+        startStatusLoop();
     </script>
 </body>
 </html>

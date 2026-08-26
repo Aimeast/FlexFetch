@@ -303,12 +303,76 @@ public sealed class StealthBrowserService : IAsyncDisposable
     public async Task PushCookiesAsync(IEnumerable<CookieItem> cookies)
     {
         await EnsureInitializedAsync();
-        await _context!.AddCookiesAsync(cookies.Select(ToPlaywrightCookie).ToArray());
+        await _context!.AddCookiesAsync(cookies.SelectMany(MaterializeShared).ToArray());
+    }
+
+    /// <summary>
+    /// Materializes a cookie into one Playwright cookie per domain it lives on
+    /// (primary + shared sibling domains), so the browser jar matches a real one.
+    /// </summary>
+    private static IEnumerable<Microsoft.Playwright.Cookie> MaterializeShared(CookieItem c)
+    {
+        var domains = new List<string> { c.Domain };
+        if (c.SharedDomains is { Count: > 0 })
+        {
+            domains.AddRange(c.SharedDomains);
+        }
+
+        foreach (var domain in domains.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            yield return ToPlaywrightCookie(c, domain);
+        }
     }
 
     /// <summary>Selects the refresh strategy for a group, falling back to the default.</summary>
     private ICookieRefreshStrategy SelectStrategy(CookieGroup group) =>
         _strategies.FirstOrDefault(s => s.IsMatch(group)) ?? _default;
+
+    /// <summary>Visible text of the page body, truncated for analysis.</summary>
+    private static async Task<string?> SafeTextAsync(IPage page)
+    {
+        try
+        {
+            return await page.EvaluateAsync<string?>(
+                "() => document.body ? document.body.innerText.slice(0, 20000) : null");
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>YouTube's reported login state (ytcfg.loggedIn), or null when unavailable.</summary>
+    private static async Task<bool?> ReadLoggedInStateAsync(IPage page)
+    {
+        try
+        {
+            return await page.EvaluateAsync<bool?>(
+                "() => { try { const d = window.ytcfg && window.ytcfg.data_; return (d && typeof d.loggedIn === 'boolean') ? d.loggedIn : null; } catch { return null; } }");
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// True when the page shows a "Sign in" button/link (YouTube's logged-out
+    /// header), which ytcfg.loggedIn may not always report. Matches the sign-in
+    /// link and YouTube's attributed-string span by their exact "Sign in" text.
+    /// </summary>
+    private static async Task<bool> ReadSignInButtonPresentAsync(IPage page)
+    {
+        try
+        {
+            return await page.EvaluateAsync<bool>(
+                "() => { const els = document.querySelectorAll('a[href*=\"signin\"], a[href*=\"ServiceLogin\"], span.ytAttributedStringHost'); for (const e of els) { if (e.textContent && e.textContent.trim() === 'Sign in') return true; } return false; }");
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
 
     /// <summary>
     /// Humanized group refresh: injects the group's cookies, visits each site
@@ -335,6 +399,9 @@ public sealed class StealthBrowserService : IAsyncDisposable
         var before = group.Cookies.ToList();
         try
         {
+            // Push the group's cookies; shared cookies carry their sibling
+            // domains (SharedDomains) and are materialized onto every domain
+            // the session lives on by PushCookiesAsync.
             await PushCookiesAsync(group.Cookies);
             var page = await NewPageAsync();
             try
@@ -355,6 +422,20 @@ public sealed class StealthBrowserService : IAsyncDisposable
                 {
                     try
                     {
+                        // Track InnerTube API auth failures during the visit: a
+                        // 401/403 from youtubei/v1 means the presented session
+                        // was rejected even if the page itself loads.
+                        var apiAuthFailed = false;
+                        void OnResponse(object? sender, IResponse e)
+                        {
+                            if (e.Url.Contains("youtubei/v1", StringComparison.OrdinalIgnoreCase)
+                                && (e.Status == 401 || e.Status == 403))
+                            {
+                                apiAuthFailed = true;
+                            }
+                        }
+
+                        page.Response += OnResponse;
                         var gotoOk = false;
                         try
                         {
@@ -380,6 +461,8 @@ public sealed class StealthBrowserService : IAsyncDisposable
                             await page.WaitForTimeoutAsync(_random.Next(1500, 4000));
                         }
 
+                        page.Response -= OnResponse;
+
                         // Navigation failed (e.g. net::ERR_FAILED): skip the
                         // humanized waits so the group fails promptly instead
                         // of idling for ~10+ seconds.
@@ -392,6 +475,18 @@ public sealed class StealthBrowserService : IAsyncDisposable
                         // presented session was not accepted: the refresh
                         // cannot renew it and must not fake success.
                         sessionRejection ??= strategy.GetSessionRejectionReason(page.Url);
+
+                        // Bot checks are served in-page (the URL stays on
+                        // youtube.com), so also inspect the page content, the
+                        // reported login state and API auth failures.
+                        if (sessionRejection is null)
+                        {
+                            var pageText = await SafeTextAsync(page);
+                            var loggedIn = await ReadLoggedInStateAsync(page);
+                            var signInButton = await ReadSignInButtonPresentAsync(page);
+                            sessionRejection = strategy.GetPageContentRejectionReason(
+                                new CookieRefreshPageSignals(pageText, loggedIn, apiAuthFailed, signInButton));
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -744,15 +839,20 @@ public sealed class StealthBrowserService : IAsyncDisposable
 
     /// <summary>
     /// Builds the URL list for cookie export: the group's refresh URLs plus
-    /// one URL per distinct cookie domain in the snapshot. YouTube identity
-    /// cookies (SID/SAPISID/__Secure-1PSID) live on the .google.com root
-    /// domain, so exporting only the group URLs would miss them - and the
-    /// sync-delete would then drop those identity cookies from the pool.
+    /// one URL per distinct cookie domain in the snapshot (primary domain and
+    /// any shared sibling domains). YouTube identity cookies (SID/SAPISID/
+    /// __Secure-1PSID) live on the .google.com root domain too, so exporting
+    /// only the group URLs would miss them - and the sync-delete would then
+    /// drop those identity cookies from the pool.
     /// </summary>
     private static string[] BuildExportUrls(IReadOnlyList<string> groupUrls, IReadOnlyList<CookieItem> before)
     {
         var urls = new List<string>(groupUrls.Select(ToHttps));
-        foreach (var domain in before.Select(c => c.Domain).Where(d => !string.IsNullOrWhiteSpace(d)).Distinct())
+        var domains = before
+            .SelectMany(c => new[] { c.Domain }.Concat(c.SharedDomains ?? new()))
+            .Where(d => !string.IsNullOrWhiteSpace(d))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+        foreach (var domain in domains)
         {
             var host = domain.TrimStart('.');
             if (host.Length > 0 && Uri.TryCreate($"https://{host}/", UriKind.Absolute, out _))
@@ -1025,11 +1125,11 @@ public sealed class StealthBrowserService : IAsyncDisposable
         ExpiresAt = c.Expires > 0 ? DateTimeOffset.FromUnixTimeSeconds((long)c.Expires).UtcDateTime : null,
     };
 
-    private static Microsoft.Playwright.Cookie ToPlaywrightCookie(CookieItem c) => new()
+    private static Microsoft.Playwright.Cookie ToPlaywrightCookie(CookieItem c, string domain) => new()
     {
         Name = c.Name,
         Value = c.Value,
-        Domain = c.Domain,
+        Domain = domain,
         Path = string.IsNullOrEmpty(c.Path) ? "/" : c.Path,
         Expires = c.ExpiresAt is null ? -1 : new DateTimeOffset(c.ExpiresAt.Value).ToUnixTimeSeconds(),
         HttpOnly = c.HttpOnly,

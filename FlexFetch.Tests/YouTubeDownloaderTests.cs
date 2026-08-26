@@ -27,7 +27,7 @@ public sealed class YouTubeDownloaderTests
         var ytdlp = new YtdlpService(proxy, config, Log, dir);
         var storage = new StorageService(dir);
         var store = new LiteDbStore(Path.Combine(dir, "flexfetch.db"));
-        var cookies = new CookiePoolService(new CookieRepository(store));
+        var cookies = new CookiePoolService(new CookieRepository(store), new ICookieDomainMapping[] { new YouTubeCookieDomainMapping(), new DefaultCookieDomainMapping() });
         return new YouTubeDownloader(ytdlp, proxy, storage, Log, cookies, fetch);
     }
 
@@ -41,7 +41,7 @@ public sealed class YouTubeDownloaderTests
         var ytdlp = new YtdlpService(proxy, config, Log, dir);
         var storage = new StorageService(dir);
         var store = new LiteDbStore(Path.Combine(dir, "flexfetch.db"));
-        var pool = new CookiePoolService(new CookieRepository(store));
+        var pool = new CookiePoolService(new CookieRepository(store), new ICookieDomainMapping[] { new YouTubeCookieDomainMapping(), new DefaultCookieDomainMapping() });
         return (new YouTubeDownloader(ytdlp, proxy, storage, Log, pool, fetch, download), pool);
     }
 

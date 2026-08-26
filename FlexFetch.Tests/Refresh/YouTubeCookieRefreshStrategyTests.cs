@@ -96,4 +96,59 @@ public sealed class YouTubeCookieRefreshStrategyTests
 
         Assert.IsNull(Strategy.GetSessionRejectionReason(before, exported));
     }
+
+    [TestMethod]
+    public void GetRelatedCookieDomains_ReturnsGoogleCom()
+    {
+        var group = new CookieGroup { Urls = new List<string> { "https://www.youtube.com" } };
+
+        var domains = Strategy.GetRelatedCookieDomains(group);
+
+        CollectionAssert.Contains(domains.ToArray(), "google.com");
+    }
+
+    [TestMethod]
+    public void GetPageContentRejectionReason_RejectsWhenLoggedInFalse()
+    {
+        var reason = Strategy.GetPageContentRejectionReason(new CookieRefreshPageSignals("home", false, false, false));
+
+        Assert.IsNotNull(reason);
+        StringAssert.Contains(reason!, "logged in=false");
+    }
+
+    [TestMethod]
+    public void GetPageContentRejectionReason_RejectsOnSignInButton()
+    {
+        var reason = Strategy.GetPageContentRejectionReason(new CookieRefreshPageSignals("home", null, false, true));
+
+        Assert.IsNotNull(reason);
+        StringAssert.Contains(reason!, "Sign in");
+    }
+
+    [TestMethod]
+    public void GetPageContentRejectionReason_RejectsOnBotCheckText()
+    {
+        var reason = Strategy.GetPageContentRejectionReason(
+            new CookieRefreshPageSignals("Sign in to confirm you're not a bot", null, false, false));
+
+        Assert.IsNotNull(reason);
+        StringAssert.Contains(reason!, "bot-check");
+    }
+
+    [TestMethod]
+    public void GetPageContentRejectionReason_RejectsOnApiAuthFailure()
+    {
+        var reason = Strategy.GetPageContentRejectionReason(new CookieRefreshPageSignals("home", true, true, false));
+
+        Assert.IsNotNull(reason);
+        StringAssert.Contains(reason!, "401/403");
+    }
+
+    [TestMethod]
+    public void GetPageContentRejectionReason_NullOnHealthyPage()
+    {
+        var reason = Strategy.GetPageContentRejectionReason(new CookieRefreshPageSignals("home", true, false, false));
+
+        Assert.IsNull(reason);
+    }
 }
