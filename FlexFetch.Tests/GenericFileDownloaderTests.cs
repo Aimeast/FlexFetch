@@ -4,8 +4,8 @@ using FlexFetch.Services;
 using FlexFetch.Services.Downloaders;
 using FlexFetch.Services.Routing;
 using Serilog;
-using TaskStatus = FlexFetch.Enums.TaskStatus;
 using ILogger = Serilog.ILogger;
+using TaskStatus = FlexFetch.Enums.TaskStatus;
 
 namespace FlexFetch.Tests;
 
@@ -29,7 +29,7 @@ public sealed class GenericFileDownloaderTests
         _downloader = new GenericFileDownloader(
             new DirectProxyService(),
             _storage,
-            new InMemoryConfigRepository(),
+            new TestConfig(),
             Log);
     }
 
@@ -198,18 +198,5 @@ public sealed class GenericFileDownloaderTests
         public string? GetProxyUri(Uri url) => null;
 
         public string? GetBrowserProxyAddress() => null;
-    }
-
-    private sealed class InMemoryConfigRepository : IConfigRepository
-    {
-        private readonly Dictionary<string, string> _values = new();
-
-        public string? Get(string key) => _values.GetValueOrDefault(key);
-
-        public IReadOnlyDictionary<string, string> GetAll() => _values;
-
-        public void Set(string key, string value) => _values[key] = value;
-
-        public bool Delete(string key) => _values.Remove(key);
     }
 }

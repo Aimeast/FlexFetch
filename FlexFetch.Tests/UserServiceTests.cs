@@ -12,7 +12,7 @@ public sealed class UserServiceTests
     private string? _dir;
     private LiteDbStore? _store;
     private UserService? _service;
-    private IConfigRepository? _config;
+    private TestConfig? _config;
 
     [TestInitialize]
     public void Setup()
@@ -20,7 +20,7 @@ public sealed class UserServiceTests
         _dir = Path.Combine(Path.GetTempPath(), "flexfetch-test-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_dir);
         _store = new LiteDbStore(Path.Combine(_dir, "flexfetch.db"));
-        _config = new ConfigRepository(_store);
+        _config = new TestConfig();
         _service = new UserService(new UserRepository(_store), _config);
     }
 
@@ -220,7 +220,7 @@ public sealed class UserServiceTests
         Assert.AreEqual("admin", devPassword);
 
         using var prodStore = new LiteDbStore(Path.Combine(Path.GetTempPath(), "flexfetch-test-" + Guid.NewGuid().ToString("N") + ".db"));
-        var prodService = new UserService(new UserRepository(prodStore), new ConfigRepository(prodStore));
+        var prodService = new UserService(new UserRepository(prodStore), new TestConfig());
         var prodPassword = prodService.EnsureInitialAdmin(null, isDevelopment: false);
         Assert.IsNotNull(prodPassword);
         Assert.IsGreaterThanOrEqualTo(prodPassword!.Length, 18);

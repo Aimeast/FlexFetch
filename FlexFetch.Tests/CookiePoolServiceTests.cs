@@ -18,7 +18,11 @@ public sealed class CookiePoolServiceTests
         _dir = Path.Combine(Path.GetTempPath(), "flexfetch-test-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_dir);
         _store = new LiteDbStore(Path.Combine(_dir, "flexfetch.db"));
-        _pool = new CookiePoolService(new CookieRepository(_store), new ICookieDomainMapping[] { new YouTubeCookieDomainMapping(), new DefaultCookieDomainMapping() });
+        // The YouTube plugin carries the site's cross-domain mapping; the
+        // tests use a lightweight stand-in with the same sibling/identity
+        // behavior (Google identity cookies shared between .youtube.com and
+        // .google.com).
+        _pool = new CookiePoolService(new CookieRepository(_store), () => new ICookieDomainMapping[] { new TestYouTubeMapping(), new DefaultCookieDomainMapping() });
     }
 
     [TestCleanup]
@@ -587,5 +591,41 @@ public sealed class CookiePoolServiceTests
         StringAssert.Contains(header, "A=1");
         StringAssert.Contains(header, "B=2");
         Assert.Contains(";", header);
+    }
+
+    /// <summary>
+    /// Stand-in for the YouTube plugin's cross-domain mapping: Google identity
+    /// cookies (SID family) are shared between .youtube.com and .google.com.
+    /// </summary>
+    private sealed class TestYouTubeMapping : ICookieDomainMapping
+    {
+        public bool IsMatch(CookieGroup group)
+        {
+            var name = Normalize(group.Name);
+            return IsSibling(name)
+                || group.Cookies.Any(c => IsSibling(Normalize(c.Domain)));
+        }
+
+        public IReadOnlyList<string> GetSharedDomains(string? domain, string name)
+        {
+            var normalized = Normalize(domain);
+            if (string.IsNullOrEmpty(normalized) || !IsIdentityCookie(name) || !IsSibling(normalized))
+            {
+                return Array.Empty<string>();
+            }
+
+            return normalized == "youtube.com" ? new[] { ".google.com" } : new[] { ".youtube.com" };
+        }
+
+        private static bool IsSibling(string? domain) =>
+            domain is "youtube.com" or "google.com";
+
+        private static bool IsIdentityCookie(string name) =>
+            name.Contains("SID", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("APISID", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("LOGIN_INFO", StringComparison.OrdinalIgnoreCase);
+
+        private static string Normalize(string? domain) =>
+            (domain ?? string.Empty).TrimStart('.').ToLowerInvariant();
     }
 }

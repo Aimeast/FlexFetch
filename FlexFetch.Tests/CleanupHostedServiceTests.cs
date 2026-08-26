@@ -17,7 +17,7 @@ public sealed class CleanupHostedServiceTests
     private LiteDbStore? _store;
     private IShareRepository? _shares;
     private ITaskRepository? _tasks;
-    private IConfigRepository? _config;
+    private TestConfig? _config;
     private IUserRepository? _users;
     private StorageService? _storage;
 
@@ -35,7 +35,7 @@ public sealed class CleanupHostedServiceTests
         _store = new LiteDbStore(Path.Combine(_dir, "flexfetch.db"));
         _shares = new ShareRepository(_store);
         _tasks = new TaskRepository(_store);
-        _config = new ConfigRepository(_store);
+        _config = new TestConfig();
         _users = new UserRepository(_store);
         _storage = new StorageService(_dir);
     }

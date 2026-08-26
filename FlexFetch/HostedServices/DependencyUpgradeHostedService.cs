@@ -12,11 +12,11 @@ namespace FlexFetch.HostedServices;
 /// </summary>
 public sealed class DependencyUpgradeHostedService : IntervalHostedService
 {
-    private readonly IConfigRepository _config;
+    private readonly IConfiguration _config;
     private readonly YtdlpService _ytdlp;
 
     public DependencyUpgradeHostedService(
-        IConfigRepository config,
+        IConfiguration config,
         YtdlpService ytdlp,
         IHostApplicationLifetime lifetime,
         ILogger log)
@@ -47,5 +47,5 @@ public sealed class DependencyUpgradeHostedService : IntervalHostedService
         await _ytdlp.UpgradeFfmpegAsync(cancellationToken);
     }
 
-    private string Get(string key) => _config.Get(key) ?? ConfigRegistry.GetDefault(key);
+    private string Get(string key) => ConfigRegistry.From(_config, key);
 }

@@ -1,7 +1,6 @@
 ﻿using System.Net;
 using System.Text.Json;
 using FlexFetch.Config;
-using FlexFetch.Data;
 using ILogger = Serilog.ILogger;
 
 namespace FlexFetch.Services.Routing;
@@ -18,18 +17,16 @@ namespace FlexFetch.Services.Routing;
 /// </summary>
 public sealed class ProxyService : IProxyService
 {
-    private readonly IConfigRepository _config;
+    private readonly IConfiguration _configuration;
     private readonly ILogger _log;
     private readonly string _dataDir;
-    private readonly IConfiguration? _configuration;
     private RouteRuleChain _chain;
 
-    public ProxyService(IConfigRepository config, ILogger log, string dataDir, IConfiguration? configuration = null)
+    public ProxyService(IConfiguration configuration, ILogger log, string dataDir)
     {
-        _config = config;
+        _configuration = configuration;
         _log = log;
         _dataDir = dataDir;
-        _configuration = configuration;
         _chain = BuildChain();
     }
 
@@ -102,25 +99,11 @@ public sealed class ProxyService : IProxyService
     }
 
     /// <summary>
-    /// Reads a config value with precedence: appsettings (Network:*) first,
-    /// then the runtime config store, then the registry default.
+    /// Reads a config value with fallback: the appsettings value for the key,
+    /// then the registry default. Keys are dot-separated here, colons in
+    /// IConfiguration.
     /// </summary>
-    private string GetConfig(string key)
-    {
-        if (_configuration is not null)
-        {
-            // ConfigKeys are "network.proxy" etc.; IConfiguration keys are
-            // case-insensitive, so "Network:proxy" matches "Network:Proxy".
-            var section = "Network:" + key.Split('.').Last();
-            var value = _configuration[section];
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                return value;
-            }
-        }
-
-        return _config.Get(key) ?? ConfigRegistry.GetDefault(key);
-    }
+    private string GetConfig(string key) => ConfigRegistry.From(_configuration, key);
 
     private RouteRuleChain BuildChain()
     {
@@ -156,24 +139,21 @@ public sealed class ProxyService : IProxyService
     /// <summary>
     /// Reads the route rules with precedence:
     /// 1. appsettings "Network:RouteRules" bound structurally (JSON array);
-    /// 2. the runtime config store value as a JSON string (same schema).
+    /// 2. the "network:routeRules" string value as a JSON string (same schema).
     /// </summary>
     private List<RouteRuleConfig> ReadRules()
     {
-        if (_configuration is not null)
+        var section = _configuration.GetSection("Network:RouteRules");
+        if (section.Exists())
         {
-            var section = _configuration.GetSection("Network:RouteRules");
-            if (section.Exists())
+            var rules = section.Get<List<RouteRuleConfig>>();
+            if (rules is { Count: > 0 })
             {
-                var rules = section.Get<List<RouteRuleConfig>>();
-                if (rules is { Count: > 0 })
-                {
-                    return rules;
-                }
+                return rules;
             }
         }
 
-        var raw = _config.Get(ConfigKeys.RouteRules);
+        var raw = _configuration[ConfigKeys.RouteRules.Replace('.', ':')];
         if (string.IsNullOrWhiteSpace(raw))
         {
             return new List<RouteRuleConfig>();

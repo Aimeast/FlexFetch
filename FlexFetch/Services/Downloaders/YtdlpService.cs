@@ -46,7 +46,6 @@ public sealed class YtdlpService
 
     public YtdlpService(
         IProxyService proxy,
-        IConfigRepository config,
         ILogger log,
         string dataDir,
         Func<CancellationToken, Task<string?>>? fetchLatestFfmpegTag = null)

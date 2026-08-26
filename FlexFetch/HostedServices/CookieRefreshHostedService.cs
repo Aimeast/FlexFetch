@@ -12,13 +12,13 @@ namespace FlexFetch.HostedServices;
 /// </summary>
 public sealed class CookieRefreshHostedService : IntervalHostedService
 {
-    private readonly IConfigRepository _config;
+    private readonly IConfiguration _config;
     private readonly CookiePoolService _pool;
     private readonly StealthBrowserService _browser;
     private readonly ILogger _log;
 
     public CookieRefreshHostedService(
-        IConfigRepository config,
+        IConfiguration config,
         CookiePoolService pool,
         StealthBrowserService browser,
         IHostApplicationLifetime lifetime,
@@ -79,5 +79,5 @@ public sealed class CookieRefreshHostedService : IntervalHostedService
         _log.Information("Cookie refresh run finished ({Refreshed}/{GroupCount} groups)", refreshed, groups.Count);
     }
 
-    private string Get(string key) => _config.Get(key) ?? ConfigRegistry.GetDefault(key);
+    private string Get(string key) => ConfigRegistry.From(_config, key);
 }

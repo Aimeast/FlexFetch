@@ -4,6 +4,7 @@ using FlexFetch.Services;
 using FlexFetch.Services.Downloaders;
 using FlexFetch.Services.Refresh;
 using FlexFetch.Services.Routing;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Serilog;
 
@@ -105,23 +106,20 @@ public sealed class DownloaderFactoryTests
             services.AddSingleton<IProxyService>(new DirectProxyService());
             services.AddSingleton(new StorageService(dir));
             services.AddSingleton(new LiteDbStore(Path.Combine(dir, "flexfetch.db")));
-            services.AddSingleton<IConfigRepository>(sp => new ConfigRepository(sp.GetRequiredService<LiteDbStore>()));
+            services.AddSingleton<IConfiguration>(new TestConfig());
             services.AddSingleton<ICookieRepository>(sp => new CookieRepository(sp.GetRequiredService<LiteDbStore>()));
-            services.AddSingleton(sp => new CookiePoolService(sp.GetRequiredService<ICookieRepository>(), new ICookieDomainMapping[] { new YouTubeCookieDomainMapping(), new DefaultCookieDomainMapping() }));
+            services.AddSingleton(sp => new CookiePoolService(sp.GetRequiredService<ICookieRepository>(), () => new ICookieDomainMapping[] { new DefaultCookieDomainMapping() }));
             services.AddSingleton(sp => new YtdlpService(
                 sp.GetRequiredService<IProxyService>(),
-                sp.GetRequiredService<IConfigRepository>(),
                 sp.GetRequiredService<Serilog.ILogger>(),
                 dir));
-            services.AddSingleton<ICookieRefreshStrategy, DefaultCookieRefreshStrategy>();
-            services.AddSingleton<ICookieRefreshStrategy, YouTubeCookieRefreshStrategy>();
             services.AddSingleton(sp => new StealthBrowserService(
                 sp.GetRequiredService<IProxyService>(),
-                new CookiePoolService(sp.GetRequiredService<ICookieRepository>(), new ICookieDomainMapping[] { new YouTubeCookieDomainMapping(), new DefaultCookieDomainMapping() }),
+                sp.GetRequiredService<CookiePoolService>(),
                 sp.GetRequiredService<StorageService>(),
-                sp.GetRequiredService<IConfigRepository>(),
+                sp.GetRequiredService<IConfiguration>(),
                 sp.GetRequiredService<Serilog.ILogger>(),
-                sp.GetServices<ICookieRefreshStrategy>()));
+                () => DownloaderFactory.Create(sp).RefreshStrategies));
             var provider = services.BuildServiceProvider();
 
             var factory = DownloaderFactory.Create(provider);
@@ -139,6 +137,14 @@ public sealed class DownloaderFactoryTests
 
             // Generic is the fallback at the end of the chain.
             Assert.AreEqual("Generic", factory.Fallback!.Type);
+
+            // The factory also projects the cookie site plugins carried by the
+            // downloaders: YouTubeDownloader implements both the refresh
+            // strategy and the domain mapping interfaces.
+            Assert.IsTrue(factory.RefreshStrategies.OfType<YouTubeDownloader>().Any());
+            Assert.IsTrue(factory.DomainMappings.OfType<YouTubeDownloader>().Any());
+            Assert.IsTrue(factory.RefreshStrategies.All(s => s is YouTubeDownloader));
+            Assert.IsTrue(factory.DomainMappings.All(m => m is YouTubeDownloader));
         }
         finally
         {

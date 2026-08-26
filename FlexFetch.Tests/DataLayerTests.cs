@@ -203,35 +203,6 @@ public sealed class DataLayerTests
     }
 
     [TestMethod]
-    public void ConfigRepository_SetGetAndRoundTrip()
-    {
-        var path = NewDbPath();
-
-        using (var store = new LiteDbStore(path))
-        {
-            var repo = new ConfigRepository(store);
-            repo.Set("key1", "value1");
-            repo.Set("key2", "value2");
-            repo.Set("key1", "updated");
-        }
-
-        using (var store = new LiteDbStore(path))
-        {
-            var repo = new ConfigRepository(store);
-            Assert.AreEqual("updated", repo.Get("key1"));
-            Assert.AreEqual("value2", repo.Get("key2"));
-            Assert.IsNull(repo.Get("missing"));
-
-            var all = repo.GetAll();
-            Assert.HasCount(2, all);
-            Assert.AreEqual("updated", all["key1"]);
-
-            Assert.IsTrue(repo.Delete("key1"));
-            Assert.IsNull(repo.Get("key1"));
-        }
-    }
-
-    [TestMethod]
     public async Task ConcurrentInserts_AreNotLost()
     {
         var path = NewDbPath();

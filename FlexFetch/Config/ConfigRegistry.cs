@@ -20,6 +20,14 @@ public static class ConfigRegistry
 
     public static string GetDefault(string key) => Get(key).DefaultValue;
 
+    /// <summary>
+    /// Reads a config value from the appsettings configuration (keys are
+    /// dot-separated here, colons in IConfiguration), falling back to the
+    /// registry default when absent.
+    /// </summary>
+    public static string From(IConfiguration configuration, string key) =>
+        configuration[key.Replace('.', ':')] ?? GetDefault(key);
+
     /// <summary>Validates a value for the given key; returns an error message or null.</summary>
     public static string? Validate(string key, string value) =>
         Items.TryGetValue(key, out var item) ? item.Validator(value) : $"Unknown configuration key: {key}";

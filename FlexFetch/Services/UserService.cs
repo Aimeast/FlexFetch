@@ -32,9 +32,9 @@ public sealed record LoginOutcome(LoginStatus Status, User? User);
 public sealed class UserService
 {
     private readonly IUserRepository _users;
-    private readonly IConfigRepository _config;
+    private readonly IConfiguration _config;
 
-    public UserService(IUserRepository users, IConfigRepository config)
+    public UserService(IUserRepository users, IConfiguration config)
     {
         _users = users;
         _config = config;
@@ -181,7 +181,7 @@ public sealed class UserService
         return sb.ToString();
     }
 
-    private string GetConfig(string key) => _config.Get(key) ?? ConfigRegistry.GetDefault(key);
+    private string GetConfig(string key) => ConfigRegistry.From(_config, key);
 
     private static bool IsValidUserName(string userName) =>
         userName.Length is >= 3 and <= 32 && userName.All(char.IsLetterOrDigit);

@@ -1,4 +1,5 @@
-﻿using Microsoft.Extensions.DependencyInjection;
+﻿using FlexFetch.Services.Refresh;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace FlexFetch.Services.Downloaders;
 
@@ -42,6 +43,20 @@ public sealed class DownloaderFactory
     }
 
     public IReadOnlyList<IDownloader> All => _downloaders;
+
+    /// <summary>
+    /// Refresh strategies carried by downloader plugins (site-specific cookie
+    /// refresh behavior, e.g. YouTube's session-rejection checks).
+    /// </summary>
+    public IReadOnlyList<ICookieRefreshStrategy> RefreshStrategies =>
+        _downloaders.OfType<ICookieRefreshStrategy>().ToList();
+
+    /// <summary>
+    /// Cross-domain cookie mappings carried by downloader plugins (e.g.
+    /// YouTube sharing Google identity cookies to sibling domains).
+    /// </summary>
+    public IReadOnlyList<ICookieDomainMapping> DomainMappings =>
+        _downloaders.OfType<ICookieDomainMapping>().ToList();
 
     /// <summary>
     /// Selects downloader candidates for a URL. A matching domain-specific

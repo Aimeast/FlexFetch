@@ -5,8 +5,8 @@ using FlexFetch.Services;
 using FlexFetch.Services.Downloaders;
 using FlexFetch.Services.Tasks;
 using Serilog;
-using TaskStatus = FlexFetch.Enums.TaskStatus;
 using ILogger = Serilog.ILogger;
+using TaskStatus = FlexFetch.Enums.TaskStatus;
 
 namespace FlexFetch.Tests;
 
@@ -17,7 +17,7 @@ public sealed class TaskServiceTests
     private LiteDbStore? _store;
     private TaskService? _service;
     private ITaskRepository? _tasks;
-    private IConfigRepository? _config;
+    private TestConfig? _config;
     private FakeExecutor? _executor;
     private StorageService? _storage;
 
@@ -33,7 +33,7 @@ public sealed class TaskServiceTests
         _store = new LiteDbStore(Path.Combine(_dir, "flexfetch.db"));
         _tasks = new TaskRepository(_store);
         var shares = new ShareRepository(_store);
-        _config = new ConfigRepository(_store);
+        _config = new TestConfig();
         _storage = new StorageService(_dir);
         _executor = new FakeExecutor();
         _service = new TaskService(_tasks, shares, _config, _executor, _storage, Log);

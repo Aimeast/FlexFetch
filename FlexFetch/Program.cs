@@ -56,32 +56,36 @@ builder.Services.AddSingleton<IUserRepository, UserRepository>();
 builder.Services.AddSingleton<ITaskRepository, TaskRepository>();
 builder.Services.AddSingleton<IShareRepository, ShareRepository>();
 builder.Services.AddSingleton<ICookieRepository, CookieRepository>();
-builder.Services.AddSingleton<IConfigRepository, ConfigRepository>();
 
 // Application services.
 builder.Services.AddSingleton<UserService>();
-builder.Services.AddSingleton<CookiePoolService>();
+builder.Services.AddSingleton<CookiePoolService>(sp => new CookiePoolService(
+    sp.GetRequiredService<ICookieRepository>(),
+    () => sp.GetRequiredService<DownloaderFactory>().DomainMappings));
 builder.Services.AddSingleton(Log.Logger);
 
 // Storage + proxy + downloader pipeline.
 builder.Services.AddSingleton(new StorageService(dataDir));
 builder.Services.AddSingleton<IProxyService>(sp => new ProxyService(
-    sp.GetRequiredService<IConfigRepository>(),
-    sp.GetRequiredService<ILogger>(),
-    dataDir,
-    builder.Configuration));
-builder.Services.AddSingleton(sp => new YtdlpService(
-    sp.GetRequiredService<IProxyService>(),
-    sp.GetRequiredService<IConfigRepository>(),
+    builder.Configuration,
     sp.GetRequiredService<ILogger>(),
     dataDir));
-builder.Services.AddSingleton<StealthBrowserService>();
-// Cookie refresh strategies: site-specific checks (YouTube session rejection)
-// are picked per group at refresh time; the default applies to other sites.
-builder.Services.AddSingleton<ICookieRefreshStrategy, DefaultCookieRefreshStrategy>();
-builder.Services.AddSingleton<ICookieRefreshStrategy, YouTubeCookieRefreshStrategy>();
-builder.Services.AddSingleton<ICookieDomainMapping, DefaultCookieDomainMapping>();
-builder.Services.AddSingleton<ICookieDomainMapping, YouTubeCookieDomainMapping>();
+builder.Services.AddSingleton(sp => new YtdlpService(
+    sp.GetRequiredService<IProxyService>(),
+    sp.GetRequiredService<ILogger>(),
+    dataDir));
+// Cookie refresh strategies and domain mappings are carried by downloader
+// plugins (e.g. YouTubeDownloader implements both); they are picked per group
+// at refresh time, with the default applying to other sites. The browser and
+// pool resolve them lazily from the factory, so plugin discovery stays
+// reflection-based with no manual registration.
+builder.Services.AddSingleton(sp => new StealthBrowserService(
+    sp.GetRequiredService<IProxyService>(),
+    sp.GetRequiredService<CookiePoolService>(),
+    sp.GetRequiredService<StorageService>(),
+    sp.GetRequiredService<IConfiguration>(),
+    sp.GetRequiredService<ILogger>(),
+    () => sp.GetRequiredService<DownloaderFactory>().RefreshStrategies));
 // Downloader plugins are self-discovered via reflection; no manual registration.
 builder.Services.AddSingleton(sp => DownloaderFactory.Create(sp));
 builder.Services.AddSingleton<ITaskExecutor>(sp => new DownloaderTaskExecutor(
@@ -128,19 +132,6 @@ builder.Services.AddResponseCompression(options => options.EnableForHttps = true
 
 var app = builder.Build();
 
-// Seed the runtime config store from appsettings (e.g. dev overrides like
-// cookie.refreshOnStartup). Only keys not already set in the DB are imported,
-// so values changed on the system page persist across restarts.
-var configRepo = app.Services.GetRequiredService<IConfigRepository>();
-foreach (var item in ConfigRegistry.All)
-{
-    var configValue = builder.Configuration[item.Key.Replace('.', ':')];
-    if (configValue is not null && configRepo.Get(item.Key) is null)
-    {
-        configRepo.Set(item.Key, configValue);
-    }
-}
-
 app.UseResponseCompression();
 if (!builder.Environment.IsDevelopment())
 {
@@ -156,7 +147,6 @@ TasksApi.Map(app);
 ShareApi.Map(app);
 CookiesApi.Map(app);
 SystemApi.Map(app);
-ConfigApi.Map(app);
 
 // Static web UI: "/" serves wwwroot/index.html via UseDefaultFiles.
 app.UseDefaultFiles();

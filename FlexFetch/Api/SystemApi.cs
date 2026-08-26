@@ -18,11 +18,11 @@ public static class SystemApi
 
         info.MapGet("/info", (
             TaskService tasks,
-            IConfigRepository config,
+            IConfiguration config,
             YtdlpService ytdlp,
             StealthBrowserService browser) =>
         {
-            var dataDir = config.Get(ConfigKeys.DataDir) ?? ConfigRegistry.GetDefault(ConfigKeys.DataDir);
+            var dataDir = ConfigRegistry.From(config, ConfigKeys.DataDir);
             var disk = GetDiskInfo(dataDir);
             return Results.Ok(new
             {

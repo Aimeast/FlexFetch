@@ -1,4 +1,5 @@
 ﻿using System.Security.Claims;
+using FlexFetch.Config;
 using FlexFetch.Data;
 using FlexFetch.Entities;
 using FlexFetch.Services;
@@ -94,7 +95,7 @@ public static class TasksApi
                 : Results.File(stream, mime, task.FileName, enableRangeProcessing: true);
         });
 
-        group.MapPost("/{id}/share", (string id, TaskService tasks, IShareRepository shares, IConfigRepository config, HttpContext ctx) =>
+        group.MapPost("/{id}/share", (string id, TaskService tasks, IShareRepository shares, IConfiguration config, HttpContext ctx) =>
         {
             var task = tasks.GetById(id);
             if (task is null || task.OwnerUserId != GetUserId(ctx))
@@ -102,7 +103,7 @@ public static class TasksApi
                 return Results.NotFound();
             }
 
-            var hours = int.TryParse(config.Get(FlexFetch.Config.ConfigKeys.ShareTokenHours), out var h) ? h : 0;
+            var hours = int.TryParse(ConfigRegistry.From(config, ConfigKeys.ShareTokenHours), out var h) ? h : 0;
             var share = new ShareToken
             {
                 TaskId = id,

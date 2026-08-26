@@ -20,7 +20,7 @@ public sealed class ProxyServiceTests
     [TestMethod]
     public void NoProxyConfigured_ConnectsDirect()
     {
-        var config = new InMemoryConfigRepository();
+        var config = new TestConfig();
         var service = new ProxyService(config, Log, DataDir);
 
         Assert.IsFalse(service.ShouldProxy(new Uri("https://example.com/file")));
@@ -30,7 +30,7 @@ public sealed class ProxyServiceTests
     [TestMethod]
     public void ProxyConfigured_NoRules_UsesDefaultAction()
     {
-        var config = new InMemoryConfigRepository();
+        var config = new TestConfig();
         config.Set(ConfigKeys.Proxy, "socks5://127.0.0.1:1080");
         var service = new ProxyService(config, Log, DataDir);
 
@@ -42,7 +42,7 @@ public sealed class ProxyServiceTests
     [TestMethod]
     public void ProxyConfigured_DefaultDirect_ConnectsDirectly()
     {
-        var config = new InMemoryConfigRepository();
+        var config = new TestConfig();
         config.Set(ConfigKeys.Proxy, "socks5://127.0.0.1:1080");
         config.Set(ConfigKeys.DefaultAction, "Direct");
         var service = new ProxyService(config, Log, DataDir);
@@ -62,7 +62,7 @@ public sealed class ProxyServiceTests
             File.WriteAllLines(bypassFile, new[] { "10.0.0.0/8", "# comment" });
 
             var rules = $"[{{\"Action\":\"Direct\",\"CidrFiles\":[\"{bypassFile.Replace("\\", "\\\\")}\"]}}]";
-            var config = new InMemoryConfigRepository();
+            var config = new TestConfig();
             config.Set(ConfigKeys.Proxy, "socks5://127.0.0.1:1080");
             config.Set(ConfigKeys.RouteRules, rules);
             var service = new ProxyService(config, Log, DataDir);
@@ -87,7 +87,7 @@ public sealed class ProxyServiceTests
     public void Rule_DirectByDomain_OverridesDefaultUseProxy()
     {
         var rules = "[{\"Action\":\"Direct\",\"Domains\":[\"cn\"]}]";
-        var config = new InMemoryConfigRepository();
+        var config = new TestConfig();
         config.Set(ConfigKeys.Proxy, "socks5://127.0.0.1:1080");
         config.Set(ConfigKeys.RouteRules, rules);
         var service = new ProxyService(config, Log, DataDir);
@@ -105,7 +105,7 @@ public sealed class ProxyServiceTests
     public void Rule_UseProxy_OverridesDefaultDirect()
     {
         var rules = "[{\"Action\":\"UseProxy\",\"Domains\":[\"example.com\"]}]";
-        var config = new InMemoryConfigRepository();
+        var config = new TestConfig();
         config.Set(ConfigKeys.Proxy, "socks5://127.0.0.1:1080");
         config.Set(ConfigKeys.DefaultAction, "Direct");
         config.Set(ConfigKeys.RouteRules, rules);
@@ -118,14 +118,11 @@ public sealed class ProxyServiceTests
     }
 
     [TestMethod]
-    public void AppSettings_StructuredRules_OverridesRuntimeConfig()
+    public void StructuredRules_BindFromAppSettings()
     {
-        var config = new InMemoryConfigRepository();
-        config.Set(ConfigKeys.Proxy, "socks5://127.0.0.1:1080");
-
         // appsettings binds the rule list structurally (JSON array), not as
         // a JSON string; InMemoryCollection expresses arrays with index keys.
-        var appSettings = new ConfigurationBuilder()
+        var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["Network:Proxy"] = "http://127.0.0.1:3128",
@@ -135,11 +132,10 @@ public sealed class ProxyServiceTests
             })
             .Build();
 
-        var service = new ProxyService(config, Log, DataDir, appSettings);
+        var service = new ProxyService(config, Log, DataDir);
 
-        // appsettings wins over the runtime config store.
         Assert.AreEqual("http://127.0.0.1:3128", service.GetProxyUri(new Uri("https://example.com/file")));
-        // .cn direct per appsettings structured RouteRules.
+        // .cn direct per structured RouteRules.
         Assert.IsNull(service.GetProxyUri(new Uri("https://example.cn/file")));
     }
 
@@ -155,7 +151,7 @@ public sealed class ProxyServiceTests
             File.WriteAllLines(v6File, new[] { "2001:db8::/32" });
 
             var rules = $"[{{\"Action\":\"Direct\",\"CidrFiles\":[\"{v4File.Replace("\\", "\\\\")}\",\"{v6File.Replace("\\", "\\\\")}\"]}}]";
-            var config = new InMemoryConfigRepository();
+            var config = new TestConfig();
             config.Set(ConfigKeys.Proxy, "socks5://127.0.0.1:1080");
             config.Set(ConfigKeys.RouteRules, rules);
             var service = new ProxyService(config, Log, DataDir);
@@ -176,7 +172,7 @@ public sealed class ProxyServiceTests
     [TestMethod]
     public void CreateHandler_AppliesProxyWhenNeeded()
     {
-        var config = new InMemoryConfigRepository();
+        var config = new TestConfig();
         config.Set(ConfigKeys.Proxy, "http://127.0.0.1:3128");
         var service = new ProxyService(config, Log, DataDir);
 
@@ -188,7 +184,7 @@ public sealed class ProxyServiceTests
     [TestMethod]
     public void ShouldProxyFast_NoProxy_ReturnsFalse()
     {
-        var config = new InMemoryConfigRepository();
+        var config = new TestConfig();
         var service = new ProxyService(config, Log, DataDir);
 
         Assert.IsFalse(service.ShouldProxyFast(new Uri("https://example.com/file")));
@@ -198,7 +194,7 @@ public sealed class ProxyServiceTests
     public void ShouldProxyFast_DomainRule_MatchesWithoutDns()
     {
         var rules = "[{\"Action\":\"Direct\",\"Domains\":[\"cn\"]}]";
-        var config = new InMemoryConfigRepository();
+        var config = new TestConfig();
         config.Set(ConfigKeys.Proxy, "socks5://127.0.0.1:1080");
         config.Set(ConfigKeys.RouteRules, rules);
         var service = new ProxyService(config, Log, DataDir);
@@ -214,7 +210,7 @@ public sealed class ProxyServiceTests
     [TestMethod]
     public void ShouldProxyFast_DefaultDirect_ReturnsFalse()
     {
-        var config = new InMemoryConfigRepository();
+        var config = new TestConfig();
         config.Set(ConfigKeys.Proxy, "socks5://127.0.0.1:1080");
         config.Set(ConfigKeys.DefaultAction, "Direct");
         var service = new ProxyService(config, Log, DataDir);
@@ -233,7 +229,7 @@ public sealed class ProxyServiceTests
             File.WriteAllLines(bypassFile, new[] { "10.0.0.0/8" });
 
             var rules = $"[{{\"Action\":\"Direct\",\"CidrFiles\":[\"{bypassFile.Replace("\\", "\\\\")}\"]}}]";
-            var config = new InMemoryConfigRepository();
+            var config = new TestConfig();
             config.Set(ConfigKeys.Proxy, "socks5://127.0.0.1:1080");
             config.Set(ConfigKeys.RouteRules, rules);
             var service = new ProxyService(config, Log, DataDir);
@@ -273,18 +269,5 @@ public sealed class ProxyServiceTests
 
         Assert.AreEqual(RouteAction.Direct, chain.EvaluateDomainsOnly(new Uri("https://example.cn/")));
         Assert.AreEqual(RouteAction.UseProxy, chain.EvaluateDomainsOnly(new Uri("https://example.com/")));
-    }
-
-    private sealed class InMemoryConfigRepository : IConfigRepository
-    {
-        private readonly Dictionary<string, string> _values = new();
-
-        public string? Get(string key) => _values.GetValueOrDefault(key);
-
-        public IReadOnlyDictionary<string, string> GetAll() => _values;
-
-        public void Set(string key, string value) => _values[key] = value;
-
-        public bool Delete(string key) => _values.Remove(key);
     }
 }

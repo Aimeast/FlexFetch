@@ -19,7 +19,7 @@ public sealed class CleanupHostedService : IntervalHostedService
 {
     private readonly IShareRepository _shares;
     private readonly ITaskRepository _tasks;
-    private readonly IConfigRepository _config;
+    private readonly IConfiguration _config;
     private readonly IUserRepository _users;
     private readonly TaskService _taskService;
     private readonly UserService _userService;
@@ -28,7 +28,7 @@ public sealed class CleanupHostedService : IntervalHostedService
     public CleanupHostedService(
         IShareRepository shares,
         ITaskRepository tasks,
-        IConfigRepository config,
+        IConfiguration config,
         IUserRepository users,
         TaskService taskService,
         UserService userService,
@@ -102,5 +102,5 @@ public sealed class CleanupHostedService : IntervalHostedService
         await Task.CompletedTask;
     }
 
-    private string Get(string key) => _config.Get(key) ?? ConfigRegistry.GetDefault(key);
+    private string Get(string key) => ConfigRegistry.From(_config, key);
 }

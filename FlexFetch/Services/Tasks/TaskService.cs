@@ -6,8 +6,8 @@ using FlexFetch.Entities;
 using FlexFetch.Services;
 using FlexFetch.Services.Downloaders;
 using Serilog;
-using TaskStatus = FlexFetch.Enums.TaskStatus;
 using ILogger = Serilog.ILogger;
+using TaskStatus = FlexFetch.Enums.TaskStatus;
 
 namespace FlexFetch.Services.Tasks;
 
@@ -20,7 +20,7 @@ public sealed class TaskService : IDisposable
 {
     private readonly ITaskRepository _tasks;
     private readonly IShareRepository _shares;
-    private readonly IConfigRepository _config;
+    private readonly IConfiguration _config;
     private readonly ITaskExecutor _executor;
     private readonly StorageService _storage;
     private readonly ILogger _log;
@@ -41,7 +41,7 @@ public sealed class TaskService : IDisposable
     public TaskService(
         ITaskRepository tasks,
         IShareRepository shares,
-        IConfigRepository config,
+        IConfiguration config,
         ITaskExecutor executor,
         StorageService storage,
         ILogger log)
@@ -306,7 +306,7 @@ public sealed class TaskService : IDisposable
 
     private int GetConcurrencyLimit()
     {
-        var raw = _config.Get(ConfigKeys.MaxConcurrency) ?? ConfigRegistry.GetDefault(ConfigKeys.MaxConcurrency);
+        var raw = ConfigRegistry.From(_config, ConfigKeys.MaxConcurrency);
         return int.TryParse(raw, out var n) && n > 0 ? n : 2;
     }
 
@@ -489,7 +489,7 @@ public sealed class TaskService : IDisposable
 
     private int GetMaxRetries()
     {
-        var raw = _config.Get(ConfigKeys.MaxRetries) ?? ConfigRegistry.GetDefault(ConfigKeys.MaxRetries);
+        var raw = ConfigRegistry.From(_config, ConfigKeys.MaxRetries);
         return int.TryParse(raw, out var n) && n >= 0 ? n : 3;
     }
 

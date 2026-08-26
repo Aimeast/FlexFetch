@@ -20,10 +20,10 @@ public sealed class GenericFileDownloader : IDownloader
 {
     private readonly IProxyService _proxy;
     private readonly StorageService _storage;
-    private readonly IConfigRepository _config;
+    private readonly IConfiguration _config;
     private readonly ILogger _log;
 
-    public GenericFileDownloader(IProxyService proxy, StorageService storage, IConfigRepository config, ILogger log)
+    public GenericFileDownloader(IProxyService proxy, StorageService storage, IConfiguration config, ILogger log)
     {
         _proxy = proxy;
         _storage = storage;
@@ -191,7 +191,7 @@ public sealed class GenericFileDownloader : IDownloader
 
     private TimeSpan GetTimeout()
     {
-        var raw = _config.Get(ConfigKeys.TimeoutSeconds) ?? ConfigRegistry.GetDefault(ConfigKeys.TimeoutSeconds);
+        var raw = ConfigRegistry.From(_config, ConfigKeys.TimeoutSeconds);
         return int.TryParse(raw, out var seconds) && seconds > 0
             ? TimeSpan.FromSeconds(seconds)
             : TimeSpan.FromSeconds(60);

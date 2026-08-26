@@ -27,15 +27,15 @@ public sealed class StealthBrowserService : IAsyncDisposable
 {
     private readonly IProxyService _proxy;
     private readonly CookiePoolService _cookiePool;
-    private readonly IConfigRepository _config;
+    private readonly IConfiguration _config;
     private readonly ILogger _log;
     private readonly string _profileDir;
     private readonly int _idleMinutes;
     private readonly SemaphoreSlim _initLock = new(1, 1);
     private readonly SemaphoreSlim _installLock = new(1, 1);
     private readonly Random _random = new();
-    private readonly ICookieRefreshStrategy[] _strategies;
-    private readonly ICookieRefreshStrategy _default;
+    private readonly Func<IEnumerable<ICookieRefreshStrategy>> _strategySource;
+    private readonly ICookieRefreshStrategy _default = new DefaultCookieRefreshStrategy();
 
     private IPlaywright? _playwright;
     private IBrowserContext? _context;
@@ -47,9 +47,9 @@ public sealed class StealthBrowserService : IAsyncDisposable
         IProxyService proxy,
         CookiePoolService cookiePool,
         StorageService storage,
-        IConfigRepository config,
+        IConfiguration config,
         ILogger log,
-        IEnumerable<ICookieRefreshStrategy> strategies)
+        Func<IEnumerable<ICookieRefreshStrategy>> strategySource)
     {
         _proxy = proxy;
         _cookiePool = cookiePool;
@@ -57,9 +57,7 @@ public sealed class StealthBrowserService : IAsyncDisposable
         _log = log;
         _profileDir = Path.Combine(storage.DataDir, "profiles", "Chromium");
         _idleMinutes = 10;
-        _strategies = strategies.ToArray();
-        _default = _strategies.OfType<DefaultCookieRefreshStrategy>().FirstOrDefault()
-            ?? new DefaultCookieRefreshStrategy();
+        _strategySource = strategySource;
     }
 
     /// <summary>Detected system browser executable, or null when none is found.</summary>
@@ -326,7 +324,7 @@ public sealed class StealthBrowserService : IAsyncDisposable
 
     /// <summary>Selects the refresh strategy for a group, falling back to the default.</summary>
     private ICookieRefreshStrategy SelectStrategy(CookieGroup group) =>
-        _strategies.FirstOrDefault(s => s.IsMatch(group)) ?? _default;
+        _strategySource().FirstOrDefault(s => s.IsMatch(group)) ?? _default;
 
     /// <summary>Visible text of the page body, truncated for analysis.</summary>
     private static async Task<string?> SafeTextAsync(IPage page)
@@ -627,7 +625,7 @@ public sealed class StealthBrowserService : IAsyncDisposable
     private async Task InstallBrowserCoreAsync(CancellationToken cancellationToken)
     {
         _log.Information("No system browser found; installing Playwright Chromium");
-        var proxy = _config.Get(ConfigKeys.Proxy) ?? ConfigRegistry.GetDefault(ConfigKeys.Proxy);
+        var proxy = ConfigRegistry.From(_config, ConfigKeys.Proxy);
 
         var startInfo = new ProcessStartInfo
         {

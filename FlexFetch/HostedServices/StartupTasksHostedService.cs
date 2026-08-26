@@ -17,7 +17,7 @@ namespace FlexFetch.HostedServices;
 public sealed class StartupTasksHostedService : BackgroundService
 {
     private readonly IHostApplicationLifetime _lifetime;
-    private readonly IConfigRepository _config;
+    private readonly IConfiguration _config;
     private readonly UserService _userService;
     private readonly IConfiguration _appConfig;
     private readonly IWebHostEnvironment _environment;
@@ -28,7 +28,7 @@ public sealed class StartupTasksHostedService : BackgroundService
 
     public StartupTasksHostedService(
         IHostApplicationLifetime lifetime,
-        IConfigRepository config,
+        IConfiguration config,
         UserService userService,
         IConfiguration appConfig,
         IWebHostEnvironment environment,
@@ -137,5 +137,5 @@ public sealed class StartupTasksHostedService : BackgroundService
         _log.Information("Recovered {Count} pending tasks after restart", recovered);
     }
 
-    private string Get(string key) => _config.Get(key) ?? ConfigRegistry.GetDefault(key);
+    private string Get(string key) => ConfigRegistry.From(_config, key);
 }

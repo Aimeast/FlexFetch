@@ -20,12 +20,11 @@ public sealed class YtdlpDownloaderTests
     private static YtdlpDownloader CreateDownloader(Func<string, OptionSet, CancellationToken, Task<RunResult<VideoData>>>? fetch = null)
     {
         var dir = TestApp.CreateTempDataDir();
-        var config = new InMemoryConfigRepository();
         var proxy = new DirectProxyService();
-        var ytdlp = new YtdlpService(proxy, config, Log, dir);
+        var ytdlp = new YtdlpService(proxy, Log, dir);
         var storage = new StorageService(dir);
         var store = new LiteDbStore(Path.Combine(dir, "flexfetch.db"));
-        var cookies = new CookiePoolService(new CookieRepository(store), new ICookieDomainMapping[] { new YouTubeCookieDomainMapping(), new DefaultCookieDomainMapping() });
+        var cookies = new CookiePoolService(new CookieRepository(store), () => new ICookieDomainMapping[] { new DefaultCookieDomainMapping() });
         return new YtdlpDownloader(ytdlp, proxy, storage, Log, cookies, fetch);
     }
 
@@ -47,11 +46,11 @@ public sealed class YtdlpDownloaderTests
         var ytDir = TestApp.CreateTempDataDir();
         var ytStore = new LiteDbStore(Path.Combine(ytDir, "flexfetch.db"));
         var youtube = new YouTubeDownloader(
-            new YtdlpService(new DirectProxyService(), new InMemoryConfigRepository(), Log, ytDir),
+            new YtdlpService(new DirectProxyService(), Log, ytDir),
             new DirectProxyService(),
             new StorageService(ytDir),
             Log,
-            new CookiePoolService(new CookieRepository(ytStore), new ICookieDomainMapping[] { new YouTubeCookieDomainMapping(), new DefaultCookieDomainMapping() }));
+            new CookiePoolService(new CookieRepository(ytStore), () => new ICookieDomainMapping[] { new DefaultCookieDomainMapping() }));
 
         // YtdlpDownloader is part of the generic fallback chain; YouTube is
         // a domain-specific downloader used alone.
@@ -115,12 +114,11 @@ public sealed class YtdlpDownloaderTests
         var ffmpegPath = Path.Combine(components, "ffmpeg.exe");
         File.WriteAllBytes(ffmpegPath, new byte[] { 1, 2, 3 });
 
-        var config = new InMemoryConfigRepository();
         var proxy = new DirectProxyService();
         // The remote version query fails: the upgrade must not download
         // blindly and must leave the installed binary untouched.
         var service = new YtdlpService(
-            proxy, config, Log, dir,
+            proxy, Log, dir,
             _ => throw new InvalidOperationException("network down"));
 
         await service.UpgradeFfmpegAsync(CancellationToken.None);
@@ -241,19 +239,6 @@ public sealed class YtdlpDownloaderTests
 
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(
             () => downloader.AnalyzeAsync("https://www.example.com/video/xyz789", "task-1", CancellationToken.None));
-    }
-
-    private sealed class InMemoryConfigRepository : IConfigRepository
-    {
-        private readonly Dictionary<string, string> _values = new();
-
-        public string? Get(string key) => _values.GetValueOrDefault(key);
-
-        public IReadOnlyDictionary<string, string> GetAll() => _values;
-
-        public void Set(string key, string value) => _values[key] = value;
-
-        public bool Delete(string key) => _values.Remove(key);
     }
 
     private sealed class DirectProxyService : IProxyService

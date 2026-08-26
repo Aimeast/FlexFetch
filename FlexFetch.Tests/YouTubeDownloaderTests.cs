@@ -3,6 +3,7 @@ using FlexFetch.Data;
 using FlexFetch.Entities;
 using FlexFetch.Services;
 using FlexFetch.Services.Downloaders;
+using FlexFetch.Services.Refresh;
 using FlexFetch.Services.Routing;
 using Serilog;
 using YoutubeDLSharp;
@@ -22,12 +23,11 @@ public sealed class YouTubeDownloaderTests
     private static YouTubeDownloader CreateDownloader(Func<string, OptionSet, CancellationToken, Task<RunResult<VideoData>>>? fetch = null)
     {
         var dir = TestApp.CreateTempDataDir();
-        var config = new InMemoryConfigRepository();
         var proxy = new DirectProxyService();
-        var ytdlp = new YtdlpService(proxy, config, Log, dir);
+        var ytdlp = new YtdlpService(proxy, Log, dir);
         var storage = new StorageService(dir);
         var store = new LiteDbStore(Path.Combine(dir, "flexfetch.db"));
-        var cookies = new CookiePoolService(new CookieRepository(store), new ICookieDomainMapping[] { new YouTubeCookieDomainMapping(), new DefaultCookieDomainMapping() });
+        var cookies = new CookiePoolService(new CookieRepository(store), () => new ICookieDomainMapping[] { new DefaultCookieDomainMapping() });
         return new YouTubeDownloader(ytdlp, proxy, storage, Log, cookies, fetch);
     }
 
@@ -36,12 +36,11 @@ public sealed class YouTubeDownloaderTests
         Func<string, OptionSet, Action<double>, CancellationToken, Task<RunResult<string>>>? download = null)
     {
         var dir = TestApp.CreateTempDataDir();
-        var config = new InMemoryConfigRepository();
         var proxy = new DirectProxyService();
-        var ytdlp = new YtdlpService(proxy, config, Log, dir);
+        var ytdlp = new YtdlpService(proxy, Log, dir);
         var storage = new StorageService(dir);
         var store = new LiteDbStore(Path.Combine(dir, "flexfetch.db"));
-        var pool = new CookiePoolService(new CookieRepository(store), new ICookieDomainMapping[] { new YouTubeCookieDomainMapping(), new DefaultCookieDomainMapping() });
+        var pool = new CookiePoolService(new CookieRepository(store), () => new ICookieDomainMapping[] { new DefaultCookieDomainMapping() });
         return (new YouTubeDownloader(ytdlp, proxy, storage, Log, pool, fetch, download), pool);
     }
 
@@ -363,17 +362,222 @@ public sealed class YouTubeDownloaderTests
         Assert.AreEqual(AuthFailureReason.LoginRequired, ex.Reason);
     }
 
-    private sealed class InMemoryConfigRepository : IConfigRepository
+    // --- ICookieRefreshStrategy / ICookieDomainMapping (merged into the
+    // downloader): site-specific refresh checks and cross-domain sharing. ---
+
+    private static CookieItem Cookie(string domain, string name, string value = "v") =>
+        new() { Domain = domain, Name = name, Value = value };
+
+    [TestMethod]
+    public void RefreshStrategy_IsMatch_MatchesYoutubeUrls()
     {
-        private readonly Dictionary<string, string> _values = new();
+        var downloader = CreateDownloader();
+        var group = new CookieGroup
+        {
+            Name = "YouTube",
+            Urls = new List<string> { "https://www.youtube.com/watch?v=1" },
+        };
 
-        public string? Get(string key) => _values.GetValueOrDefault(key);
+        Assert.IsTrue(downloader.IsMatch(group));
+    }
 
-        public IReadOnlyDictionary<string, string> GetAll() => _values;
+    [TestMethod]
+    public void RefreshStrategy_IsMatch_MatchesYoutuBeUrls()
+    {
+        var downloader = CreateDownloader();
+        var group = new CookieGroup { Urls = new List<string> { "https://youtu.be/abc" } };
 
-        public void Set(string key, string value) => _values[key] = value;
+        Assert.IsTrue(downloader.IsMatch(group));
+    }
 
-        public bool Delete(string key) => _values.Remove(key);
+    [TestMethod]
+    public void RefreshStrategy_IsMatch_MatchesYoutubeCookieDomains()
+    {
+        var downloader = CreateDownloader();
+        var group = new CookieGroup
+        {
+            Urls = new List<string> { "https://example.com" },
+            Cookies = new List<CookieItem> { Cookie(".youtube.com", "SID") },
+        };
+
+        Assert.IsTrue(downloader.IsMatch(group));
+    }
+
+    [TestMethod]
+    public void RefreshStrategy_IsMatch_DoesNotMatchOtherSites()
+    {
+        var downloader = CreateDownloader();
+        var group = new CookieGroup
+        {
+            Urls = new List<string> { "https://x.com/SpaceX/status/1" },
+            Cookies = new List<CookieItem> { Cookie(".x.com", "auth_token") },
+        };
+
+        Assert.IsFalse(downloader.IsMatch(group));
+    }
+
+    [TestMethod]
+    public void RefreshStrategy_GetSessionRejectionReason_DetectsLoginAndChallengePages()
+    {
+        var downloader = CreateDownloader();
+        Assert.IsNotNull(downloader.GetSessionRejectionReason("https://accounts.google.com/signin"));
+        Assert.IsNotNull(downloader.GetSessionRejectionReason("https://accounts.google.com/servicelogin"));
+        Assert.IsNotNull(downloader.GetSessionRejectionReason("https://www.google.com/sorry/index"));
+        Assert.IsNotNull(downloader.GetSessionRejectionReason("https://example.com/login"));
+        Assert.IsNull(downloader.GetSessionRejectionReason("https://www.youtube.com/"));
+        Assert.IsNull(downloader.GetSessionRejectionReason(null));
+        Assert.IsNull(downloader.GetSessionRejectionReason(""));
+    }
+
+    [TestMethod]
+    public void RefreshStrategy_GetSessionRejectionReason_ReturnsReasonWhenIdentityCookiesVanish()
+    {
+        var downloader = CreateDownloader();
+        var before = new List<CookieItem> { Cookie(".google.com", "SID"), Cookie(".google.com", "APISID") };
+        var exported = new List<CookieItem> { Cookie(".youtube.com", "PREF") };
+
+        var reason = downloader.GetSessionRejectionReason(before, exported);
+
+        Assert.IsNotNull(reason);
+        StringAssert.Contains(reason!, "re-export");
+    }
+
+    [TestMethod]
+    public void RefreshStrategy_GetSessionRejectionReason_NullWhenIdentityCookiesSurvive()
+    {
+        var downloader = CreateDownloader();
+        var before = new List<CookieItem> { Cookie(".google.com", "SID") };
+        var exported = new List<CookieItem> { Cookie(".google.com", "SID", "new-value"), Cookie(".youtube.com", "PREF") };
+
+        Assert.IsNull(downloader.GetSessionRejectionReason(before, exported));
+    }
+
+    [TestMethod]
+    public void RefreshStrategy_GetSessionRejectionReason_NullWhenNoIdentityCookiesBefore()
+    {
+        var downloader = CreateDownloader();
+        var before = new List<CookieItem> { Cookie(".youtube.com", "PREF") };
+        var exported = new List<CookieItem> { Cookie(".youtube.com", "PREF") };
+
+        Assert.IsNull(downloader.GetSessionRejectionReason(before, exported));
+    }
+
+    [TestMethod]
+    public void RefreshStrategy_GetRelatedCookieDomains_ReturnsGoogleCom()
+    {
+        var downloader = CreateDownloader();
+        var group = new CookieGroup { Urls = new List<string> { "https://www.youtube.com" } };
+
+        var domains = downloader.GetRelatedCookieDomains(group);
+
+        CollectionAssert.Contains(domains.ToArray(), "google.com");
+    }
+
+    [TestMethod]
+    public void RefreshStrategy_GetPageContentRejectionReason_RejectsWhenLoggedInFalse()
+    {
+        var downloader = CreateDownloader();
+        var reason = downloader.GetPageContentRejectionReason(new CookieRefreshPageSignals("home", false, false, false));
+
+        Assert.IsNotNull(reason);
+        StringAssert.Contains(reason!, "logged in=false");
+    }
+
+    [TestMethod]
+    public void RefreshStrategy_GetPageContentRejectionReason_RejectsOnSignInButton()
+    {
+        var downloader = CreateDownloader();
+        var reason = downloader.GetPageContentRejectionReason(new CookieRefreshPageSignals("home", null, false, true));
+
+        Assert.IsNotNull(reason);
+        StringAssert.Contains(reason!, "Sign in");
+    }
+
+    [TestMethod]
+    public void RefreshStrategy_GetPageContentRejectionReason_RejectsOnBotCheckText()
+    {
+        var downloader = CreateDownloader();
+        var reason = downloader.GetPageContentRejectionReason(
+            new CookieRefreshPageSignals("Sign in to confirm you're not a bot", null, false, false));
+
+        Assert.IsNotNull(reason);
+        StringAssert.Contains(reason!, "bot-check");
+    }
+
+    [TestMethod]
+    public void RefreshStrategy_GetPageContentRejectionReason_RejectsOnApiAuthFailure()
+    {
+        var downloader = CreateDownloader();
+        var reason = downloader.GetPageContentRejectionReason(new CookieRefreshPageSignals("home", true, true, false));
+
+        Assert.IsNotNull(reason);
+        StringAssert.Contains(reason!, "401/403");
+    }
+
+    [TestMethod]
+    public void RefreshStrategy_GetPageContentRejectionReason_NullOnHealthyPage()
+    {
+        var downloader = CreateDownloader();
+        var reason = downloader.GetPageContentRejectionReason(new CookieRefreshPageSignals("home", true, false, false));
+
+        Assert.IsNull(reason);
+    }
+
+    [TestMethod]
+    public void DomainMapping_MatchesYoutubeAndGoogleGroups()
+    {
+        var downloader = CreateDownloader();
+        CookieGroup Group(string name) => new() { Name = name };
+
+        Assert.IsTrue(downloader.IsMatch(Group("youtube.com")));
+        Assert.IsTrue(downloader.IsMatch(Group("google.com")));
+        Assert.IsFalse(downloader.IsMatch(Group("x.com")));
+    }
+
+    [TestMethod]
+    public void DomainMapping_MatchesByCookieDomain()
+    {
+        var downloader = CreateDownloader();
+        var group = new CookieGroup { Name = "my session" };
+        group.Cookies.Add(new CookieItem { Domain = ".youtube.com", Name = "SID", Value = "v" });
+
+        Assert.IsTrue(downloader.IsMatch(group));
+    }
+
+    [TestMethod]
+    public void DomainMapping_GetSharedDomains_YoutubeToGoogle()
+    {
+        var downloader = CreateDownloader();
+
+        CollectionAssert.Contains(downloader.GetSharedDomains(".youtube.com", "SID").ToArray(), ".google.com");
+    }
+
+    [TestMethod]
+    public void DomainMapping_GetSharedDomains_GoogleToYoutube()
+    {
+        var downloader = CreateDownloader();
+
+        CollectionAssert.Contains(downloader.GetSharedDomains(".google.com", "__Secure-1PSID").ToArray(), ".youtube.com");
+    }
+
+    [TestMethod]
+    public void DomainMapping_GetSharedDomains_EmptyForNonSharedPairs()
+    {
+        var downloader = CreateDownloader();
+
+        Assert.IsEmpty(downloader.GetSharedDomains(".youtube.com", "PREF"));
+        Assert.IsEmpty(downloader.GetSharedDomains(".x.com", "SID"));
+        Assert.IsEmpty(downloader.GetSharedDomains(null, "SID"));
+        Assert.IsEmpty(downloader.GetSharedDomains(".youtube.com", ""));
+    }
+
+    [TestMethod]
+    public void DefaultDomainMapping_MatchesNothingAndSharesNothing()
+    {
+        var mapping = new DefaultCookieDomainMapping();
+
+        Assert.IsFalse(mapping.IsMatch(new CookieGroup { Name = "youtube.com" }));
+        Assert.IsEmpty(mapping.GetSharedDomains(".youtube.com", "SID"));
     }
 
     private sealed class DirectProxyService : IProxyService

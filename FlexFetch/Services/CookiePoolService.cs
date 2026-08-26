@@ -19,16 +19,16 @@ public sealed class CookiePoolService
     private const string DefaultGroupName = "default";
 
     private readonly ICookieRepository _repo;
-    private readonly IReadOnlyList<ICookieDomainMapping> _mappings;
+    private readonly Func<IEnumerable<ICookieDomainMapping>> _mappingSource;
     private readonly ICookieDomainMapping _default = new DefaultCookieDomainMapping();
     private readonly object _lock = new();
     private readonly object _refreshLock = new();
     private bool _refreshing;
 
-    public CookiePoolService(ICookieRepository repo, IEnumerable<ICookieDomainMapping> mappings)
+    public CookiePoolService(ICookieRepository repo, Func<IEnumerable<ICookieDomainMapping>> mappingSource)
     {
         _repo = repo;
-        _mappings = mappings.ToList();
+        _mappingSource = mappingSource;
     }
 
     /// <summary>
@@ -36,7 +36,7 @@ public sealed class CookiePoolService
     /// the default (no sharing) when none matches.
     /// </summary>
     private ICookieDomainMapping SelectMapping(CookieGroup group) =>
-        _mappings.FirstOrDefault(m => m.IsMatch(group)) ?? _default;
+        _mappingSource().FirstOrDefault(m => m.IsMatch(group)) ?? _default;
 
     // --- Read / match ---
 
