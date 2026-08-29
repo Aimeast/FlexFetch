@@ -71,6 +71,21 @@ public sealed class DownloaderFactoryTests
     }
 
     [TestMethod]
+    public void SelectDownloaders_ManifestLink_KeepsYtdlpFirst()
+    {
+        // Playlist manifests (.m3u/.m3u8/.mpd) must be parsed by yt-dlp (HLS
+        // stream or playlist expansion), not saved as raw files by the generic
+        // downloader: the generic file downloader is not promoted.
+        var ytdlp = new FakeDownloader("Ytdlp", isDomainSpecific: false, "http");
+        var generic = new FakeDownloader("Generic", isDomainSpecific: false, "http");
+        var factory = new DownloaderFactory(new IDownloader[] { generic, ytdlp });
+
+        Assert.AreEqual("Ytdlp", factory.SelectDownloaders("https://cdn.example.com/stream.m3u8")[0].Type);
+        Assert.AreEqual("Ytdlp", factory.SelectDownloaders("https://cdn.example.com/list.m3u")[0].Type);
+        Assert.AreEqual("Ytdlp", factory.SelectDownloaders("https://cdn.example.com/manifest.mpd")[0].Type);
+    }
+
+    [TestMethod]
     public void SelectDownloaders_PageUrl_KeepsGenericChainOrder()
     {
         var generic = new FakeDownloader("Generic", isDomainSpecific: false, "http");

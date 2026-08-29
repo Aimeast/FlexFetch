@@ -172,6 +172,49 @@ public sealed class YtdlpDownloaderTests
     }
 
     [TestMethod]
+    public async Task AnalyzeAsync_ManifestUrl_FetchesFlatPlaylist()
+    {
+        OptionSet? used = null;
+        var downloader = CreateDownloader(async (_, options, _) =>
+        {
+            used = options;
+            return new RunResult<VideoData>(
+                true,
+                Array.Empty<string>(),
+                new VideoData
+                {
+                    Title = "List",
+                    Entries = new[] { new VideoData { Title = "One", Url = "https://example.com/1.mp4" } },
+                });
+        });
+
+        var analysis = await downloader.AnalyzeAsync("https://cdn.example.com/list.m3u", "task-1", CancellationToken.None);
+
+        // Plain m3u lists can hold thousands of entries: analysis must fetch
+        // them flat (--flat-playlist) instead of deep-extracting every entry.
+        Assert.IsTrue(used!.FlatPlaylist);
+        Assert.HasCount(1, analysis.Children);
+    }
+
+    [TestMethod]
+    public async Task AnalyzeAsync_RegularUrl_DoesNotFetchFlatPlaylist()
+    {
+        OptionSet? used = null;
+        var downloader = CreateDownloader(async (_, options, _) =>
+        {
+            used = options;
+            return new RunResult<VideoData>(
+                true,
+                Array.Empty<string>(),
+                new VideoData { Title = "Fetched", Extension = "mp4", Url = "https://example.com/v.mp4" });
+        });
+
+        await downloader.AnalyzeAsync("https://www.example.com/video/xyz789", "task-1", CancellationToken.None);
+
+        Assert.IsFalse(used!.FlatPlaylist);
+    }
+
+    [TestMethod]
     public async Task AnalyzeAsync_UsesFetchedData()
     {
         var downloader = CreateDownloader(async (_, _, _) =>

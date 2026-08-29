@@ -14,10 +14,29 @@ public static class DirectLinkDetector
     private static readonly HashSet<string> MediaExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".mp4", ".webm", ".mkv", ".mov", ".avi", ".flv",
-        ".ts", ".m3u8", ".mpd",
+        ".ts", ".m3u8", ".m3u", ".mpd",
         ".mp3", ".m4a", ".aac", ".ogg", ".wav", ".flac",
         ".zip", ".tar", ".gz", ".7z", ".pdf", ".exe", ".bin",
     };
+
+    /// <summary>
+    /// True when the URL points at a playlist manifest (.m3u/.m3u8 HLS or
+    /// media list, .mpd DASH). Manifests must not be saved as raw files by
+    /// the generic downloader: yt-dlp parses them into either a playable
+    /// stream (HLS) or a playlist expansion (plain m3u lists).
+    /// </summary>
+    public static bool IsManifestExtension(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        var ext = Path.GetExtension(uri.AbsolutePath);
+        return ext.Equals(".m3u", StringComparison.OrdinalIgnoreCase)
+            || ext.Equals(".m3u8", StringComparison.OrdinalIgnoreCase)
+            || ext.Equals(".mpd", StringComparison.OrdinalIgnoreCase);
+    }
 
     /// <summary>True when the URL path ends with a known media/download extension.</summary>
     public static bool HasMediaExtension(string url)
@@ -78,5 +97,22 @@ public static class DirectLinkDetector
             || ct.Contains("mpegurl")   // HLS manifest
             || ct.Contains("dash")      // DASH manifest (application/dash+xml)
             || ct.Contains("octet-stream");
+    }
+
+    /// <summary>
+    /// True when the MIME type identifies a playlist manifest (HLS m3u/m3u8 or
+    /// DASH mpd) rather than an actual media payload. Manifests are parsed by
+    /// yt-dlp, never saved as raw files by the generic downloader.
+    /// </summary>
+    public static bool IsManifestContentType(string? contentType)
+    {
+        if (string.IsNullOrEmpty(contentType))
+        {
+            return false;
+        }
+
+        var ct = contentType.ToLowerInvariant();
+        return ct.Contains("mpegurl")
+            || ct.Contains("dash");
     }
 }

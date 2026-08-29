@@ -113,6 +113,14 @@ public class YtdlpDownloader : IDownloader
     {
         var target = new Uri(url);
         var options = BuildOptions(target);
+        // Playlist manifests (.m3u lists) can hold thousands of entries: fetch
+        // them flat so analysis does not deep-extract every entry. HLS media
+        // and master playlists are single videos and unaffected by the flag.
+        if (DirectLinkDetector.IsManifestExtension(url))
+        {
+            options.FlatPlaylist = true;
+        }
+
         var result = await _fetchData(url, options, cancellationToken);
         if (!result.Success || result.Data is null)
         {

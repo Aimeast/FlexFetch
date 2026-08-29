@@ -104,7 +104,8 @@ public sealed class DownloaderTaskExecutor : ITaskExecutor
         }
 
         var contentType = await DirectLinkDetector.ProbeContentTypeAsync(url, _proxy, cancellationToken);
-        if (!DirectLinkDetector.IsMediaContentType(contentType))
+        if (!DirectLinkDetector.IsMediaContentType(contentType)
+            || DirectLinkDetector.IsManifestContentType(contentType))
         {
             return candidates;
         }

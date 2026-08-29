@@ -85,7 +85,11 @@ public sealed class DownloaderFactory
             .Where(d => !d.IsDomainSpecific && d.CanHandle(url))
             .OrderBy(d => Array.IndexOf(GenericChainOrder, d.Type))
             .ToList();
-        if (DirectLinkDetector.HasMediaExtension(url))
+        // Direct file links skip the slow yt-dlp attempt and download straight
+        // away - except playlist manifests (.m3u/.m3u8/.mpd), which yt-dlp must
+        // parse first: an HLS manifest becomes a playable stream, a plain m3u
+        // list expands into playlist entries (child tasks).
+        if (DirectLinkDetector.HasMediaExtension(url) && !DirectLinkDetector.IsManifestExtension(url))
         {
             var generic = candidates.FirstOrDefault(d => d.Type == "Generic");
             if (generic is not null && candidates.Count > 0 && candidates[0] != generic)

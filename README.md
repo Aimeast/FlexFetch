@@ -7,6 +7,7 @@ A self-hosted web download service: paste a resource link and the server handles
 ## Features
 
 - Download plain file links, social media videos (Twitter/X), video sites (YouTube, vimeo, ...) and playlists
+- HLS direct links (.m3u/.m3u8) are downloaded as a single video file via yt-dlp + ffmpeg; plain m3u playlists are expanded into one child task per entry
 - Generic yt-dlp fallback downloader for any other video site yt-dlp supports
 - Browser-assisted media detection: the headless browser sniffs network responses for media streams on arbitrary web pages
 - Direct media links (by extension, or by served Content-Type) are downloaded straight away by the generic file downloader
@@ -19,7 +20,7 @@ A self-hosted web download service: paste a resource link and the server handles
 
 ## Downloader selection
 
-Downloader plugins are self-discovered via reflection and tried in priority order (YouTube > Twitter > yt-dlp > HTML > Browser > generic). On failure the next candidate is tried; the generic file downloader is the guaranteed fallback. Direct media links — identified by URL extension, or by HEAD-probed Content-Type when the URL carries no extension — skip the slow yt-dlp attempt and go straight to the generic downloader.
+Downloader plugins are self-discovered via reflection and tried in priority order (YouTube > Twitter > yt-dlp > HTML > Browser > generic). On failure the next candidate is tried; the generic file downloader is the guaranteed fallback. Direct media links — identified by URL extension, or by HEAD-probed Content-Type when the URL carries no extension — skip the slow yt-dlp attempt and go straight to the generic downloader. Playlist manifests (.m3u/.m3u8/.mpd, by extension or by mpegurl/dash Content-Type) are the exception: they are parsed by yt-dlp first, so an HLS manifest downloads as one merged video file and a plain m3u list expands into child tasks.
 
 ## Requirements
 
