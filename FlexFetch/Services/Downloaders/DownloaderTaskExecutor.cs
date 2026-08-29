@@ -40,8 +40,26 @@ public sealed class DownloaderTaskExecutor : ITaskExecutor
         Action<double> progress,
         CancellationToken cancellationToken)
     {
-        var candidates = _factory.SelectDownloaders(task.Url);
-        candidates = await PromoteDirectLinkAsync(candidates, task.Url, cancellationToken);
+        IReadOnlyList<IDownloader> candidates;
+        if (!string.IsNullOrWhiteSpace(task.DownloaderType))
+        {
+            // The task's downloader was already resolved (e.g. a child task
+            // whose parent analysis pinned the Generic downloader for a direct
+            // media stream). Use exactly that downloader instead of
+            // re-negotiating through URL matching / Content-Type probing / the
+            // generic fallback chain (which would open another browser tab).
+            candidates = _factory.All.Where(d => d.Type == task.DownloaderType).ToList();
+            if (candidates.Count == 0)
+            {
+                throw new InvalidOperationException($"Downloader {task.DownloaderType} is not registered");
+            }
+        }
+        else
+        {
+            candidates = _factory.SelectDownloaders(task.Url);
+            candidates = await PromoteDirectLinkAsync(candidates, task.Url, cancellationToken);
+        }
+
         Exception? lastError = null;
 
         foreach (var downloader in candidates)

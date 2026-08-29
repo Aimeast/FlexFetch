@@ -51,6 +51,46 @@ public sealed class DownloaderTaskExecutorTests
         Assert.AreEqual("Generic", task.DownloaderType);
     }
 
+    [TestMethod]
+    public async Task ExecuteAsync_PinnedDownloaderType_UsesItDirectly()
+    {
+        // A child task whose parent analysis already resolved the downloader
+        // (e.g. a direct media play address pinned to "Generic") must use
+        // exactly that downloader, skipping URL matching / probing / the
+        // fallback chain entirely.
+        using var server = new TestHttpServer(_ => new TestHttpServer.HttpResponse(
+            200,
+            Array.Empty<byte>(),
+            new Dictionary<string, string> { ["Content-Type"] = "text/html" }));
+
+        var task = new TaskItem
+        {
+            OwnerUserId = "user-1",
+            Url = server.BaseUrl + "/stream",
+            DownloaderType = "Generic",
+        };
+        var executor = CreateExecutor();
+
+        await executor.ExecuteAsync(task, _ => { }, CancellationToken.None);
+
+        Assert.AreEqual("Generic", task.DownloaderType);
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_UnknownPinnedDownloader_Throws()
+    {
+        var task = new TaskItem
+        {
+            OwnerUserId = "user-1",
+            Url = "https://example.com/x",
+            DownloaderType = "NotARegisteredDownloader",
+        };
+        var executor = CreateExecutor();
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => executor.ExecuteAsync(task, _ => { }, CancellationToken.None));
+    }
+
     private static DownloaderTaskExecutor CreateExecutor()
     {
         var factory = new DownloaderFactory(new IDownloader[]

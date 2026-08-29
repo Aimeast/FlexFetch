@@ -104,7 +104,7 @@ public sealed class GenericFileDownloader : IDownloader
             var totalLength = resumeFrom + contentLength;
             task.FileSize = totalLength;
 
-            var fileName = ResolveFileName(response, analysis, url);
+            var fileName = ResolveFileName(response, analysis, url, task.FileName);
             task.FileName = fileName;
             _log.Information("Downloading {Url} to {File} ({Total} bytes)", url, fileName, totalLength);
 
@@ -172,13 +172,20 @@ public sealed class GenericFileDownloader : IDownloader
         return response;
     }
 
-    private static string ResolveFileName(HttpResponseMessage response, AnalysisResult analysis, Uri url)
+    private static string ResolveFileName(HttpResponseMessage response, AnalysisResult analysis, Uri url, string? taskFileName)
     {
         var disposition = response.Content.Headers.ContentDisposition;
         var headerName = (disposition?.FileNameStar ?? disposition?.FileName)?.Trim('"');
         if (!string.IsNullOrWhiteSpace(headerName))
         {
             return FileNameRules.Sanitize(headerName);
+        }
+
+        // The task's own filename (e.g. the title set when a child task was
+        // submitted from analysis) beats the URL-inferred fallback name.
+        if (!string.IsNullOrWhiteSpace(taskFileName))
+        {
+            return FileNameRules.Sanitize(taskFileName);
         }
 
         if (!string.IsNullOrWhiteSpace(analysis.SuggestedFileName))

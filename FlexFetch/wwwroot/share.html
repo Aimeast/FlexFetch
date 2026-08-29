@@ -14,24 +14,31 @@
     <main>
         <div class="card">
             <h2>Shared download</h2>
-            <div class="msg error" id="error-msg"></div>
             <div id="info">
-                <div class="kv">
-                    <div><b>File</b><span id="file-name">-</span></div>
-                    <div><b>Size</b><span id="file-size">-</span></div>
-                    <div><b>Status</b><span id="file-status">-</span></div>
-                    <div><b>Progress</b><span id="file-progress">-</span></div>
+                <div class="table-wrap">
+                    <table id="share-table">
+                        <thead>
+                            <tr>
+                                <th>File</th>
+                                <th>Size</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
                 </div>
-                <div class="muted" id="file-error"></div>
-                <p style="margin-top:1rem">
-                    <button id="download-btn" onclick="download()">Download file</button>
-                </p>
             </div>
         </div>
     </main>
 
     <script>
         const token = new URLSearchParams(location.search).get('token');
+        const STATUS = { Queued: 0, Running: 1, Completed: 2, Failed: 3 };
+
+        function esc(s) {
+            return (s || '').replace(/[&<>"']/g, c =>
+                ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+        }
 
         async function load() {
             if (!token) { showError('Missing share token'); return; }
@@ -39,31 +46,74 @@
                 const res = await fetch('/api/share/' + token);
                 if (!res.ok) { showError('Share link not found or expired'); return; }
                 const body = await res.json();
-                document.getElementById('file-name').textContent = body.fileName || '-';
-                document.getElementById('file-size').textContent = body.fileSize != null ? formatSize(body.fileSize) : '-';
-                document.getElementById('file-status').textContent = body.status || '-';
-                document.getElementById('file-progress').textContent = (body.progress || 0) + '%';
-                document.getElementById('file-error').textContent = body.errorMessage || '';
-                document.getElementById('download-btn').disabled = body.status !== 'Completed';
+                render(body);
             } catch (e) { showError(e.message); }
         }
 
-        function download() {
-            location.href = '/api/share/' + token + '/file';
+        // Same layout as the index task list: File / Size / Status columns
+        // with the same badge classes and mobile card stacking (data-label).
+        // The backend returns a files list (the shared group's own file plus
+        // any child files); each row links to its own file endpoint.
+        function render(t) {
+            const tbody = document.querySelector('#share-table tbody');
+            const files = t.files && t.files.length ? t.files : [{ id: null, fileName: t.fileName, fileSize: t.fileSize, status: t.status, progress: t.progress, errorMessage: t.errorMessage }];
+            const parts = [];
+
+            // Source URL row, same layout as the index task list (no actions
+            // on the share page).
+            if (t.url) {
+                parts.push('<tr><td colspan="3" class="group-url-cell"><span class="url-row"><a class="url-text" href="' +
+                    esc(t.url) + '" target="_blank" rel="noopener noreferrer">' + esc(t.url) + '</a></span></td></tr>');
+            }
+
+            const rows = files.map(f => {
+                const statusNum = STATUS[f.status] ?? -1;
+                const statusClass = statusNum === 2 ? 'ok' : statusNum === 3 ? 'err' : 'warn';
+                const errHtml = f.errorMessage
+                    ? '<span class="error-inline">' + esc(f.errorMessage) + '</span>'
+                    : '';
+
+                let nameHtml = '';
+                if (f.fileName) {
+                    if (statusNum === 2) {
+                        const qs = f.id ? '?taskId=' + encodeURIComponent(f.id) : '';
+                        nameHtml = '<a class="file-link" href="/api/share/' + encodeURIComponent(token) +
+                            '/file' + qs + '" target="_blank" rel="noopener noreferrer">' + esc(f.fileName) + '</a>';
+                    } else {
+                        nameHtml = '<span class="file-name">' + esc(f.fileName) + '</span>';
+                    }
+                }
+
+                let sizeHtml = '-';
+                if (f.fileSize != null) {
+                    if (statusNum === 1 && f.progress != null) {
+                        const done = Math.round(f.fileSize * (f.progress / 100));
+                        sizeHtml = fmtSize(done) + ' / ' + fmtSize(f.fileSize);
+                    } else {
+                        sizeHtml = fmtSize(f.fileSize);
+                    }
+                }
+
+                return '<tr>' +
+                    '<td data-label="File">' + nameHtml + errHtml + '</td>' +
+                    '<td data-label="Size">' + sizeHtml + '</td>' +
+                    '<td data-label="Status"><span class="badge ' + statusClass + '">' + esc(f.status) + '</span></td>' +
+                    '</tr>';
+            });
+            tbody.innerHTML = parts.join('') + rows.join('');
         }
 
         function showError(msg) {
-            document.getElementById('error-msg').textContent = msg;
-            document.getElementById('error-msg').style.display = 'block';
             document.getElementById('info').style.display = 'none';
+            alert(msg);
         }
 
-        function formatSize(bytes) {
+        function fmtSize(bytes) {
             if (bytes == null) return '-';
             const units = ['B', 'KB', 'MB', 'GB', 'TB'];
             let i = 0;
             while (bytes >= 1024 && i < units.length - 1) { bytes /= 1024; i++; }
-            return bytes.toFixed(1) + ' ' + units[i];
+            return (i ? bytes.toFixed(1) : bytes) + ' ' + units[i];
         }
 
         load();

@@ -325,7 +325,10 @@
             let nameHtml = '';
             if (t.fileName) {
                 if (t.status === 2) {
-                    nameHtml = '<a class="file-link" href="/api/tasks/' + encodeURIComponent(t.id) + '/file">' + esc(t.fileName) + '</a>';
+                    // Completed files open in a new browser tab (videos play
+                    // there natively) instead of navigating this page.
+                    nameHtml = '<a class="file-link" href="/api/tasks/' + encodeURIComponent(t.id) +
+                        '/file" target="_blank" rel="noopener noreferrer">' + esc(t.fileName) + '</a>';
                 } else {
                     nameHtml = '<span class="file-name">' + esc(t.fileName) + '</span>';
                 }
@@ -373,7 +376,22 @@
         async function shareTask(id) {
             try {
                 const body = await api('/api/tasks/' + id + '/share', { method: 'POST' });
-                prompt('Share link:', location.origin + '/share.html?token=' + body.token);
+                const link = location.origin + '/share.html?token=' + body.token;
+                try {
+                    await navigator.clipboard.writeText(link);
+                } catch (e) {
+                    // Clipboard API unavailable (insecure context): fall back
+                    // to a temporary input + execCommand.
+                    const tmp = document.createElement('textarea');
+                    tmp.value = link;
+                    tmp.style.position = 'fixed';
+                    tmp.style.opacity = '0';
+                    document.body.appendChild(tmp);
+                    tmp.select();
+                    document.execCommand('copy');
+                    tmp.remove();
+                }
+                alert('Share link copied to clipboard:\n' + link);
             } catch (e) { alert(e.message); }
         }
 

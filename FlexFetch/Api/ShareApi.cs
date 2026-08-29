@@ -25,19 +25,34 @@ public static class ShareApi
                 return Results.NotFound();
             }
 
-            var task = tasks.GetById(share.TaskId);
-            if (task is null)
+            // A shared task may be a group (parent) whose files live on its
+            // children; resolve all tasks that actually carry a file so the
+            // share page can list them like the task list does.
+            var files = ResolveShareFiles(tasks, share.TaskId);
+            if (files.Count == 0)
             {
                 return Results.NotFound();
             }
 
+            var first = files[0];
+            var sourceUrl = tasks.GetById(share.TaskId)?.Url ?? first.Url;
             return Results.Ok(new
             {
-                fileName = task.FileName,
-                fileSize = task.FileSize,
-                status = task.Status.ToString(),
-                progress = task.Progress,
-                errorMessage = task.ErrorMessage,
+                url = sourceUrl,
+                fileName = first.FileName,
+                fileSize = first.FileSize,
+                status = first.Status.ToString(),
+                progress = first.Progress,
+                errorMessage = first.ErrorMessage,
+                files = files.Select(f => new
+                {
+                    id = f.Id,
+                    fileName = f.FileName,
+                    fileSize = f.FileSize,
+                    status = f.Status.ToString(),
+                    progress = f.Progress,
+                    errorMessage = f.ErrorMessage,
+                }),
             });
         });
 
@@ -45,7 +60,8 @@ public static class ShareApi
             string token,
             IShareRepository shares,
             ITaskRepository tasks,
-            StorageService storage) =>
+            StorageService storage,
+            HttpRequest request) =>
         {
             var share = shares.GetByToken(token);
             if (share is null || share.ExpiresAt is not null && share.ExpiresAt.Value.ToUniversalTime() <= DateTime.UtcNow)
@@ -53,7 +69,18 @@ public static class ShareApi
                 return Results.NotFound();
             }
 
-            var task = tasks.GetById(share.TaskId);
+            var files = ResolveShareFiles(tasks, share.TaskId);
+            if (files.Count == 0)
+            {
+                return Results.NotFound();
+            }
+
+            // An optional taskId selects one file of a shared group; without
+            // it the first file (or the task's own) is served.
+            var taskId = request.Query["taskId"].FirstOrDefault();
+            var task = taskId is null
+                ? files[0]
+                : files.FirstOrDefault(f => f.Id == taskId);
             if (task is null)
             {
                 return Results.NotFound();
@@ -74,7 +101,43 @@ public static class ShareApi
             }
 
             var stream = File.OpenRead(path);
-            return Results.File(stream, FileMime.For(task.FileName), task.FileName, enableRangeProcessing: true);
+            // Media (video/audio) is served without a download name so the
+            // browser plays it inline in a new tab, matching the index page;
+            // other types keep the name and download.
+            var mime = FileMime.For(task.FileName);
+            return FileMime.IsMedia(task.FileName)
+                ? Results.File(stream, mime, enableRangeProcessing: true)
+                : Results.File(stream, mime, task.FileName, enableRangeProcessing: true);
         });
+    }
+
+    /// <summary>
+    /// Resolves the tasks behind a shared group: the shared task itself when
+    /// it carries a file, plus any child tasks that do (a parent of an
+    /// expanded video group usually has no file of its own). A task with no
+    /// file of its own and no child files is kept itself so the share page
+    /// still shows its status and the file endpoint can answer Conflict for
+    /// unfinished tasks.
+    /// </summary>
+    private static IReadOnlyList<TaskItem> ResolveShareFiles(ITaskRepository tasks, string taskId)
+    {
+        var result = new List<TaskItem>();
+        var self = tasks.GetById(taskId);
+        if (self is null)
+        {
+            return result;
+        }
+
+        var children = tasks.GetChildren(taskId)
+            .Where(c => !string.IsNullOrEmpty(c.FileName))
+            .ToList();
+
+        if (!string.IsNullOrEmpty(self.FileName) || children.Count == 0)
+        {
+            result.Add(self);
+        }
+
+        result.AddRange(children);
+        return result;
     }
 }

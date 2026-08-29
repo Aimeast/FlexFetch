@@ -727,7 +727,7 @@ public sealed class StealthBrowserService : IAsyncDisposable
                     // Short enough that an unresponsive proxy fails fast (log +
                     // direct retry) instead of hanging the navigation until
                     // Chromium gives up with net::ERR_FAILED.
-                    Timeout = TimeSpan.FromSeconds(15),
+                    Timeout = TimeSpan.FromSeconds(45),
                 };
 
                 // Probe the proxy once at startup so an outage shows up in the
@@ -1004,10 +1004,12 @@ public sealed class StealthBrowserService : IAsyncDisposable
             var elapsedMs = Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds;
 
             // Slow forwards reveal where time goes: a hang in the proxy
-            // CONNECT phase (no response at all) vs a slow response.
+            // CONNECT phase (no response at all) vs a slow response. Logged
+            // at Debug so normal operation stays quiet - this fires for every
+            // slow tunneled request during a page load.
             if (elapsedMs > 2000)
             {
-                _log.Information(
+                _log.Debug(
                     "Proxy forward {Method} {Url} took {Elapsed} ms (status {Status})",
                     request.Method, request.Url, elapsedMs.ToString("0"), (int)response.StatusCode);
             }

@@ -1,4 +1,5 @@
-﻿using FlexFetch.Api;
+﻿using System.Text;
+using FlexFetch.Api;
 using FlexFetch.Config;
 using FlexFetch.Data;
 using FlexFetch.Entities;
@@ -12,6 +13,8 @@ using FlexFetch.Services.Tasks;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Serilog;
 using ILogger = Serilog.ILogger;
+
+Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
 // Child-process entry used by DependencyInstallHostedService to install the
 // headless browser: runs Playwright's install command and exits without
@@ -95,7 +98,8 @@ builder.Services.AddSingleton<ITaskExecutor>(sp => new DownloaderTaskExecutor(
     (parent, child, referrer) =>
     {
         var taskService = sp.GetRequiredService<TaskService>();
-        return taskService.Submit(parent.OwnerUserId, child.Url, parentId: parent.Id, title: child.Title, referrer: referrer);
+        return taskService.Submit(parent.OwnerUserId, child.Url, downloaderType: child.DownloaderType,
+            parentId: parent.Id, title: child.Title, referrer: referrer);
     }));
 builder.Services.AddSingleton<TaskService>();
 

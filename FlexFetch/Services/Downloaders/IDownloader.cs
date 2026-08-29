@@ -8,6 +8,14 @@ public sealed class MediaChild
     public string Url { get; init; } = string.Empty;
 
     public string? Title { get; init; }
+
+    /// <summary>
+    /// Downloader the parent analysis already resolved for this child (e.g.
+    /// "Generic" for a direct media stream). When set, the child task uses
+    /// exactly that downloader instead of re-negotiating via URL matching,
+    /// Content-Type probing or the generic fallback chain.
+    /// </summary>
+    public string? DownloaderType { get; init; }
 }
 
 /// <summary>Result of analyzing a resource URL.</summary>

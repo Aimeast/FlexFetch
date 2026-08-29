@@ -103,6 +103,16 @@ public static class TasksApi
                 return Results.NotFound();
             }
 
+            // Reuse the existing non-expired share so the link stays stable
+            // across clicks; only create a new token when there is none.
+            var now = DateTime.UtcNow;
+            var existing = shares.GetByTaskId(id).FirstOrDefault(s =>
+                s.ExpiresAt is null || s.ExpiresAt.Value.ToUniversalTime() > now);
+            if (existing is not null)
+            {
+                return Results.Ok(new { token = existing.Token, expiresAt = existing.ExpiresAt });
+            }
+
             var hours = int.TryParse(ConfigRegistry.From(config, ConfigKeys.ShareTokenHours), out var h) ? h : 0;
             var share = new ShareToken
             {
