@@ -52,10 +52,24 @@ public sealed class SystemApiTests
         Assert.IsGreaterThanOrEqualTo(0, body.QueuedTasks);
         Assert.IsGreaterThanOrEqualTo(0, body.RunningTasks);
         Assert.IsGreaterThan(0, body.ConcurrencyLimit);
+
+        // Build metadata injected by the GenerateBuildInfo MSBuild target:
+        // version and build configuration are always present; GitLog may be
+        // "unknown" when the assembly was built outside a git checkout.
+        Assert.IsFalse(string.IsNullOrEmpty(body.Version));
+        Assert.IsFalse(string.IsNullOrEmpty(body.GitLog));
+        Assert.IsFalse(string.IsNullOrEmpty(body.BuildDateTime));
+        Assert.AreNotEqual("unknown", body.BuildConfiguration);
+        Assert.IsFalse(string.IsNullOrEmpty(body.PlaywrightVersion));
     }
 
     private sealed record SystemInfoResponse(
         int QueuedTasks,
         int RunningTasks,
-        int ConcurrencyLimit);
+        int ConcurrencyLimit,
+        string Version,
+        string GitLog,
+        string BuildDateTime,
+        string BuildConfiguration,
+        string PlaywrightVersion);
 }

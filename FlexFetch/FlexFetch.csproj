@@ -4,7 +4,46 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <Version>1.0.0</Version>
+    <!-- Injected into the assembly as AssemblyMetadata; BuildInfo reads them at runtime. -->
+    <GitLog Condition="'$(GitLog)' == ''">unknown</GitLog>
+    <BuildDateTime>$([System.DateTimeOffset]::Now.ToString())</BuildDateTime>
+    <GitSearchPath>$(ProgramFiles)\Git\bin;$(ProgramFiles(x86))\Git\bin;C:\PortableGit\bin;D:\PortableGit\bin;$(Path)</GitSearchPath>
   </PropertyGroup>
+
+  <!--
+    Captures the last git commit reference into $(GitLog), then exposes it and
+    the build time/configuration as assembly metadata. Writing a generated
+    .cs file is deliberately avoided: the code convention tests require UTF-8
+    BOM (WriteLinesToFile emits none) and the file would dirty every build.
+    Git on Windows often sits outside the MSBuild process PATH, so the known
+    install locations are prepended (same approach as HttpGetUrl).
+  -->
+  <Target Name="GenerateBuildInfo" BeforeTargets="BeforeBuild">
+    <Exec Command="git log -1 --format=reference"
+          Condition="Exists('..\.git')"
+          EnvironmentVariables="PATH=$(GitSearchPath.Replace(';', '%3B'))"
+          StdOutEncoding="utf-8"
+          ConsoleToMSBuild="true"
+          IgnoreExitCode="true">
+      <Output TaskParameter="ConsoleOutput" PropertyName="GitLog" />
+    </Exec>
+
+    <ItemGroup>
+      <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+        <_Parameter1>GitLog</_Parameter1>
+        <_Parameter2>$(GitLog)</_Parameter2>
+      </AssemblyAttribute>
+      <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+        <_Parameter1>BuildDateTime</_Parameter1>
+        <_Parameter2>$(BuildDateTime)</_Parameter2>
+      </AssemblyAttribute>
+      <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+        <_Parameter1>BuildConfiguration</_Parameter1>
+        <_Parameter2>$(Configuration)</_Parameter2>
+      </AssemblyAttribute>
+    </ItemGroup>
+  </Target>
 
   <ItemGroup>
     <PackageReference Include="FFMpegCore" Version="5.4.0" />

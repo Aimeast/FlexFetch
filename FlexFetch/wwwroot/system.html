@@ -79,6 +79,9 @@
                 kv.innerHTML = '';
                 const entries = {
                     'Version': info.version,
+                    'Git log': info.gitLog || 'unknown',
+                    'Built at': info.buildDateTime || 'unknown',
+                    'Configuration': info.buildConfiguration || 'unknown',
                     'Started at': info.startedAt ? new Date(info.startedAt).toLocaleString() : '-',
                     'Disk free': info.diskFreeBytes != null ? formatSize(info.diskFreeBytes) : '-',
                     'Disk total': info.diskTotalBytes != null ? formatSize(info.diskTotalBytes) : '-',
@@ -88,6 +91,7 @@
                     'yt-dlp': info.ytdlpVersion || 'not installed',
                     'deno': info.denoVersion || 'not installed',
                     'ffmpeg': info.ffmpegVersion || 'not installed',
+                    'Playwright': info.playwrightVersion || 'not installed',
                     'Browser': info.browser,
                 };
                 for (const [k, v] of Object.entries(entries)) {

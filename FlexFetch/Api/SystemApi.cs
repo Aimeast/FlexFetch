@@ -3,6 +3,7 @@ using FlexFetch.Data;
 using FlexFetch.Services;
 using FlexFetch.Services.Downloaders;
 using FlexFetch.Services.Tasks;
+using Microsoft.Playwright;
 using ILogger = Serilog.ILogger;
 
 namespace FlexFetch.Api;
@@ -26,7 +27,10 @@ public static class SystemApi
             var disk = GetDiskInfo(dataDir);
             return Results.Ok(new
             {
-                version = typeof(Program).Assembly.GetName().Version?.ToString() ?? "unknown",
+                version = BuildInfo.Version,
+                gitLog = BuildInfo.GitLog,
+                buildDateTime = BuildInfo.BuildDateTime,
+                buildConfiguration = BuildInfo.Configuration,
                 startedAt = Program.StartedAt,
                 diskFreeBytes = disk.FreeBytes,
                 diskTotalBytes = disk.TotalBytes,
@@ -36,6 +40,7 @@ public static class SystemApi
                 ytdlpVersion = ytdlp.GetVersionAsync().GetAwaiter().GetResult(),
                 denoVersion = ytdlp.GetDenoVersionAsync().GetAwaiter().GetResult(),
                 ffmpegVersion = ytdlp.GetFfmpegVersionAsync().GetAwaiter().GetResult(),
+                playwrightVersion = typeof(Playwright).Assembly.GetName().Version?.ToString() ?? "unknown",
                 browser = StealthBrowserService.FindFirstExisting(StealthBrowserService.GetBrowserCandidates()) ?? "not-detected",
                 browserSelfCheck = browser.IsRunning ? browser.SelfCheckAsync().GetAwaiter().GetResult() : Array.Empty<DetectionCheckResult>(),
             });
