@@ -9,11 +9,13 @@ public sealed class ConfigRegistryTests
     public void Registry_DeclaresAllKeysWithDefaults()
     {
         // Keys whose empty default is intentional (e.g. proxy must not be
-        // hardcoded; route rules are optional).
+        // hardcoded; route rules are optional; the dedicated installer proxy
+        // is usually unset so installers follow the primary proxy or direct).
         var allowEmpty = new HashSet<string>
         {
             ConfigKeys.Proxy,
             ConfigKeys.RouteRules,
+            ConfigKeys.NetworkHttpProxy,
         };
 
         var keys = typeof(ConfigKeys).GetFields()
@@ -48,7 +50,7 @@ public sealed class ConfigRegistryTests
         Assert.IsNotNull(ConfigRegistry.Validate(ConfigKeys.MaxConcurrency, "-1"));
         Assert.IsNotNull(ConfigRegistry.Validate(ConfigKeys.MaxConcurrency, "abc"));
         Assert.IsNotNull(ConfigRegistry.Validate(ConfigKeys.RegistrationPolicy, "Unknown"));
-        Assert.IsNotNull(ConfigRegistry.Validate(ConfigKeys.CookieAutoRefresh, "maybe"));
+        Assert.IsNotNull(ConfigRegistry.Validate(ConfigKeys.SessionHumanize, "maybe"));
         Assert.IsNotNull(ConfigRegistry.Validate(ConfigKeys.InactiveDays, "-5"));
         Assert.IsNotNull(ConfigRegistry.Validate(ConfigKeys.DataDir, " "));
     }

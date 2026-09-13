@@ -1,6 +1,6 @@
 ﻿using FlexFetch.Entities;
-using FlexFetch.Services;
 using FlexFetch.Services.Routing;
+using FlexFetch.Services.Session;
 using Serilog;
 using YoutubeDLSharp;
 using YoutubeDLSharp.Metadata;
@@ -14,14 +14,14 @@ namespace FlexFetch.Services.Downloaders;
 /// yt-dlp (vimeo, dailymotion, ...). Single videos and playlist
 /// expansion, audio/video merging via ffmpeg, title-based file naming.
 /// The yt-dlp fetch call is injectable so parameter building and expansion
-/// logic are unit-testable.
+/// logic are unit-testable. Output lines are always classified as a whole
+/// before a verdict is drawn (an exit code alone is never trusted).
 /// </summary>
 public class YtdlpDownloader : IDownloader
 {
     protected readonly YtdlpService Ytdlp;
     protected readonly IProxyService Proxy;
     protected readonly StorageService Storage;
-    protected readonly CookiePoolService Cookies;
     protected readonly ILogger Log;
 
     private readonly Func<string, OptionSet, CancellationToken, Task<RunResult<VideoData>>> _fetchData;
@@ -32,7 +32,6 @@ public class YtdlpDownloader : IDownloader
         IProxyService proxy,
         StorageService storage,
         ILogger log,
-        CookiePoolService cookies,
         Func<string, OptionSet, CancellationToken, Task<RunResult<VideoData>>>? fetchData = null,
         Func<string, OptionSet, Action<double>, CancellationToken, Task<RunResult<string>>>? download = null)
     {
@@ -40,7 +39,6 @@ public class YtdlpDownloader : IDownloader
         Proxy = proxy;
         Storage = storage;
         Log = log;
-        Cookies = cookies;
         _fetchData = fetchData ?? DefaultFetchDataAsync;
         _downloadVideo = download ?? DefaultDownloadVideoAsync;
     }
@@ -75,11 +73,35 @@ public class YtdlpDownloader : IDownloader
         var proxyUri = Proxy.GetProxyUri(url);
         if (proxyUri is not null)
         {
-            options.Proxy = proxyUri;
+            options.Proxy = NormalizeProxyForYtdlp(proxyUri);
         }
 
         return options;
     }
+
+    /// <summary>
+    /// yt-dlp must resolve DNS through the proxy (socks5h): a local lookup
+    /// can resolve to a poisoned or unreachable address, defeating the fixed
+    /// single egress. The browser path already does remote DNS natively.
+    /// </summary>
+    public static string NormalizeProxyForYtdlp(string proxyUri) =>
+        proxyUri.StartsWith("socks5://", StringComparison.OrdinalIgnoreCase)
+            ? "socks5h://" + proxyUri["socks5://".Length..]
+            : proxyUri;
+
+    /// <summary>
+    /// Placeholder titles yt-dlp reports for playlist entries the site hides
+    /// as unplayable (private, deleted, region/age blocked). They can never
+    /// be downloaded and must not become child tasks.
+    /// </summary>
+    private static readonly HashSet<string> UnavailablePlaceholders =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            "[Private video]",
+            "[Deleted video]",
+            "[Unavailable video]",
+            "[Unavailable]",
+        };
 
     /// <summary>Converts fetched video metadata into an analysis result (title + children).</summary>
     public AnalysisResult BuildAnalysis(VideoData data)
@@ -88,9 +110,12 @@ public class YtdlpDownloader : IDownloader
         {
             // Skip entries without a URL or a title: unavailable/dead videos
             // (e.g. terminated accounts) still appear in playlist output but
-            // would only fail during the child download.
+            // would only fail during the child download. Placeholder titles
+            // ("[Private video]" and friends) are the site's hidden videos -
+            // filtered the same way so they never enter the download queue.
             var children = data.Entries
                 .Where(e => !string.IsNullOrEmpty(e.Url) && !string.IsNullOrEmpty(e.Title))
+                .Where(e => !UnavailablePlaceholders.Contains(e.Title.Trim()))
                 .Select(e => new MediaChild { Url = e.Url, Title = e.Title })
                 .ToList();
             return new AnalysisResult
@@ -109,7 +134,7 @@ public class YtdlpDownloader : IDownloader
         };
     }
 
-    public async Task<AnalysisResult> AnalyzeAsync(string url, string taskId, CancellationToken cancellationToken)
+    public virtual async Task<AnalysisResult> AnalyzeAsync(string url, string taskId, CancellationToken cancellationToken)
     {
         var target = new Uri(url);
         var options = BuildOptions(target);
@@ -122,187 +147,45 @@ public class YtdlpDownloader : IDownloader
         }
 
         var result = await _fetchData(url, options, cancellationToken);
-        if (!result.Success || result.Data is null)
+        string? cookieFile = null;
+        try
         {
-            result = await RetryWithCookiesIfAuthAsync(url, taskId, options, result.ErrorOutput, cancellationToken)
-                ?? throw BuildFailure(result.ErrorOutput, "yt-dlp failed");
+            if (!result.Success || result.Data is null)
+            {
+                // Anonymous first: only an auth-class failure makes a session
+                // worth attaching (subclass hook).
+                if (ShouldRetryWithSession(result.ErrorOutput))
+                {
+                    cookieFile = await AcquireSessionCookieFileAsync(taskId, cancellationToken);
+                    if (cookieFile is not null)
+                    {
+                        ApplySessionPosture(options, cookieFile);
+                        Log.Information("Task {TaskId}: retrying with session cookies ({CookieFile})",
+                            taskId, Path.GetFileName(cookieFile));
+                        result = await _fetchData(url, options, cancellationToken);
+                    }
+                }
+
+                if (!result.Success || result.Data is null)
+                {
+                    throw BuildFailure(result.ErrorOutput, "yt-dlp failed");
+                }
+            }
+
+            ExamineSuccessOutput(result.ErrorOutput, taskId);
+        }
+        finally
+        {
+            // A session cookie copy is consumed by exactly one run and never
+            // merged back: yt-dlp rewrites the file it is given, and a
+            // blocked run would poison the jar.
+            DeleteCookieFileIfAny(cookieFile);
         }
 
         return BuildAnalysis(result.Data);
     }
 
-    /// <summary>
-    /// For auth-class yt-dlp errors (only when the downloader enables it):
-    /// attaches pool cookies once and retries; returns the retried result, or
-    /// null when the error is not auth-class or no cookies are available.
-    /// When cookies were attached and the retry still fails, an
-    /// AuthRequiredException is thrown instead.
-    /// </summary>
-    private async Task<RunResult<VideoData>?> RetryWithCookiesIfAuthAsync(
-        string url,
-        string taskId,
-        OptionSet options,
-        IReadOnlyList<string> errorOutput,
-        CancellationToken cancellationToken)
-    {
-        if (!AuthRetryEnabled || !TryClassifyAuthError(errorOutput, out var reason))
-        {
-            return null;
-        }
-
-        var cookieFile = AttachCookiesIfAny(url, taskId);
-        if (cookieFile is null)
-        {
-            throw new AuthRequiredException(reason, BuildFailureMessage(errorOutput, "yt-dlp failed"));
-        }
-
-        try
-        {
-            options.Cookies = cookieFile;
-            var retried = await _fetchData(url, options, cancellationToken);
-            if (!retried.Success || retried.Data is null)
-            {
-                throw new AuthRequiredException(
-                    reason, BuildFailureMessage(retried.ErrorOutput, "yt-dlp failed with cookies"));
-            }
-
-            return retried;
-        }
-        finally
-        {
-            WriteBackCookiesAndCleanup(cookieFile, taskId);
-        }
-    }
-
-    /// <summary>
-    /// True when the downloader should attach pool cookies and retry once on
-    /// auth-class errors (only YouTube enables this).
-    /// </summary>
-    protected virtual bool AuthRetryEnabled => false;
-
-    private string? AttachCookiesIfAny(string url, string taskId)
-    {
-        var cookies = Cookies.GetCookiesForUrl(new Uri(url));
-        if (cookies.Count == 0)
-        {
-            return null;
-        }
-
-        var domains = cookies.Select(c => c.Domain).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        Log.Information("Task {TaskId}: attaching {Count} cookies for {Url} (domains: {Domains})",
-            taskId, cookies.Count, url, string.Join(", ", domains));
-
-        CookieFile.Write(Storage.DataDir, taskId, cookies);
-        return CookieFile.GetPath(Storage.DataDir, taskId);
-    }
-
-    private void WriteBackCookiesAndCleanup(string cookieFile, string taskId)
-    {
-        var updated = CookieFile.Read(cookieFile);
-        if (updated.Count > 0)
-        {
-            Cookies.UpsertCookies(updated);
-        }
-
-        CookieFile.Delete(Storage.DataDir, taskId);
-    }
-
-    private static Exception BuildFailure(IReadOnlyList<string> errorOutput, string prefix)
-    {
-        var message = BuildFailureMessage(errorOutput, prefix);
-        return TryClassifyRetryableError(errorOutput)
-            ? new RetryableException(message)
-            : new InvalidOperationException(message);
-    }
-
-    /// <summary>
-    /// True when the yt-dlp error indicates a transient failure worth
-    /// retrying (timeout, connection failure, proxy fault, server 5xx, rate
-    /// limiting). Deterministic errors are not classified here.
-    /// </summary>
-    private static bool TryClassifyRetryableError(IReadOnlyList<string> errorOutput)
-    {
-        foreach (var line in errorOutput)
-        {
-            if (!line.StartsWith("ERROR:", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            if (line.Contains("timed out", StringComparison.OrdinalIgnoreCase)
-                || line.Contains("timeout", StringComparison.OrdinalIgnoreCase)
-                || line.Contains("unable to connect", StringComparison.OrdinalIgnoreCase)
-                || line.Contains("connection error", StringComparison.OrdinalIgnoreCase)
-                || line.Contains("connection refused", StringComparison.OrdinalIgnoreCase)
-                || line.Contains("failed to establish", StringComparison.OrdinalIgnoreCase)
-                || line.Contains("could not connect", StringComparison.OrdinalIgnoreCase)
-                || line.Contains("socks", StringComparison.OrdinalIgnoreCase)
-                || line.Contains("too many requests", StringComparison.OrdinalIgnoreCase)
-                || line.Contains("http error 429", StringComparison.OrdinalIgnoreCase)
-                || line.Contains("http error 5", StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private static string BuildFailureMessage(IReadOnlyList<string> errorOutput, string prefix) =>
-        $"{prefix}: {string.Join(';', errorOutput.Where(l => l.StartsWith("ERROR:", StringComparison.OrdinalIgnoreCase)).Take(3))}";
-
-    /// <summary>
-    /// Classifies yt-dlp ERROR lines that indicate authentication/restriction.
-    /// Matching deliberately avoids the apostrophe inside "you're" (its
-    /// encoding is unstable across environments), using the stable substrings
-    /// "sign in to confirm" and "not a bot" instead.
-    /// </summary>
-    private static bool TryClassifyAuthError(IReadOnlyList<string> errorOutput, out AuthFailureReason reason)
-    {
-        reason = AuthFailureReason.Unknown;
-        foreach (var line in errorOutput)
-        {
-            if (!line.StartsWith("ERROR:", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            if (line.Contains("sign in to confirm", StringComparison.OrdinalIgnoreCase)
-                || line.Contains("not a bot", StringComparison.OrdinalIgnoreCase)
-                || line.Contains("login_required", StringComparison.OrdinalIgnoreCase)
-                || line.Contains("login required", StringComparison.OrdinalIgnoreCase)
-                || line.Contains("please sign in", StringComparison.OrdinalIgnoreCase)
-                || line.Contains("--cookies", StringComparison.OrdinalIgnoreCase))
-            {
-                reason = AuthFailureReason.LoginRequired;
-                return true;
-            }
-
-            if (line.Contains("private video", StringComparison.OrdinalIgnoreCase))
-            {
-                reason = AuthFailureReason.Private;
-                return true;
-            }
-
-            if (line.Contains("age-restricted", StringComparison.OrdinalIgnoreCase)
-                || line.Contains("age restricted", StringComparison.OrdinalIgnoreCase))
-            {
-                reason = AuthFailureReason.AgeRestricted;
-                return true;
-            }
-
-            if (line.Contains("members only", StringComparison.OrdinalIgnoreCase)
-                || line.Contains("member-only", StringComparison.OrdinalIgnoreCase))
-            {
-                reason = AuthFailureReason.MembersOnly;
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    public async Task DownloadAsync(TaskItem task, AnalysisResult analysis, Action<double> progress, CancellationToken cancellationToken)
+    public virtual async Task DownloadAsync(TaskItem task, AnalysisResult analysis, Action<double> progress, CancellationToken cancellationToken)
     {
         // Prefer the analyzed file name (title + extension) so downloads keep
         // their extension; the stored name is only a fallback for cases where
@@ -311,57 +194,122 @@ public class YtdlpDownloader : IDownloader
             + (analysis.SuggestedFileName ?? task.FileName ?? "video.mp4");
         var options = BuildOptions(new Uri(task.Url), outputPath);
 
+        var result = await _downloadVideo(task.Url, options, progress, cancellationToken);
         string? cookieFile = null;
         try
         {
-            // Attach pool cookies up front: the analysis phase already used
-            // them, so the download must carry the same authenticated state.
-            cookieFile = AttachCookiesIfAny(task.Url, task.Id);
-            if (cookieFile is not null)
+            if (!result.Success && ShouldRetryWithSession(result.ErrorOutput))
             {
-                options.Cookies = cookieFile;
-            }
-
-            var result = await _downloadVideo(task.Url, options, progress, cancellationToken);
-            if (!result.Success && cookieFile is null && TryClassifyAuthError(result.ErrorOutput, out var reason))
-            {
-                // First attempt had no cookies; retry once with the pool cookies.
-                cookieFile = AttachCookiesIfAny(task.Url, task.Id);
+                cookieFile = await AcquireSessionCookieFileAsync(task.Id, cancellationToken);
                 if (cookieFile is not null)
                 {
-                    options.Cookies = cookieFile;
+                    ApplySessionPosture(options, cookieFile);
+                    Log.Information("Task {TaskId}: retrying download with session cookies ({CookieFile})",
+                        task.Id, Path.GetFileName(cookieFile));
                     result = await _downloadVideo(task.Url, options, progress, cancellationToken);
-                }
-
-                if (!result.Success)
-                {
-                    throw new AuthRequiredException(
-                        reason, BuildFailureMessage(result.ErrorOutput, "yt-dlp download failed with cookies"));
                 }
             }
 
             if (!result.Success)
             {
-                if (TryClassifyAuthError(result.ErrorOutput, out var authReason))
-                {
-                    throw new AuthRequiredException(
-                        authReason, BuildFailureMessage(result.ErrorOutput, "yt-dlp download failed"));
-                }
-
                 throw BuildFailure(result.ErrorOutput, "yt-dlp download failed");
             }
 
+            ExamineSuccessOutput(result.ErrorOutput, task.Id);
             task.FileName = Path.GetFileName(outputPath);
             task.FileSize = File.Exists(outputPath) ? new FileInfo(outputPath).Length : null;
         }
         finally
         {
-            if (cookieFile is not null)
-            {
-                WriteBackCookiesAndCleanup(cookieFile, task.Id);
-            }
+            DeleteCookieFileIfAny(cookieFile);
         }
     }
+
+    // --- Session retry hooks (only the YouTube downloader enables them) ---
+
+    /// <summary>True when the downloader may attach a session copy and retry
+    /// once on auth-class failures.</summary>
+    protected virtual bool SessionRetryEnabled => false;
+
+    /// <summary>
+    /// True when the classified failure can still be fixed by a valid
+    /// session (bot check / login / age / private / members).
+    /// </summary>
+    protected bool ShouldRetryWithSession(IReadOnlyList<string> errorOutput) =>
+        SessionRetryEnabled && YtdlpOutputClassifier.IsAuthFamily(
+            YtdlpOutputClassifier.Classify(errorOutput, runSucceeded: false));
+
+    /// <summary>Returns a one-time cookie file for the run, or null when no
+    /// session is available. The implementation owns cleanup ownership.</summary>
+    protected virtual Task<string?> AcquireSessionCookieFileAsync(string taskId, CancellationToken cancellationToken) =>
+        Task.FromResult<string?>(null);
+
+    /// <summary>Applies the authenticated posture on top of the options
+    /// (cookie file, client set, visitor identity pairing).</summary>
+    protected virtual void ApplySessionPosture(OptionSet options, string cookieFile)
+    {
+        options.Cookies = cookieFile;
+    }
+
+    /// <summary>Inspects the output of a SUCCESSFUL run: a rotated-session
+    /// WARNING still means the jar is dying (yt-dlp fell back to anonymous)
+    /// and must trigger a re-export even at exit code 0.</summary>
+    protected virtual void OnSessionRotated(IReadOnlyList<string> output, string taskId)
+    {
+    }
+
+    private void ExamineSuccessOutput(IReadOnlyList<string> output, string taskId)
+    {
+        if (output.Count == 0)
+        {
+            return;
+        }
+
+        var cls = YtdlpOutputClassifier.Classify(output, runSucceeded: true);
+        if (cls == YtdlpOutputClass.SessionRotated)
+        {
+            Log.Warning("Task {TaskId}: session cookies were rotated during a successful run; triggering re-export", taskId);
+            OnSessionRotated(output, taskId);
+        }
+    }
+
+    private static void DeleteCookieFileIfAny(string? cookieFile)
+    {
+        try
+        {
+            if (cookieFile is not null && File.Exists(cookieFile))
+            {
+                File.Delete(cookieFile);
+            }
+        }
+        catch
+        {
+            // Cleanup is best-effort; a leftover copy is harmless.
+        }
+    }
+
+    private static Exception BuildFailure(IReadOnlyList<string> errorOutput, string prefix)
+    {
+        var message = BuildFailureMessage(errorOutput, prefix);
+        var cls = YtdlpOutputClassifier.Classify(errorOutput, runSucceeded: false);
+        return cls switch
+        {
+            YtdlpOutputClass.Retryable => new RetryableException(message),
+            // Precise reason for the task record; fails immediately either way.
+            YtdlpOutputClass.BotCheck => new AuthRequiredException(AuthFailureReason.LoginRequired, message),
+            YtdlpOutputClass.LoginRequired => new AuthRequiredException(AuthFailureReason.LoginRequired, message),
+            YtdlpOutputClass.AgeRestricted => new AuthRequiredException(AuthFailureReason.AgeRestricted, message),
+            YtdlpOutputClass.Private => new AuthRequiredException(AuthFailureReason.Private, message),
+            YtdlpOutputClass.MembersOnly => new AuthRequiredException(AuthFailureReason.MembersOnly, message),
+            // SessionRotated / JarInconsistent / DeadContent / Unknown: no
+            // point retrying the task; a rotated jar additionally triggered
+            // the re-export path via ExamineSuccessOutput when relevant.
+            _ => new InvalidOperationException(message),
+        };
+    }
+
+    private static string BuildFailureMessage(IReadOnlyList<string> errorOutput, string prefix) =>
+        $"{prefix}: {string.Join(';', errorOutput.Where(l => l.StartsWith("ERROR:", StringComparison.OrdinalIgnoreCase)).Take(3))}";
 
     /// <summary>Runs the real yt-dlp binary to download the video (injectable in tests).</summary>
     private async Task<RunResult<string>> DefaultDownloadVideoAsync(

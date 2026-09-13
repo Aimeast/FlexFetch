@@ -1,9 +1,8 @@
-﻿using FlexFetch.Data;
-using FlexFetch.Entities;
+﻿using FlexFetch.Entities;
 using FlexFetch.Services;
 using FlexFetch.Services.Downloaders;
-using FlexFetch.Services.Refresh;
 using FlexFetch.Services.Routing;
+using FlexFetch.Services.Session;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Serilog;
@@ -120,21 +119,27 @@ public sealed class DownloaderFactoryTests
             services.AddSingleton<Serilog.ILogger>(Log);
             services.AddSingleton<IProxyService>(new DirectProxyService());
             services.AddSingleton(new StorageService(dir));
-            services.AddSingleton(new LiteDbStore(Path.Combine(dir, "flexfetch.db")));
             services.AddSingleton<IConfiguration>(new TestConfig());
-            services.AddSingleton<ICookieRepository>(sp => new CookieRepository(sp.GetRequiredService<LiteDbStore>()));
-            services.AddSingleton(sp => new CookiePoolService(sp.GetRequiredService<ICookieRepository>(), () => new ICookieDomainMapping[] { new DefaultCookieDomainMapping() }));
             services.AddSingleton(sp => new YtdlpService(
                 sp.GetRequiredService<IProxyService>(),
                 sp.GetRequiredService<Serilog.ILogger>(),
                 dir));
-            services.AddSingleton(sp => new StealthBrowserService(
+            services.AddSingleton<SessionSnapshotService>();
+            services.AddSingleton(sp => new FirefoxBrowserService(
                 sp.GetRequiredService<IProxyService>(),
-                sp.GetRequiredService<CookiePoolService>(),
                 sp.GetRequiredService<StorageService>(),
                 sp.GetRequiredService<IConfiguration>(),
-                sp.GetRequiredService<Serilog.ILogger>(),
-                () => DownloaderFactory.Create(sp).RefreshStrategies));
+                sp.GetRequiredService<Serilog.ILogger>()));
+            services.AddSingleton(sp => new SessionProbeService(
+                sp.GetRequiredService<YtdlpService>(),
+                sp.GetRequiredService<IProxyService>(),
+                sp.GetRequiredService<Serilog.ILogger>()));
+            services.AddSingleton(sp => new SessionExportService(
+                sp.GetRequiredService<FirefoxBrowserService>(),
+                sp.GetRequiredService<SessionSnapshotService>(),
+                sp.GetRequiredService<SessionProbeService>(),
+                sp.GetRequiredService<IConfiguration>(),
+                sp.GetRequiredService<Serilog.ILogger>()));
             var provider = services.BuildServiceProvider();
 
             var factory = DownloaderFactory.Create(provider);
@@ -152,14 +157,6 @@ public sealed class DownloaderFactoryTests
 
             // Generic is the fallback at the end of the chain.
             Assert.AreEqual("Generic", factory.Fallback!.Type);
-
-            // The factory also projects the cookie site plugins carried by the
-            // downloaders: YouTubeDownloader implements both the refresh
-            // strategy and the domain mapping interfaces.
-            Assert.IsTrue(factory.RefreshStrategies.OfType<YouTubeDownloader>().Any());
-            Assert.IsTrue(factory.DomainMappings.OfType<YouTubeDownloader>().Any());
-            Assert.IsTrue(factory.RefreshStrategies.All(s => s is YouTubeDownloader));
-            Assert.IsTrue(factory.DomainMappings.All(m => m is YouTubeDownloader));
         }
         finally
         {

@@ -1,0 +1,358 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Session - FlexFetch</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <header>
+        <h1>FlexFetch</h1>
+        <nav>
+            <a href="/index.html">Tasks</a>
+            <a href="/session.html">Session</a>
+            <a href="/system.html">System</a>
+            <a href="#" id="logout-link">Logout</a>
+        </nav>
+    </header>
+    <main>
+        <div class="msg" id="msg"></div>
+
+        <div class="card">
+            <h2>Session</h2>
+            <div class="muted" style="margin-bottom:0.5rem">
+                The snapshot is the single source of truth for the YouTube login
+                session: the periodic refresh pipeline renews it, and yt-dlp
+                always receives a one-time copy of it, never the original.
+            </div>
+
+            <h3>Snapshot status</h3>
+            <div class="kv" id="status-kv"></div>
+            <div class="row" style="margin-top:0.5rem">
+                <button class="secondary" onclick="runExport(this)">Refresh session</button>
+            </div>
+
+            <h3>Periodic health check</h3>
+            <div class="muted" style="margin-bottom:0.5rem">
+                Every 12 hours (by default) a one-time snapshot copy is probed
+                to answer "is the session still usable?". An unhealthy result
+                triggers a throttled automatic refresh; consecutive failures
+                raise an alert. It runs automatically once a snapshot exists.
+            </div>
+            <div class="kv" id="canary-kv"></div>
+        </div>
+
+        <div class="card">
+            <h2>PO token provider</h2>
+            <div class="muted" style="margin-bottom:0.5rem">
+                Generates YouTube PO tokens through the bgutil script, executed
+                by Deno whenever yt-dlp needs one (no server process). Needed
+                for videos that play in the browser but are denied to API
+                clients from flagged IPs. The pieces install automatically at
+                startup.
+            </div>
+            <div class="kv" id="pot-kv"></div>
+        </div>
+
+        <div class="card">
+            <h2>Diagnostic matrix</h2>
+            <div class="muted" style="margin-bottom:0.5rem">
+                Probes the probe URL with each client posture, anonymously and
+                with the session: every session problem attribution starts from
+                this matrix. The last result is kept and shown here.
+            </div>
+            <div class="row" style="margin-bottom:0.5rem">
+                <button class="secondary" onclick="diagnose(this)">Run diagnostic matrix</button>
+                <span class="muted" id="diagnose-ranat"></span>
+            </div>
+            <div class="muted" id="diagnose-resolution" style="margin-bottom:0.5rem"></div>
+            <table class="matrix">
+                <colgroup>
+                    <col class="c-mode">
+                    <col class="c-clients">
+                    <col class="c-run">
+                    <col class="c-verdict">
+                    <col>
+                </colgroup>
+                <thead><tr><th>Mode</th><th>Clients</th><th>Run</th><th>Verdict</th><th>Detail</th></tr></thead>
+                <tbody id="diagnose-tbody"></tbody>
+            </table>
+            <div class="muted" style="margin-top:0.5rem">
+                <span class="badge ok">green</span> this posture works &nbsp;
+                <span class="badge warn">amber</span> posture blocked/restricted - expected for anonymous rows &nbsp;
+                <span class="badge err">red</span> broken (rotated/inconsistent session, dead probe URL) &nbsp;
+                <span class="badge">gray</span> unknown
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Import session</h2>
+            <div class="muted" style="margin-bottom:0.5rem">
+                Log in to youtube.com in a real browser, export the cookies of
+                the youtube.com domain (Netscape file or browser JSON export),
+                close that browser completely, then paste them here. The import
+                only replaces the snapshot when the InnerTube probe accepts it.
+            </div>
+            <textarea id="import-text" rows="8"
+                placeholder="# Netscape HTTP Cookie File ... or [ { &quot;domain&quot;: &quot;.youtube.com&quot;, ... } ]"></textarea>
+            <div class="row" style="margin-top:0.5rem">
+                <button onclick="importSession(this)">Import</button>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        const msg = document.getElementById('msg');
+
+        async function api(path, options) {
+            const res = await fetch(path, options);
+            if (res.status === 401) { location.href = '/index.html'; return null; }
+            if (res.status === 403) { show('Admin access required'); return null; }
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.json();
+        }
+
+        let msgTimer = null;
+
+        function show(text, ok) {
+            msg.textContent = text;
+            msg.className = ok ? 'msg ok' : 'msg error';
+            if (msgTimer) clearTimeout(msgTimer);
+            msgTimer = setTimeout(() => { msg.className = 'msg'; }, 5000);
+        }
+
+        // Green for Ok, neutral gray for Unknown/informational (not an error),
+        // red only for real unhealthy verdicts.
+        function healthBadge(health) {
+            const h = health || 'Unknown';
+            const cls = h === 'Ok' ? 'badge ok'
+                : (h === 'Unknown' || h === 'WebBindingOnly') ? 'badge'
+                : 'badge err';
+            return '<span class="' + cls + '">' + esc(h) + '</span>';
+        }
+
+        // Matrix verdict color: green = that posture works; amber = a
+        // posture-level outcome (blocked/restricted/transient) that is
+        // EXPECTED for anonymous rows and merely informative; red = a real
+        // problem (session rotated/inconsistent, dead probe URL, error);
+        // gray = unknown. Note BotCheck is red only on session rows: the
+        // session is supposed to bypass the bot wall, anonymous hitting it
+        // is normal and is exactly why the session exists.
+        function verdictBadge(mode, cls) {
+            const c = cls || 'Unknown';
+            const amber = ['BotCheck', 'ClientBlocked', 'LoginRequired',
+                'AgeRestricted', 'Private', 'MembersOnly', 'Retryable'];
+            const red = ['SessionRotated', 'JarInconsistent', 'Error', 'DeadContent'];
+            let badge;
+            if (c === 'Ok') {
+                badge = 'badge ok';
+            } else if (c === 'Unknown') {
+                badge = 'badge';
+            } else if (red.includes(c) || (mode === 'session' && c === 'BotCheck')) {
+                badge = 'badge err';
+            } else if (amber.includes(c)) {
+                badge = 'badge warn';
+            } else {
+                badge = 'badge';
+            }
+            return '<span class="' + badge + '">' + esc(c) + '</span>';
+        }
+
+        function mutedBadge(text) {
+            return '<span class="badge">' + esc(text) + '</span>';
+        }
+
+        function fillKv(id, entries) {
+            const kv = document.getElementById(id);
+            kv.innerHTML = '';
+            for (const [k, v] of Object.entries(entries)) {
+                if (v === undefined || v === null) continue;
+                const div = document.createElement('div');
+                div.innerHTML = '<b>' + esc(k) + '</b><span>' + v + '</span>';
+                kv.appendChild(div);
+            }
+        }
+
+        async function loadStatus() {
+            try {
+                const status = await api('/api/session/export/status');
+                if (!status) return;
+                const meta = status.meta || {};
+                fillKv('status-kv', {
+                    'Snapshot': status.snapshotExists
+                        ? '<span class="badge ok">present</span>'
+                        : mutedBadge('missing'),
+                    'Snapshot age': status.snapshotAge != null ? (status.snapshotAge / 60).toFixed(1) + ' h' : '-',
+                    'Health': healthBadge(meta.health),
+                    'Cookies': meta.cookieCount,
+                    'Visitor data': meta.visitorData ? 'present' : '-',
+                    'Imported at': fmtDate(meta.importedAt),
+                    'Exported at': fmtDate(meta.exportedAt),
+                    'Refresh pipeline': status.isRunning ? 'running (' + status.currentStage + ')' : 'idle',
+                    'Last refresh': fmtDate(status.lastRunAt),
+                    'Last refresh result': status.lastResult,
+                    'Last error': status.lastError,
+                });
+            } catch (e) { show(e.message); }
+        }
+
+        async function loadCanary() {
+            try {
+                const canary = await api('/api/session/canary');
+                if (!canary) return;
+                const lastHealth = !canary.snapshotExists
+                    ? mutedBadge('no snapshot yet')
+                    : canary.lastCheckAt
+                        ? healthBadge(canary.lastHealth)
+                        : mutedBadge('first check pending');
+                fillKv('canary-kv', {
+                    'Last run': fmtDate(canary.lastCheckAt),
+                    'Last health': lastHealth,
+                    'Consecutive failures': canary.consecutiveFailures,
+                    'Detail': canary.lastDetail,
+                });
+            } catch (e) { show(e.message); }
+        }
+
+        async function loadPot() {
+            try {
+                const pot = await api('/api/session/pot-status');
+                if (!pot) return;
+                fillKv('pot-kv', {
+                    'Mode': pot.mode,
+                    'Deno': pot.denoInstalled
+                        ? '<span class="badge ok">installed</span>'
+                        : '<span class="badge err">missing</span>',
+                    'Script (bgutil)': pot.serverInstalled
+                        ? '<span class="badge ok">installed</span>'
+                        : '<span class="badge err">missing</span>',
+                    'yt-dlp plugin': pot.pluginInstalled
+                        ? '<span class="badge ok">installed</span>'
+                        : '<span class="badge err">missing</span>',
+                    'Script path': pot.scriptPath,
+                    'Last error': pot.lastError,
+                });
+            } catch (e) { show(e.message); }
+        }
+
+        // Renders a DiagnoseReport into the matrix card (used both for the
+        // stored report loaded on page start and for fresh POST results).
+        function renderDiagnose(report) {
+            document.getElementById('diagnose-resolution').textContent = report.resolution || '';
+            document.getElementById('diagnose-ranat').textContent =
+                report.ranAt ? 'Last run: ' + new Date(report.ranAt).toLocaleString() : '';
+            const tbody = document.getElementById('diagnose-tbody');
+            tbody.innerHTML = '';
+            for (const item of report.items || []) {
+                const tr = document.createElement('tr');
+                tr.innerHTML =
+                    '<td>' + esc(item.mode) + '</td>' +
+                    '<td>' + esc(item.clients) + '</td>' +
+                    '<td>' + (item.runSucceeded ? 'ok' : 'failed') + '</td>' +
+                    '<td>' + verdictBadge(item.mode, item.class) + '</td>' +
+                    '<td class="muted">' + esc(item.detail || '') + '</td>';
+                tbody.appendChild(tr);
+            }
+        }
+
+        async function loadDiagnose() {
+            try {
+                const body = await api('/api/session/diagnose');
+                if (!body || !body.last) return; // no report yet: card stays empty
+                renderDiagnose(body.last);
+            } catch (e) { /* non-fatal */ }
+        }
+
+        async function diagnose(btn) {
+            if (btn.disabled) return;
+            btn.disabled = true;
+            show('Running the diagnostic matrix - real yt-dlp probes run in parallel, this takes up to ~1.5 minutes...', true);
+            try {
+                const res = await fetch('/api/session/diagnose', { method: 'POST' });
+                if (res.status === 409) { show('A diagnostic matrix is already running'); return; }
+                if (!res.ok) { show('HTTP ' + res.status); return; }
+                const report = await res.json();
+                renderDiagnose(report);
+                show('Diagnostic finished', true);
+            } catch (e) {
+                show(e.message);
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        async function runExport(btn) {
+            if (btn.disabled) return;
+            btn.disabled = true;
+            try {
+                const res = await fetch('/api/session/export', { method: 'POST' });
+                if (res.status === 409) { show('A session refresh is already running'); return; }
+                if (!res.ok) { show('HTTP ' + res.status); return; }
+                show('Session refresh started', true);
+                const poll = setInterval(async () => {
+                    const status = await api('/api/session/export/status').catch(() => null);
+                    if (status && !status.isRunning) {
+                        clearInterval(poll);
+                        btn.disabled = false;
+                        show(status.lastError ? 'Refresh failed: ' + status.lastError : 'Refresh finished: ' + status.lastResult,
+                            !status.lastError);
+                        loadStatus();
+                    }
+                }, 1500);
+            } catch (e) {
+                btn.disabled = false;
+                show(e.message);
+            }
+        }
+
+        async function importSession(btn) {
+            if (btn.disabled) return;
+            const text = document.getElementById('import-text').value;
+            if (!text.trim()) { show('Paste the cookie text first'); return; }
+            btn.disabled = true;
+            show('Importing and probing (this runs a real yt-dlp check)...', true);
+            try {
+                const res = await fetch('/api/session/import', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: text }),
+                });
+                const body = await res.json().catch(() => null);
+                if (res.ok && body && body.ok) {
+                    show('Import accepted: ' + body.importedToSnapshot + ' imported, ' + body.totalInSnapshot + ' in snapshot', true);
+                    document.getElementById('import-text').value = '';
+                } else {
+                    show('Import rejected: ' + ((body && (body.error || body.health)) || 'HTTP ' + res.status));
+                }
+            } catch (e) {
+                show(e.message);
+            } finally {
+                btn.disabled = false;
+                loadStatus();
+            }
+        }
+
+        function fmtDate(value) {
+            return value ? new Date(value).toLocaleString() : '-';
+        }
+
+        function yesNo(v) { return v ? 'yes' : 'no'; }
+
+        function esc(s) {
+            return (s || '').replace(/[&<>"']/g, c =>
+                ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+        }
+
+        document.getElementById('logout-link').onclick = async () => {
+            await fetch('/api/auth/logout', { method: 'POST' });
+            location.href = '/index.html';
+        };
+
+        loadStatus();
+        loadCanary();
+        loadPot();
+        loadDiagnose();
+    </script>
+</body>
+</html>

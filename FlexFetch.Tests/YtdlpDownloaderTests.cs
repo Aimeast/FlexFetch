@@ -1,7 +1,7 @@
-﻿using FlexFetch.Data;
-using FlexFetch.Services;
+﻿using FlexFetch.Services;
 using FlexFetch.Services.Downloaders;
 using FlexFetch.Services.Routing;
+using FlexFetch.Services.Session;
 using Serilog;
 using YoutubeDLSharp;
 using YoutubeDLSharp.Metadata;
@@ -23,9 +23,7 @@ public sealed class YtdlpDownloaderTests
         var proxy = new DirectProxyService();
         var ytdlp = new YtdlpService(proxy, Log, dir);
         var storage = new StorageService(dir);
-        var store = new LiteDbStore(Path.Combine(dir, "flexfetch.db"));
-        var cookies = new CookiePoolService(new CookieRepository(store), () => new ICookieDomainMapping[] { new DefaultCookieDomainMapping() });
-        return new YtdlpDownloader(ytdlp, proxy, storage, Log, cookies, fetch);
+        return new YtdlpDownloader(ytdlp, proxy, storage, Log, fetch);
     }
 
     [TestMethod]
@@ -44,13 +42,12 @@ public sealed class YtdlpDownloaderTests
     {
         var downloader = CreateDownloader();
         var ytDir = TestApp.CreateTempDataDir();
-        var ytStore = new LiteDbStore(Path.Combine(ytDir, "flexfetch.db"));
         var youtube = new YouTubeDownloader(
             new YtdlpService(new DirectProxyService(), Log, ytDir),
             new DirectProxyService(),
             new StorageService(ytDir),
             Log,
-            new CookiePoolService(new CookieRepository(ytStore), () => new ICookieDomainMapping[] { new DefaultCookieDomainMapping() }));
+            new SessionSnapshotService(new StorageService(ytDir)));
 
         // YtdlpDownloader is part of the generic fallback chain; YouTube is
         // a domain-specific downloader used alone.
@@ -172,6 +169,32 @@ public sealed class YtdlpDownloaderTests
     }
 
     [TestMethod]
+    public void BuildAnalysis_Playlist_SkipsHiddenVideoPlaceholders()
+    {
+        // The site's "1 unavailable video is hidden" entries surface as
+        // bracketed placeholder titles; they can never be downloaded and
+        // must not enter the download queue.
+        var downloader = CreateDownloader();
+        var data = new VideoData
+        {
+            Title = "Collection",
+            Entries = new[]
+            {
+                new VideoData { Title = "Live", Url = "https://example.com/1" },
+                new VideoData { Title = "[Private video]", Url = "https://example.com/p" },
+                new VideoData { Title = "[Deleted video]", Url = "https://example.com/d" },
+                new VideoData { Title = "[Unavailable video]", Url = "https://example.com/u" },
+                new VideoData { Title = "  [unavailable]  ", Url = "https://example.com/u2" },
+            },
+        };
+
+        var analysis = downloader.BuildAnalysis(data);
+
+        Assert.HasCount(1, analysis.Children);
+        Assert.AreEqual("Live", analysis.Children[0].Title);
+    }
+
+    [TestMethod]
     public async Task AnalyzeAsync_ManifestUrl_FetchesFlatPlaylist()
     {
         OptionSet? used = null;
@@ -242,9 +265,9 @@ public sealed class YtdlpDownloaderTests
     [TestMethod]
     public async Task AnalyzeAsync_AuthError_GenericDownloaderDoesNotRetry()
     {
-        // The generic YtdlpDownloader does not enable the cookie attach-and-
-        // retry (only YouTube does), so an auth-class error surfaces as a
-        // plain InvalidOperationException without a retry.
+        // The generic YtdlpDownloader does not enable the session attach-and-
+        // retry (only YouTube does), so an auth-class error surfaces as an
+        // AuthRequiredException without a retry.
         var calls = 0;
         var downloader = CreateDownloader(async (_, _, _) =>
         {
@@ -255,10 +278,11 @@ public sealed class YtdlpDownloaderTests
                 null!);
         });
 
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsExactlyAsync<AuthRequiredException>(
             () => downloader.AnalyzeAsync("https://www.example.com/video/xyz789", "task-1", CancellationToken.None));
 
-        Assert.AreEqual(1, calls); // no cookie retry on the generic downloader
+        Assert.AreEqual(1, calls); // no session retry on the generic downloader
+        Assert.AreEqual(AuthFailureReason.LoginRequired, ex.Reason);
     }
 
     [TestMethod]

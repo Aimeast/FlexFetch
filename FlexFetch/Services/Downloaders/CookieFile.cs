@@ -3,24 +3,14 @@
 namespace FlexFetch.Services.Downloaders;
 
 /// <summary>
-/// Netscape-format cookie file helpers used to hand cookies to yt-dlp
-/// (--cookies): export pool cookies to a per-task file, parse the file back
-/// after the process finished (yt-dlp may have refreshed cookies), and clean
-/// up the temporary file.
+/// Netscape-format cookie file helpers: serialize a snapshot/candidate jar
+/// to text and parse such text back. The text lands wherever the caller
+/// needs it (the snapshot file, one-time copies handed to yt-dlp, candidate
+/// jars for probes) - this class owns only the format.
 /// </summary>
 public static class CookieFile
 {
-    /// <summary>Per-task cookie file path under the data directory.</summary>
-    public static string GetPath(string dataDir, string taskId) =>
-        Path.Combine(dataDir, "cookies", $"{taskId}.txt");
-
-    /// <summary>Exports pool cookies to a Netscape-format file for the task.</summary>
-    public static void Write(string dataDir, string taskId, IReadOnlyList<CookieItem> cookies)
-    {
-        var dir = Path.Combine(dataDir, "cookies");
-        Directory.CreateDirectory(dir);
-        File.WriteAllText(GetPath(dataDir, taskId), BuildContent(cookies));
-    }
+    public const string HttpOnlyPrefix = "#HttpOnly_";
 
     /// <summary>Serializes cookies into Netscape HTTP Cookie File text (yt-dlp compatible).</summary>
     public static string BuildContent(IReadOnlyList<CookieItem> cookies)
@@ -34,34 +24,28 @@ public static class CookieFile
                 ? new DateTimeOffset(exp.ToUniversalTime()).ToUnixTimeSeconds().ToString()
                 : "0";
             var path = string.IsNullOrEmpty(c.Path) ? "/" : c.Path;
+            // includeSubdomains: TRUE only for domain cookies (leading dot).
+            // A host-only domain must round-trip unchanged, never widened to
+            // its subdomains.
+            var includeSubdomains = c.Domain.StartsWith('.') ? "TRUE" : "FALSE";
+            var domain = c.HttpOnly ? HttpOnlyPrefix + c.Domain : c.Domain;
 
-            // A shared cookie exists on its primary domain plus its shared
-            // sibling domains (e.g. .youtube.com SID also on .google.com), so
-            // emit one line per domain - matching a real browser cookie jar.
-            var domains = new List<string> { c.Domain };
-            if (c.SharedDomains is { Count: > 0 })
-            {
-                domains.AddRange(c.SharedDomains);
-            }
-
-            foreach (var domain in domains.Distinct(StringComparer.OrdinalIgnoreCase))
-            {
-                var lineDomain = c.HttpOnly ? "#HttpOnly_" + domain : domain;
-                sb.Append(lineDomain).Append('\t').Append("TRUE").Append('\t')
-                    .Append(path).Append('\t')
-                    .Append(secure).Append('\t')
-                    .Append(expiry).Append('\t')
-                    .Append(c.Name).Append('\t')
-                    .Append(c.Value).Append('\n');
-            }
+            sb.Append(domain).Append('\t').Append(includeSubdomains).Append('\t')
+                .Append(path).Append('\t')
+                .Append(secure).Append('\t')
+                .Append(expiry).Append('\t')
+                .Append(c.Name).Append('\t')
+                .Append(c.Value).Append('\n');
         }
 
         return sb.ToString();
     }
 
     /// <summary>
-    /// Parses a Netscape cookie file back into pool items (used to write back
-    /// whatever yt-dlp refreshed). Returns an empty list when the file is
+    /// Parses a Netscape cookie file back into cookie items. The HttpOnly
+    /// prefix must be checked BEFORE the generic comment check: the core
+    /// session family is HttpOnly, and a plain StartsWith('#') test silently
+    /// drops every one of those lines. Returns an empty list when the file is
     /// missing or unreadable.
     /// </summary>
     public static IReadOnlyList<CookieItem> Read(string path)
@@ -75,7 +59,17 @@ public static class CookieFile
         foreach (var raw in File.ReadAllLines(path))
         {
             var line = raw.Trim();
-            if (line.Length == 0 || line.StartsWith('#'))
+            if (line.Length == 0)
+            {
+                continue;
+            }
+
+            var httpOnly = line.StartsWith(HttpOnlyPrefix, StringComparison.Ordinal);
+            if (httpOnly)
+            {
+                line = line[HttpOnlyPrefix.Length..];
+            }
+            else if (line.StartsWith('#'))
             {
                 continue;
             }
@@ -86,19 +80,12 @@ public static class CookieFile
                 continue;
             }
 
-            var domain = parts[0];
-            var httpOnly = domain.StartsWith("#HttpOnly_", StringComparison.Ordinal);
-            if (httpOnly)
-            {
-                domain = domain["#HttpOnly_".Length..];
-            }
-
             var expires = long.TryParse(parts[4], out var secs) && secs > 0
                 ? (DateTime?)DateTimeOffset.FromUnixTimeSeconds(secs).UtcDateTime
                 : null;
             result.Add(new CookieItem
             {
-                Domain = domain,
+                Domain = parts[0],
                 Path = parts[2],
                 Secure = string.Equals(parts[3], "TRUE", StringComparison.OrdinalIgnoreCase),
                 HttpOnly = httpOnly,
@@ -109,15 +96,5 @@ public static class CookieFile
         }
 
         return result;
-    }
-
-    /// <summary>Removes the task's temporary cookie file, if present.</summary>
-    public static void Delete(string dataDir, string taskId)
-    {
-        var path = GetPath(dataDir, taskId);
-        if (File.Exists(path))
-        {
-            File.Delete(path);
-        }
     }
 }

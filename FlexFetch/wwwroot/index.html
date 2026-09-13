@@ -11,8 +11,8 @@
         <h1>FlexFetch</h1>
         <nav>
             <a href="/index.html" class="nav-auth" style="display:none">Tasks</a>
+            <a href="/session.html" class="nav-auth" style="display:none">Session</a>
             <a href="/system.html" class="nav-auth" style="display:none">System</a>
-            <a href="/cookie.html" class="nav-auth" style="display:none">Cookies</a>
             <a href="#" id="logout-link" style="display:none">Logout</a>
         </nav>
     </header>
@@ -222,7 +222,14 @@
                     expected.push({ key: 'content:' + t.id, html: contentRowHtml(t) });
                 }
 
-                const kids = children.get(t.id) || [];
+                // Playlist order is creation order: the API returns tasks
+                // newest first, so children must be re-sorted ascending to
+                // display (and number) the playlist front to back - leaving
+                // them newest first makes downloads LOOK like they run in
+                // reverse even though they run front to back.
+                const kids = (children.get(t.id) || [])
+                    .slice()
+                    .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
                 const fileCount = (t.fileName ? 1 : 0) + kids.length;
                 const showIndex = fileCount > 1;
                 let n = 1;
@@ -396,11 +403,29 @@
         }
 
         async function askDelete(id) {
-            const t = await findTask(id);
+            // Fresh snapshot: a playlist expanded moments ago may not be in
+            // the polling cache yet, and its children belong in the preview.
+            taskCache = (await api('/api/tasks')) || [];
+            const t = taskCache.find(x => x.id === id);
             if (!t) return;
-            const fileName = t.fileName || '-';
+            // findTask above populated the cache; a playlist parent has no
+            // file of its own - its children are what will actually be
+            // deleted, so preview a few of their names.
+            let detail = 'URL: ' + t.url;
+            if (t.fileName) {
+                detail += '\nFile: ' + t.fileName;
+            }
+            const kids = taskCache
+                .filter(x => x.parentId === id)
+                .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+            if (kids.length > 0) {
+                const names = kids.map(x => x.fileName || x.url);
+                const preview = names.slice(0, 5).map(n => '  - ' + n).join('\n');
+                const more = names.length > 5 ? '\n  ... and ' + (names.length - 5) + ' more' : '';
+                detail += '\nFiles (' + names.length + '):\n' + preview + more;
+            }
             const ok = confirm(
-                'Delete this task?\n\nURL: ' + t.url + '\nFile: ' + fileName +
+                'Delete this task?\n\n' + detail +
                 '\n\nThe task and its downloaded files will be removed.');
             if (!ok) return;
             try {

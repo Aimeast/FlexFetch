@@ -2,6 +2,7 @@
 using FlexFetch.Data;
 using FlexFetch.Services;
 using FlexFetch.Services.Downloaders;
+using FlexFetch.Services.Session;
 using FlexFetch.Services.Tasks;
 using Serilog;
 using ILogger = Serilog.ILogger;
@@ -23,7 +24,7 @@ public sealed class StartupTasksHostedService : BackgroundService
     private readonly IWebHostEnvironment _environment;
     private readonly TaskService _taskService;
     private readonly YtdlpService _ytdlp;
-    private readonly StealthBrowserService _browser;
+    private readonly FirefoxBrowserService _browser;
     private readonly ILogger _log;
 
     public StartupTasksHostedService(
@@ -34,7 +35,7 @@ public sealed class StartupTasksHostedService : BackgroundService
         IWebHostEnvironment environment,
         TaskService taskService,
         YtdlpService ytdlp,
-        StealthBrowserService browser,
+        FirefoxBrowserService browser,
         ILogger log)
     {
         _lifetime = lifetime;
@@ -96,7 +97,7 @@ public sealed class StartupTasksHostedService : BackgroundService
         if (_ytdlp.IsYtDlpInstalled()) ready.Add("yt-dlp"); else toInstall.Add("yt-dlp");
         if (_ytdlp.IsDenoInstalled()) ready.Add("deno"); else toInstall.Add("deno");
         if (_ytdlp.IsFfmpegInstalled()) ready.Add("ffmpeg"); else toInstall.Add("ffmpeg");
-        if (_browser.IsSystemBrowserDetected()) ready.Add("browser"); else toInstall.Add("browser");
+        if (_browser.IsFirefoxInstalled()) ready.Add("firefox"); else toInstall.Add("firefox");
 
         if (ready.Count > 0)
         {
@@ -120,10 +121,10 @@ public sealed class StartupTasksHostedService : BackgroundService
                     await _ytdlp.EnsureInstalledAsync(stoppingToken);
                 }
 
-                // Browser: install only when no system browser is present.
-                if (!_browser.IsSystemBrowserDetected())
+                // Firefox: the session source browser (Playwright build).
+                if (!_browser.IsFirefoxInstalled())
                 {
-                    await _browser.EnsureBrowserInstalledAsync(stoppingToken);
+                    await _browser.EnsureInstalledAsync(stoppingToken);
                 }
             }
             catch (Exception ex)

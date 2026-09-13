@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
@@ -11,8 +11,8 @@
         <h1>FlexFetch</h1>
         <nav>
             <a href="/index.html">Tasks</a>
+            <a href="/session.html">Session</a>
             <a href="/system.html">System</a>
-            <a href="/cookie.html">Cookies</a>
             <a href="#" id="logout-link">Logout</a>
         </nav>
     </header>
@@ -22,21 +22,6 @@
         <div class="card">
             <h2>System information</h2>
             <div class="kv" id="info-kv"></div>
-        </div>
-
-        <div class="card">
-            <h2>Anti-detection self-check</h2>
-            <div class="muted" style="margin-bottom:0.5rem">
-                Probes the browser for anti-bot fingerprints (webdriver, cdc_,
-                User-Agent, ...). The browser starts on first use.
-            </div>
-            <div class="row" style="margin-bottom:0.5rem">
-                <button class="secondary" onclick="runSelfCheck()">Run self-check</button>
-            </div>
-            <table>
-                <thead><tr><th>Vector</th><th>Result</th><th>Detail</th></tr></thead>
-                <tbody id="check-tbody"></tbody>
-            </table>
         </div>
 
         <div class="card">
@@ -92,47 +77,12 @@
                     'deno': info.denoVersion || 'not installed',
                     'ffmpeg': info.ffmpegVersion || 'not installed',
                     'Playwright': info.playwrightVersion || 'not installed',
-                    'Browser': info.browser,
+                    'Firefox': info.firefox,
                 };
                 for (const [k, v] of Object.entries(entries)) {
                     const div = document.createElement('div');
                     div.innerHTML = '<b>' + esc(k) + '</b><span>' + esc(String(v)) + '</span>';
                     kv.appendChild(div);
-                }
-
-                const tbody = document.getElementById('check-tbody');
-                tbody.innerHTML = '';
-                const checks = info.browserSelfCheck || [];
-                if (!checks.length) {
-                    const tr = document.createElement('tr');
-                    tr.innerHTML = '<td colspan="3" class="muted">Browser not running - run the self-check to start it.</td>';
-                    tbody.appendChild(tr);
-                }
-                for (const r of checks) {
-                    const tr = document.createElement('tr');
-                    tr.innerHTML =
-                        '<td>' + esc(r.name) + '</td>' +
-                        '<td><span class="badge ' + (r.passed ? 'ok' : 'err') + '">' + (r.passed ? 'PASS' : 'FAIL') + '</span></td>' +
-                        '<td class="muted">' + esc(r.detail || '') + '</td>';
-                    tbody.appendChild(tr);
-                }
-            } catch (e) { show(e.message); }
-        }
-
-        async function runSelfCheck() {
-            try {
-                show('Running self-check...', true);
-                const results = await api('/api/system/self-check', { method: 'POST' });
-                if (!results) return;
-                const tbody = document.getElementById('check-tbody');
-                tbody.innerHTML = '';
-                for (const r of results) {
-                    const tr = document.createElement('tr');
-                    tr.innerHTML =
-                        '<td>' + esc(r.name) + '</td>' +
-                        '<td><span class="badge ' + (r.passed ? 'ok' : 'err') + '">' + (r.passed ? 'PASS' : 'FAIL') + '</span></td>' +
-                        '<td class="muted">' + esc(r.detail || '') + '</td>';
-                    tbody.appendChild(tr);
                 }
             } catch (e) { show(e.message); }
         }

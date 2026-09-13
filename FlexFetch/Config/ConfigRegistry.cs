@@ -89,6 +89,19 @@ public static class ConfigRegistry
             },
             new()
             {
+                Key = ConfigKeys.NetworkHttpProxy,
+                Category = "Network",
+                // Optional dedicated http proxy for installer child processes
+                // (deno install, Playwright browser download): they cannot use
+                // a socks5 proxy. Empty = installers run direct/mirrored.
+                DefaultValue = string.Empty,
+                Validator = v => string.IsNullOrWhiteSpace(v) || (Uri.TryCreate(v, UriKind.Absolute, out var u)
+                    && (u.Scheme == Uri.UriSchemeHttp || u.Scheme == Uri.UriSchemeHttps))
+                    ? null
+                    : "Must be an absolute http/https proxy URL or empty",
+            },
+            new()
+            {
                 Key = ConfigKeys.RouteRules,
                 Category = "Network",
                 DefaultValue = string.Empty,
@@ -103,50 +116,36 @@ public static class ConfigRegistry
             },
             new()
             {
-                Key = ConfigKeys.CookieAutoRefresh,
-                Category = "Cookie pool",
-                DefaultValue = "true",
-                Validator = BoolValidator("Must be true or false"),
-            },
-            new()
-            {
-                Key = ConfigKeys.CookieRefreshHours,
-                Category = "Cookie pool",
-                DefaultValue = "24",
+                Key = ConfigKeys.SessionPeriodHours,
+                Category = "Session",
+                DefaultValue = "12",
                 Validator = PositiveInt("Must be a positive number of hours"),
             },
             new()
             {
-                Key = ConfigKeys.CookieRefreshRandomize,
-                Category = "Cookie pool",
-                DefaultValue = "true",
-                Validator = BoolValidator("Must be true or false"),
+                Key = ConfigKeys.SessionCanaryReexportThrottleHours,
+                Category = "Session",
+                DefaultValue = "1",
+                Validator = PositiveInt("Must be a positive number of hours"),
             },
             new()
             {
-                Key = ConfigKeys.CookieRefreshOnStartup,
-                Category = "Cookie pool",
-                DefaultValue = "false",
-                Validator = BoolValidator("Must be true or false"),
+                Key = ConfigKeys.SessionCanaryFailureThreshold,
+                Category = "Session",
+                DefaultValue = "3",
+                Validator = PositiveInt("Must be a positive failure count"),
             },
             new()
             {
-                Key = ConfigKeys.BrowserUseSystem,
-                Category = "Browser",
-                DefaultValue = "true",
-                Validator = BoolValidator("Must be true or false"),
+                Key = ConfigKeys.SessionProbeUrl,
+                Category = "Session",
+                DefaultValue = "https://www.youtube.com/watch?v=aqz-KE-bpKQ",
+                Validator = v => Uri.TryCreate(v, UriKind.Absolute, out _) ? null : "Must be an absolute URL",
             },
             new()
             {
-                Key = ConfigKeys.BrowserStealthSelfCheck,
-                Category = "Browser",
-                DefaultValue = "true",
-                Validator = BoolValidator("Must be true or false"),
-            },
-            new()
-            {
-                Key = ConfigKeys.BrowserHumanize,
-                Category = "Browser",
+                Key = ConfigKeys.SessionHumanize,
+                Category = "Session",
                 DefaultValue = "true",
                 Validator = BoolValidator("Must be true or false"),
             },

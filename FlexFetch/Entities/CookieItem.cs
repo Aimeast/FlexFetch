@@ -3,7 +3,10 @@
 namespace FlexFetch.Entities;
 
 /// <summary>
-/// A single cookie entry in the centralized cookie pool.
+/// A single cookie entry, stored in the session snapshot and handed to
+/// yt-dlp as a Netscape jar. A domain WITHOUT a leading dot is host-only
+/// (must never be widened to subdomains); a leading dot means the cookie
+/// applies to the domain and all its subdomains.
 /// </summary>
 public sealed class CookieItem
 {
@@ -22,12 +25,4 @@ public sealed class CookieItem
     public SameSitePolicy SameSite { get; set; } = SameSitePolicy.Unspecified;
 
     public DateTime? ExpiresAt { get; set; }
-
-    /// <summary>
-    /// Sibling domains (leading-dot form, e.g. ".google.com") that this cookie
-    /// is shared to: the same session identity cookie exists on those domains
-    /// too, so reads materialize it there and writes update this single entry.
-    /// Null or empty means the cookie is not shared across domains.
-    /// </summary>
-    public List<string>? SharedDomains { get; set; }
 }

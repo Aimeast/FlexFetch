@@ -7,8 +7,8 @@ using FlexFetch.Enums;
 using FlexFetch.HostedServices;
 using FlexFetch.Services;
 using FlexFetch.Services.Downloaders;
-using FlexFetch.Services.Refresh;
 using FlexFetch.Services.Routing;
+using FlexFetch.Services.Session;
 using FlexFetch.Services.Tasks;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Serilog;
@@ -16,12 +16,13 @@ using ILogger = Serilog.ILogger;
 
 Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
-// Child-process entry used by DependencyInstallHostedService to install the
-// headless browser: runs Playwright's install command and exits without
-// starting the web application.
+// Child-process entry used by the startup service to install the headless
+// browser: runs Playwright's install command and exits without starting the
+// web application.
 if (args.Length > 0 && args[0] == "--install-browser")
 {
-    Environment.Exit(Microsoft.Playwright.Program.Main(new[] { "install", "chromium" }));
+    var browserName = args.Length > 1 ? args[1] : "firefox";
+    Environment.Exit(Microsoft.Playwright.Program.Main(new[] { "install", browserName }));
 }
 
 var builder = WebApplication.CreateBuilder(args);
@@ -58,13 +59,9 @@ builder.Services.AddSingleton(new LiteDbStore(Path.Combine(dataDir, "flexfetch.d
 builder.Services.AddSingleton<IUserRepository, UserRepository>();
 builder.Services.AddSingleton<ITaskRepository, TaskRepository>();
 builder.Services.AddSingleton<IShareRepository, ShareRepository>();
-builder.Services.AddSingleton<ICookieRepository, CookieRepository>();
 
 // Application services.
 builder.Services.AddSingleton<UserService>();
-builder.Services.AddSingleton<CookiePoolService>(sp => new CookiePoolService(
-    sp.GetRequiredService<ICookieRepository>(),
-    () => sp.GetRequiredService<DownloaderFactory>().DomainMappings));
 builder.Services.AddSingleton(Log.Logger);
 
 // Storage + proxy + downloader pipeline.
@@ -77,18 +74,17 @@ builder.Services.AddSingleton(sp => new YtdlpService(
     sp.GetRequiredService<IProxyService>(),
     sp.GetRequiredService<ILogger>(),
     dataDir));
-// Cookie refresh strategies and domain mappings are carried by downloader
-// plugins (e.g. YouTubeDownloader implements both); they are picked per group
-// at refresh time, with the default applying to other sites. The browser and
-// pool resolve them lazily from the factory, so plugin discovery stays
-// reflection-based with no manual registration.
-builder.Services.AddSingleton(sp => new StealthBrowserService(
-    sp.GetRequiredService<IProxyService>(),
-    sp.GetRequiredService<CookiePoolService>(),
-    sp.GetRequiredService<StorageService>(),
-    sp.GetRequiredService<IConfiguration>(),
-    sp.GetRequiredService<ILogger>(),
-    () => sp.GetRequiredService<DownloaderFactory>().RefreshStrategies));
+
+// Session maintenance: the Firefox session source, the snapshot store (the
+// single source of truth for the YouTube login session), the InnerTube probe
+// and the export pipeline (the only snapshot writer).
+builder.Services.AddSingleton<SessionSnapshotService>();
+builder.Services.AddSingleton<FirefoxBrowserService>();
+builder.Services.AddSingleton<SessionProbeService>();
+builder.Services.AddSingleton<SessionExportService>();
+builder.Services.AddSingleton<SessionDiagnosisService>();
+builder.Services.AddSingleton<PotProviderService>();
+
 // Downloader plugins are self-discovered via reflection; no manual registration.
 builder.Services.AddSingleton(sp => DownloaderFactory.Create(sp));
 builder.Services.AddSingleton<ITaskExecutor>(sp => new DownloaderTaskExecutor(
@@ -103,10 +99,13 @@ builder.Services.AddSingleton<ITaskExecutor>(sp => new DownloaderTaskExecutor(
     }));
 builder.Services.AddSingleton<TaskService>();
 
-// Background periodic services.
+// Background periodic services. Session maintenance is registered as a
+// concrete singleton first so the session status API can inject it.
+builder.Services.AddSingleton<SessionMaintenanceHostedService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<SessionMaintenanceHostedService>());
 builder.Services.AddHostedService<StartupTasksHostedService>();
 builder.Services.AddHostedService<DependencyUpgradeHostedService>();
-builder.Services.AddHostedService<CookieRefreshHostedService>();
+builder.Services.AddHostedService<PotSupervisorHostedService>();
 builder.Services.AddHostedService<CleanupHostedService>();
 
 // Server-side session cookie authentication.
@@ -149,7 +148,7 @@ AuthApi.Map(app);
 UsersApi.Map(app);
 TasksApi.Map(app);
 ShareApi.Map(app);
-CookiesApi.Map(app);
+SessionApi.Map(app);
 SystemApi.Map(app);
 
 // Static web UI: "/" serves wwwroot/index.html via UseDefaultFiles.

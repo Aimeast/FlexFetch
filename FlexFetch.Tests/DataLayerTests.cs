@@ -170,39 +170,6 @@ public sealed class DataLayerTests
     }
 
     [TestMethod]
-    public void CookieRepository_RoundTripsGroups()
-    {
-        var path = NewDbPath();
-
-        using var store = new LiteDbStore(path);
-        var repo = new CookieRepository(store);
-        var group = new CookieGroup
-        {
-            Name = "youtube",
-            Urls = { "https://www.youtube.com" },
-            Cookies =
-            {
-                new CookieItem { Domain = ".youtube.com", Name = "SID", Value = "abc", HttpOnly = true },
-            },
-        };
-        repo.InsertGroup(group);
-
-        var loaded = repo.GetGroupByName("youtube");
-        Assert.IsNotNull(loaded);
-        Assert.AreEqual(group.Id, loaded.Id);
-        Assert.HasCount(1, loaded.Urls);
-        Assert.HasCount(1, loaded.Cookies);
-        Assert.AreEqual("SID", loaded.Cookies[0].Name);
-
-        loaded.Cookies[0].Value = "def";
-        Assert.IsTrue(repo.UpdateGroup(loaded));
-        Assert.AreEqual("def", repo.GetGroupById(group.Id)!.Cookies[0].Value);
-
-        Assert.IsTrue(repo.DeleteGroup(group.Id));
-        Assert.IsNull(repo.GetGroupById(group.Id));
-    }
-
-    [TestMethod]
     public async Task ConcurrentInserts_AreNotLost()
     {
         var path = NewDbPath();

@@ -21,8 +21,11 @@ public sealed class YtdlpService
     private readonly IProxyService _proxy;
     private readonly ILogger _log;
 
-    /// <summary>Directory holding external components (yt-dlp, deno, ...).</summary>
+    /// <summary>Directory holding external components (yt-dlp, deno, node, ...).</summary>
     private readonly string _componentsDir;
+
+    /// <summary>Root directory of the managed external components.</summary>
+    public string ComponentDir => _componentsDir;
 
     /// <summary>Per-download timeout; a slow proxy must not hang forever.</summary>
     private static readonly TimeSpan DownloadTimeout = TimeSpan.FromMinutes(15);

@@ -36,7 +36,10 @@ public sealed class CodeConventionTests
     {
         var sep = Path.DirectorySeparatorChar;
         return path.Contains($"{sep}bin{sep}", StringComparison.Ordinal)
-            || path.Contains($"{sep}obj{sep}", StringComparison.Ordinal);
+            || path.Contains($"{sep}obj{sep}", StringComparison.Ordinal)
+            // Runtime data (gitignored) may contain third-party .cs files
+            // (e.g. npm's node-gyp inside the managed Node component).
+            || path.Contains($"{sep}.flexfetch{sep}", StringComparison.Ordinal);
     }
 
     private static void CheckFile(string file, string repoRoot, List<string> violations)

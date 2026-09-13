@@ -113,6 +113,25 @@ button.danger:hover { background: #b91c1c; }
 .kv b { flex: 0 0 10rem; text-align: right; white-space: nowrap; }
 .kv span { text-align: left; word-break: break-all; }
 
+/* Section headings inside a card: split one card into stacked,
+   labeled sections (e.g. snapshot status vs periodic health check). */
+.card h3 {
+    margin: 1.1rem 0 0.5rem;
+    font-size: 0.9rem;
+    color: var(--text);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.35rem;
+}
+
+.card h3 + .muted { margin-top: 0; }
+
+/* Diagnostic matrix column widths: Mode/Clients/Run/Verdict are short
+   tokens and get fixed narrow slices; Detail takes the rest. */
+table.matrix col.c-mode { width: 9%; }
+table.matrix col.c-clients { width: 14%; }
+table.matrix col.c-run { width: 7%; }
+table.matrix col.c-verdict { width: 10%; }
+
 .table-wrap {
     overflow-x: auto;
     width: 100%;

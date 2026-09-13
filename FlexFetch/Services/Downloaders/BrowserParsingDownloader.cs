@@ -1,6 +1,6 @@
 ﻿using System.Collections.Concurrent;
 using FlexFetch.Entities;
-using FlexFetch.Services;
+using FlexFetch.Services.Session;
 using Microsoft.Playwright;
 using Serilog;
 using ILogger = Serilog.ILogger;
@@ -8,18 +8,20 @@ using ILogger = Serilog.ILogger;
 namespace FlexFetch.Services.Downloaders;
 
 /// <summary>
-/// Browser-assisted media detection: renders a page in the stealth browser and
-/// SNIFFS the network activity (responses) for media streams - video/audio
-/// content types, HLS/DASH manifests - instead of parsing the loaded HTML
-/// (which HtmlResourceDetector already does). Discovered media URLs become
-/// child tasks. Used as the degradation step after plain-HTML analysis fails.
+/// Browser-assisted media detection: renders a page in a throw-away headless
+/// Firefox and SNIFFS the network activity (responses) for media streams -
+/// video/audio content types, HLS/DASH manifests - instead of parsing the
+/// loaded HTML (which HtmlResourceDetector already does). Discovered media
+/// URLs become child tasks. Used as the degradation step after plain-HTML
+/// analysis fails. The browser is freshly launched per analysis and never
+/// touches the session profile.
 /// </summary>
 public sealed class BrowserParsingDownloader : IDownloader
 {
-    private readonly StealthBrowserService _browser;
+    private readonly FirefoxBrowserService _browser;
     private readonly ILogger _log;
 
-    public BrowserParsingDownloader(StealthBrowserService browser, ILogger log)
+    public BrowserParsingDownloader(FirefoxBrowserService browser, ILogger log)
     {
         _browser = browser;
         _log = log;
@@ -35,54 +37,48 @@ public sealed class BrowserParsingDownloader : IDownloader
 
     public async Task<AnalysisResult> AnalyzeAsync(string url, string taskId, CancellationToken cancellationToken)
     {
-        var page = await _browser.NewPageAsync();
+        await using var ephemeral = await _browser.OpenEphemeralPageAsync(url);
+        var page = ephemeral.Page;
+        var mediaUrls = new ConcurrentBag<string>();
+
+        void OnResponse(object? sender, IResponse response)
+        {
+            if (IsMediaResponse(response.Headers, response.Url))
+            {
+                mediaUrls.Add(response.Url);
+            }
+        }
+
+        page.Response += OnResponse;
         try
         {
-            var mediaUrls = new ConcurrentBag<string>();
-
-            void OnResponse(object? sender, IResponse response)
+            await page.GotoAsync(url, new PageGotoOptions
             {
-                if (IsMediaResponse(response.Headers, response.Url))
-                {
-                    mediaUrls.Add(response.Url);
-                }
-            }
+                WaitUntil = WaitUntilState.DOMContentLoaded,
+                Timeout = 30_000,
+            });
 
-            page.Response += OnResponse;
-            try
-            {
-                await page.GotoAsync(url, new PageGotoOptions
-                {
-                    WaitUntil = WaitUntilState.DOMContentLoaded,
-                    Timeout = 30_000,
-                });
-
-                // Give the player a moment to request media streams after load.
-                await page.WaitForTimeoutAsync(5_000);
-            }
-            finally
-            {
-                page.Response -= OnResponse;
-            }
-
-            var title = string.IsNullOrWhiteSpace(await page.TitleAsync()) ? "web-video" : await page.TitleAsync();
-            var children = mediaUrls
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Select(u => new MediaChild { Url = u, Title = title })
-                .ToList();
-
-            _log.Information("Browser sniffing of {Url}: {Count} media responses", url, children.Count);
-            return new AnalysisResult
-            {
-                Title = title,
-                Referrer = url,
-                Children = children,
-            };
+            // Give the player a moment to request media streams after load.
+            await page.WaitForTimeoutAsync(5_000);
         }
         finally
         {
-            await page.CloseAsync();
+            page.Response -= OnResponse;
         }
+
+        var title = string.IsNullOrWhiteSpace(await page.TitleAsync()) ? "web-video" : await page.TitleAsync();
+        var children = mediaUrls
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(u => new MediaChild { Url = u, Title = title })
+            .ToList();
+
+        _log.Information("Browser sniffing of {Url}: {Count} media responses", url, children.Count);
+        return new AnalysisResult
+        {
+            Title = title,
+            Referrer = url,
+            Children = children,
+        };
     }
 
     /// <summary>

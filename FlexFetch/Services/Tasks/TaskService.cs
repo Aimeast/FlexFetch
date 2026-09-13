@@ -207,13 +207,16 @@ public sealed class TaskService : IDisposable
     /// <summary>
     /// Recovers tasks after a restart: tasks left in Running or Queued are
     /// reset to Queued and re-queued. Failed is reserved for real download
-    /// failures and is not re-queued. Returns the number of re-queued tasks.
+    /// failures and is not re-queued. The merged set is re-enqueued oldest
+    /// first, so playlist children keep their front-to-back order across a
+    /// restart (the in-memory queue alone does not survive it).
     /// </summary>
     public int RecoverPending()
     {
         var orphans = _tasks.GetByStatus(TaskStatus.Running)
             .Concat(_tasks.GetByStatus(TaskStatus.Queued))
             .Where(t => !t.IsVirtual)
+            .OrderBy(t => t.CreatedAt)
             .ToList();
 
         foreach (var task in orphans)

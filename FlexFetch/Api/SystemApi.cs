@@ -1,7 +1,7 @@
 ﻿using FlexFetch.Config;
-using FlexFetch.Data;
 using FlexFetch.Services;
 using FlexFetch.Services.Downloaders;
+using FlexFetch.Services.Session;
 using FlexFetch.Services.Tasks;
 using Microsoft.Playwright;
 using ILogger = Serilog.ILogger;
@@ -21,7 +21,7 @@ public static class SystemApi
             TaskService tasks,
             IConfiguration config,
             YtdlpService ytdlp,
-            StealthBrowserService browser) =>
+            FirefoxBrowserService browser) =>
         {
             var dataDir = ConfigRegistry.From(config, ConfigKeys.DataDir);
             var disk = GetDiskInfo(dataDir);
@@ -41,20 +41,12 @@ public static class SystemApi
                 denoVersion = ytdlp.GetDenoVersionAsync().GetAwaiter().GetResult(),
                 ffmpegVersion = ytdlp.GetFfmpegVersionAsync().GetAwaiter().GetResult(),
                 playwrightVersion = typeof(Playwright).Assembly.GetName().Version?.ToString() ?? "unknown",
-                browser = StealthBrowserService.FindFirstExisting(StealthBrowserService.GetBrowserCandidates()) ?? "not-detected",
-                browserSelfCheck = browser.IsRunning ? browser.SelfCheckAsync().GetAwaiter().GetResult() : Array.Empty<DetectionCheckResult>(),
+                firefox = FirefoxBrowserService.FindFirefoxExecutable() ?? "not-detected",
+                browser = browser.IsRunning ? "firefox-running" : "firefox-stopped",
             });
         });
 
         var admin = app.MapGroup("/api/system").RequireAuthorization("Admin");
-
-        admin.MapPost("/self-check", async (StealthBrowserService browser) =>
-        {
-            // Runs the anti-detection probes even when the browser has not
-            // been started yet (it initializes on first use).
-            var results = await browser.SelfCheckAsync();
-            return Results.Ok(results);
-        });
 
         admin.MapPost("/shutdown", (IHostApplicationLifetime lifetime) =>
         {

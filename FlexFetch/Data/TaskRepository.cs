@@ -38,11 +38,18 @@ public sealed class TaskRepository : ITaskRepository
     public IReadOnlyList<TaskItem> GetByOwner(string ownerUserId) =>
         Collection.Find(Query.EQ(nameof(TaskItem.OwnerUserId), ownerUserId)).ToList();
 
+    // Sorted by creation time so callers (restart recovery, parent retry,
+    // status aggregation) observe submission order: playlist children were
+    // inserted sequentially and must never come back in storage order.
     public IReadOnlyList<TaskItem> GetByStatus(TaskStatus status) =>
-        Collection.Find(Query.EQ(nameof(TaskItem.Status), status.ToString())).ToList();
+        Collection.Find(Query.EQ(nameof(TaskItem.Status), status.ToString()))
+            .OrderBy(t => t.CreatedAt)
+            .ToList();
 
     public IReadOnlyList<TaskItem> GetChildren(string parentId) =>
-        Collection.Find(Query.EQ(nameof(TaskItem.ParentId), parentId)).ToList();
+        Collection.Find(Query.EQ(nameof(TaskItem.ParentId), parentId))
+            .OrderBy(t => t.CreatedAt)
+            .ToList();
 
     public IReadOnlyList<TaskItem> GetAll() => Collection.FindAll().ToList();
 

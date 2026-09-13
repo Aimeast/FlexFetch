@@ -1,10 +1,8 @@
-﻿using FlexFetch.Config;
-using FlexFetch.Data;
-using FlexFetch.Entities;
+﻿using FlexFetch.Entities;
 using FlexFetch.Services;
 using FlexFetch.Services.Downloaders;
-using FlexFetch.Services.Refresh;
 using FlexFetch.Services.Routing;
+using FlexFetch.Services.Session;
 using Serilog;
 using YoutubeDLSharp;
 using YoutubeDLSharp.Metadata;
@@ -20,18 +18,7 @@ public sealed class YouTubeDownloaderTests
         .MinimumLevel.Warning()
         .CreateLogger();
 
-    private static YouTubeDownloader CreateDownloader(Func<string, OptionSet, CancellationToken, Task<RunResult<VideoData>>>? fetch = null)
-    {
-        var dir = TestApp.CreateTempDataDir();
-        var proxy = new DirectProxyService();
-        var ytdlp = new YtdlpService(proxy, Log, dir);
-        var storage = new StorageService(dir);
-        var store = new LiteDbStore(Path.Combine(dir, "flexfetch.db"));
-        var cookies = new CookiePoolService(new CookieRepository(store), () => new ICookieDomainMapping[] { new DefaultCookieDomainMapping() });
-        return new YouTubeDownloader(ytdlp, proxy, storage, Log, cookies, fetch);
-    }
-
-    private static (YouTubeDownloader Downloader, CookiePoolService Pool) CreateDownloaderWithPool(
+    private static (YouTubeDownloader Downloader, SessionSnapshotService Snapshot, string Dir) CreateDownloader(
         Func<string, OptionSet, CancellationToken, Task<RunResult<VideoData>>>? fetch = null,
         Func<string, OptionSet, Action<double>, CancellationToken, Task<RunResult<string>>>? download = null)
     {
@@ -39,15 +26,36 @@ public sealed class YouTubeDownloaderTests
         var proxy = new DirectProxyService();
         var ytdlp = new YtdlpService(proxy, Log, dir);
         var storage = new StorageService(dir);
-        var store = new LiteDbStore(Path.Combine(dir, "flexfetch.db"));
-        var pool = new CookiePoolService(new CookieRepository(store), () => new ICookieDomainMapping[] { new DefaultCookieDomainMapping() });
-        return (new YouTubeDownloader(ytdlp, proxy, storage, Log, pool, fetch, download), pool);
+        var snapshot = new SessionSnapshotService(storage);
+        return (new YouTubeDownloader(ytdlp, proxy, storage, Log, snapshot, fetchData: fetch, download: download), snapshot, dir);
     }
+
+    private static void SeedSnapshot(SessionSnapshotService snapshot, string? visitorData = "visitor-123")
+    {
+        snapshot.WriteSnapshot(
+            new List<CookieItem>
+            {
+                new() { Domain = ".youtube.com", Name = "SID", Value = "x", HttpOnly = true },
+                new() { Domain = ".youtube.com", Name = "LOGIN_INFO", Value = "y", HttpOnly = true },
+            },
+            new SessionMeta { VisitorData = visitorData });
+    }
+
+    private static readonly Func<string, OptionSet, CancellationToken, Task<RunResult<VideoData>>> OkFetch =
+        (_, _, _) => Task.FromResult(new RunResult<VideoData>(
+            true,
+            Array.Empty<string>(),
+            new VideoData { Title = "Fetched Title", Extension = "webm", Url = "https://example.com/v.webm" }));
+
+    private static RunResult<VideoData> BotCheckFailure() => new(
+        false,
+        new[] { "ERROR: [youtube] abc: Sign in to confirm you're not a bot. Use --cookies." },
+        null!);
 
     [TestMethod]
     public void CanHandle_MatchesYouTubeDomains()
     {
-        var downloader = CreateDownloader();
+        var downloader = CreateDownloader().Downloader;
 
         Assert.IsTrue(downloader.CanHandle("https://www.youtube.com/watch?v=abc"));
         Assert.IsTrue(downloader.CanHandle("https://youtu.be/abc"));
@@ -58,7 +66,7 @@ public sealed class YouTubeDownloaderTests
     [TestMethod]
     public void BuildOptions_SetsFormatAndMerge()
     {
-        var downloader = CreateDownloader();
+        var downloader = CreateDownloader().Downloader;
 
         var options = downloader.BuildOptions(new Uri("https://www.youtube.com/watch?v=abc"));
 
@@ -69,7 +77,7 @@ public sealed class YouTubeDownloaderTests
     [TestMethod]
     public void BuildOptions_IncludesProxyWhenConfigured()
     {
-        var downloader = CreateDownloader();
+        var downloader = CreateDownloader().Downloader;
         // No proxy in this test setup -> Proxy must be null.
         var options = downloader.BuildOptions(new Uri("https://www.youtube.com/watch?v=abc"));
 
@@ -77,23 +85,43 @@ public sealed class YouTubeDownloaderTests
     }
 
     [TestMethod]
-    public void BuildOptions_SetsResilientPlayerClients()
+    public void BuildOptions_Anonymous_UsesAnonymousClientPosture()
     {
-        var downloader = CreateDownloader();
+        var downloader = CreateDownloader().Downloader;
 
         var options = downloader.BuildOptions(new Uri("https://www.youtube.com/watch?v=abc"));
 
-        // A bot-challenge ("The page needs to be reloaded") is common on
-        // datacenter IPs. web_safari additionally demands a po_token and
-        // fails without one, so only clients that do not require it are used;
-        // the cookie attach-and-retry flow is unchanged.
-        Assert.AreEqual("youtube:player_client=android,tv,mweb", (string)options.ExtractorArgs);
+        // Anonymous posture: android_vr + mweb (no cookie, no visitor_data).
+        Assert.AreEqual("youtube:player_client=android_vr,mweb", (string)options.ExtractorArgs);
+    }
+
+    [TestMethod]
+    public void BuildOptions_WithCookies_UsesMwebWithVisitorData()
+    {
+        var (downloader, snapshot, _) = CreateDownloader();
+        SeedSnapshot(snapshot);
+
+        var options = downloader.BuildOptions(
+            new Uri("https://www.youtube.com/watch?v=abc"), cookieFile: "cookies.txt");
+
+        // Cookie posture: mweb only, paired with the jar's visitor identity.
+        // android/tv with cookies is forbidden - yt-dlp skips those clients
+        // and the leftover posture triggers the bot wall.
+        Assert.AreEqual("youtube:player_client=mweb;visitor_data=visitor-123", (string)options.ExtractorArgs);
+        Assert.AreEqual("cookies.txt", options.Cookies);
+    }
+
+    [TestMethod]
+    public void NormalizeProxyForYtdlp_RewritesSocks5ToSocks5h()
+    {
+        Assert.AreEqual("socks5h://127.0.0.1:1080", YtdlpDownloader.NormalizeProxyForYtdlp("socks5://127.0.0.1:1080"));
+        Assert.AreEqual("http://proxy:8080", YtdlpDownloader.NormalizeProxyForYtdlp("http://proxy:8080"));
     }
 
     [TestMethod]
     public void BuildAnalysis_SingleVideo_SuggestsTitleFileName()
     {
-        var downloader = CreateDownloader();
+        var downloader = CreateDownloader().Downloader;
         var data = new VideoData
         {
             Title = "My Video Title",
@@ -111,7 +139,7 @@ public sealed class YouTubeDownloaderTests
     [TestMethod]
     public void BuildAnalysis_Playlist_ExpandsChildren()
     {
-        var downloader = CreateDownloader();
+        var downloader = CreateDownloader().Downloader;
         var data = new VideoData
         {
             Title = "Playlist",
@@ -134,188 +162,161 @@ public sealed class YouTubeDownloaderTests
     public async Task AnalyzeAsync_FetchFailure_Throws()
     {
         var downloader = CreateDownloader(async (_, _, _) =>
-            new RunResult<VideoData>(false, new[] { "ERROR: Unsupported URL" }, null!));
+            new RunResult<VideoData>(false, new[] { "ERROR: Unsupported URL" }, null!)).Downloader;
 
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(
             () => downloader.AnalyzeAsync("https://www.youtube.com/watch?v=abc", "task-1", CancellationToken.None));
     }
 
     [TestMethod]
-    public async Task AnalyzeAsync_UsesFetchedData()
+    public async Task AnalyzeAsync_AuthError_NoSnapshot_ThrowsAuthRequired()
     {
-        var downloader = CreateDownloader(async (_, _, _) =>
-            new RunResult<VideoData>(
-                true,
-                Array.Empty<string>(),
-                new VideoData { Title = "Fetched Title", Extension = "webm", Url = "https://example.com/v.webm" }));
-
-        var analysis = await downloader.AnalyzeAsync("https://www.youtube.com/watch?v=abc", "task-1", CancellationToken.None);
-
-        Assert.AreEqual("Fetched Title", analysis.Title);
-        Assert.AreEqual("Fetched Title.webm", analysis.SuggestedFileName);
-    }
-
-    [TestMethod]
-    public async Task AnalyzeAsync_AuthError_NoCookies_ThrowsAuthRequired()
-    {
-        var (downloader, _) = CreateDownloaderWithPool(async (_, _, _) =>
-            new RunResult<VideoData>(
-                false,
-                new[] { "ERROR: [youtube] abc: Sign in to confirm you're not a bot. Use --cookies." },
-                null!));
+        var calls = 0;
+        var downloader = CreateDownloader((_, _, _) =>
+        {
+            calls++;
+            return Task.FromResult(BotCheckFailure());
+        }).Downloader;
 
         var ex = await Assert.ThrowsExactlyAsync<AuthRequiredException>(
             () => downloader.AnalyzeAsync("https://www.youtube.com/watch?v=abc", "task-1", CancellationToken.None));
 
         Assert.AreEqual(AuthFailureReason.LoginRequired, ex.Reason);
+        Assert.AreEqual(1, calls); // no snapshot -> no session retry
     }
 
     [TestMethod]
-    public async Task AnalyzeAsync_AuthError_WithCookies_RetriesOnceThenSucceeds()
+    public async Task AnalyzeAsync_AuthError_RetriesOnceWithSnapshotCopy()
     {
         var calls = 0;
         string? cookieFileSeen = null;
-        var existsDuringRetry = false;
-        var (downloader, pool) = CreateDownloaderWithPool(async (url, options, ct) =>
+        string? extractorArgsSeen = null;
+        var copyExistedDuringRun = false;
+        var (downloader, snapshot, dir) = CreateDownloader(async (_, options, _) =>
         {
             calls++;
             if (calls == 1)
             {
-                return new RunResult<VideoData>(
-                    false,
-                    new[] { "ERROR: [youtube] abc: Sign in to confirm you're not a bot. Use --cookies." },
-                    null!);
+                return BotCheckFailure();
             }
 
             cookieFileSeen = options.Cookies;
-            existsDuringRetry = File.Exists(options.Cookies);
+            extractorArgsSeen = (string?)options.ExtractorArgs;
+            copyExistedDuringRun = options.Cookies is not null && File.Exists(options.Cookies);
             return new RunResult<VideoData>(
                 true,
                 Array.Empty<string>(),
                 new VideoData { Title = "Fetched Title", Extension = "webm", Url = "https://example.com/v.webm" });
         });
-        pool.UpsertCookies(new[] { new CookieItem { Domain = ".youtube.com", Name = "SID", Value = "x" } });
+        SeedSnapshot(snapshot);
+        var snapshotFile = Path.Combine(dir, "session", "session.txt");
+        var snapshotContent = File.ReadAllText(snapshotFile);
 
         var analysis = await downloader.AnalyzeAsync("https://www.youtube.com/watch?v=abc", "task-1", CancellationToken.None);
 
-        // Retried exactly once, and the retry carried the cookie file.
+        // Retried exactly once, on the mweb posture, with a COPY of the
+        // snapshot that existed during the run.
         Assert.AreEqual(2, calls);
         Assert.IsNotNull(cookieFileSeen);
-        Assert.IsTrue(existsDuringRetry, "cookie file should exist during the retry");
+        Assert.AreNotEqual(snapshotFile, cookieFileSeen, "the snapshot itself must never be handed to yt-dlp");
+        Assert.IsTrue(copyExistedDuringRun, "the snapshot copy should exist during the retry");
+        Assert.AreEqual("youtube:player_client=mweb;visitor_data=visitor-123", extractorArgsSeen);
         Assert.AreEqual("Fetched Title", analysis.Title);
 
-        // The temporary cookie file is cleaned up after the retry.
-        Assert.IsFalse(File.Exists(cookieFileSeen), "cookie file should be deleted after the retry");
+        // The copy is deleted after the run; the snapshot is untouched.
+        Assert.IsFalse(File.Exists(cookieFileSeen), "the one-time copy must be deleted after the run");
+        Assert.AreEqual(snapshotContent, File.ReadAllText(snapshotFile), "the snapshot must not be modified by yt-dlp");
     }
 
     [TestMethod]
     public async Task AnalyzeAsync_AuthError_RetryStillFails_ThrowsAuthRequired()
     {
         var calls = 0;
-        var (downloader, pool) = CreateDownloaderWithPool(async (_, _, _) =>
+        var (downloader, snapshot, _) = CreateDownloader((_, _, _) =>
         {
             calls++;
-            return new RunResult<VideoData>(
-                false,
-                new[] { "ERROR: [youtube] abc: Sign in to confirm you're not a bot. Use --cookies." },
-                null!);
+            return Task.FromResult(BotCheckFailure());
         });
-        pool.UpsertCookies(new[] { new CookieItem { Domain = ".youtube.com", Name = "SID", Value = "x" } });
+        SeedSnapshot(snapshot);
 
         var ex = await Assert.ThrowsExactlyAsync<AuthRequiredException>(
             () => downloader.AnalyzeAsync("https://www.youtube.com/watch?v=abc", "task-1", CancellationToken.None));
 
-        Assert.AreEqual(2, calls); // initial + cookie retry
+        Assert.AreEqual(2, calls); // initial + session retry
         Assert.AreEqual(AuthFailureReason.LoginRequired, ex.Reason);
     }
 
     [TestMethod]
-    public async Task AnalyzeAsync_AuthError_NonYoutubeDomain_NoCookiesMatch()
+    public async Task AnalyzeAsync_AgeRestricted_RetriesWithSession()
     {
-        // Cookies for .youtube.com do not match an unrelated host; the auth
-        // error still maps to LoginRequired and no retry is possible.
+        // Account content (age/member/private) also goes through the session
+        // retry: the anonymous first attempt fails, the session copy answers.
         var calls = 0;
-        var (downloader, pool) = CreateDownloaderWithPool(async (_, _, _) =>
+        var (downloader, snapshot, _) = CreateDownloader((_, _, _) =>
         {
             calls++;
-            return new RunResult<VideoData>(
-                false,
-                new[] { "ERROR: [youtube] abc: private video." },
-                null!);
+            return Task.FromResult(calls == 1
+                ? new RunResult<VideoData>(false, new[] { "ERROR: [youtube] abc: age-restricted content" }, null!)
+                : new RunResult<VideoData>(
+                    true,
+                    Array.Empty<string>(),
+                    new VideoData { Title = "Members", Extension = "mp4", Url = "https://example.com/v.mp4" }));
         });
-        pool.UpsertCookies(new[] { new CookieItem { Domain = ".example.com", Name = "SID", Value = "x" } });
+        SeedSnapshot(snapshot, visitorData: null);
 
-        var ex = await Assert.ThrowsExactlyAsync<AuthRequiredException>(
+        var analysis = await downloader.AnalyzeAsync("https://www.youtube.com/watch?v=abc", "task-1", CancellationToken.None);
+
+        Assert.AreEqual(2, calls);
+        Assert.AreEqual("Members", analysis.Title);
+    }
+
+    [TestMethod]
+    public async Task AnalyzeAsync_DeadContent_DoesNotRetryWithSession()
+    {
+        // Dead content is NOT an auth problem: no session retry, no re-export
+        // trigger - it must fail as a plain business failure.
+        var calls = 0;
+        var (downloader, snapshot, _) = CreateDownloader((_, _, _) =>
+        {
+            calls++;
+            return Task.FromResult(new RunResult<VideoData>(
+                false, new[] { "ERROR: [youtube] abc: Video unavailable" }, null!));
+        });
+        SeedSnapshot(snapshot);
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
             () => downloader.AnalyzeAsync("https://www.youtube.com/watch?v=abc", "task-1", CancellationToken.None));
 
-        Assert.AreEqual(AuthFailureReason.Private, ex.Reason);
-        Assert.AreEqual(1, calls); // no matching cookie -> no retry
+        Assert.AreEqual(1, calls);
     }
 
     [TestMethod]
-    public async Task DownloadAsync_WithPoolCookies_AttachesCookieFile()
+    public async Task AnalyzeAsync_SuccessWithRotationWarning_DoesNotThrow()
     {
-        string? cookieFileSeen = null;
-        var existsDuringDownload = false;
-        var (downloader, pool) = CreateDownloaderWithPool(
-            download: async (_, options, _, _) =>
-            {
-                cookieFileSeen = options.Cookies;
-                existsDuringDownload = cookieFileSeen is not null && File.Exists(cookieFileSeen);
-                return new RunResult<string>(true, Array.Empty<string>(), "video.mp4");
-            });
-        pool.UpsertCookies(new[] { new CookieItem { Domain = ".youtube.com", Name = "SID", Value = "x" } });
+        // A rotated jar still "succeeds" via anonymous fallback with only a
+        // WARNING: the run must not throw, but the rotation is logged and the
+        // re-export path is triggered (verified by the classifier tests).
+        var downloader = CreateDownloader((_, _, _) => Task.FromResult(new RunResult<VideoData>(
+            true,
+            new[] { "WARNING: [youtube] abc: the cookies are no longer valid and have been rotated" },
+            new VideoData { Title = "Fetched", Extension = "mp4", Url = "https://example.com/v.mp4" }))).Downloader;
 
-        var task = new TaskItem { Id = "task-dl-1", Url = "https://www.youtube.com/watch?v=abc" };
-        var analysis = new AnalysisResult { Title = "T", SuggestedFileName = "T.mp4" };
+        var analysis = await downloader.AnalyzeAsync("https://www.youtube.com/watch?v=abc", "task-1", CancellationToken.None);
 
-        await downloader.DownloadAsync(task, analysis, _ => { }, CancellationToken.None);
-
-        // The download carried the pool cookies and the file was cleaned up.
-        Assert.IsNotNull(cookieFileSeen);
-        Assert.IsTrue(existsDuringDownload, "cookie file should exist during the download");
-        Assert.IsFalse(File.Exists(cookieFileSeen), "cookie file should be deleted after the download");
+        Assert.AreEqual("Fetched", analysis.Title);
     }
 
     [TestMethod]
-    public async Task DownloadAsync_AuthError_NoCookies_ThrowsAuthRequired()
-    {
-        var calls = 0;
-        var (downloader, _) = CreateDownloaderWithPool(
-            download: async (_, _, _, _) =>
-            {
-                calls++;
-                return new RunResult<string>(
-                    false,
-                    new[] { "ERROR: [youtube] abc: Sign in to confirm you're not a bot. Use --cookies." },
-                    null!);
-            });
-
-        var task = new TaskItem { Id = "task-dl-2", Url = "https://www.youtube.com/watch?v=abc" };
-        var analysis = new AnalysisResult { Title = "T", SuggestedFileName = "T.mp4" };
-
-        var ex = await Assert.ThrowsExactlyAsync<AuthRequiredException>(
-            () => downloader.DownloadAsync(task, analysis, _ => { }, CancellationToken.None));
-
-        Assert.AreEqual(AuthFailureReason.LoginRequired, ex.Reason);
-        Assert.AreEqual(1, calls); // no matching cookie -> no retry
-    }
-
-    [TestMethod]
-    public async Task DownloadAsync_AuthError_RetriesWithCookiesThenSucceeds()
+    public async Task DownloadAsync_RetriesWithSnapshotOnAuthError()
     {
         var calls = 0;
         string? cookieFileSeen = null;
-        CookiePoolService? poolRef = null;
-        var (downloader, pool) = CreateDownloaderWithPool(
+        var (downloader, snapshot, _) = CreateDownloader(
             download: async (_, options, _, _) =>
             {
                 calls++;
                 if (calls == 1)
                 {
-                    // The first attempt has no pool cookies yet; simulate the
-                    // cookies appearing before the retry (e.g. manual import).
-                    poolRef!.UpsertCookies(new[] { new CookieItem { Domain = ".youtube.com", Name = "SID", Value = "x" } });
                     return new RunResult<string>(
                         false,
                         new[] { "ERROR: [youtube] abc: Sign in to confirm you're not a bot. Use --cookies." },
@@ -325,259 +326,54 @@ public sealed class YouTubeDownloaderTests
                 cookieFileSeen = options.Cookies;
                 return new RunResult<string>(true, Array.Empty<string>(), "video.mp4");
             });
-        poolRef = pool;
+        SeedSnapshot(snapshot);
 
-        var task = new TaskItem { Id = "task-dl-3", Url = "https://www.youtube.com/watch?v=abc" };
+        var task = new TaskItem { Id = "task-dl-1", Url = "https://www.youtube.com/watch?v=abc" };
         var analysis = new AnalysisResult { Title = "T", SuggestedFileName = "T.mp4" };
 
         await downloader.DownloadAsync(task, analysis, _ => { }, CancellationToken.None);
 
-        // Retried exactly once, and the retry carried the cookie file.
         Assert.AreEqual(2, calls);
         Assert.IsNotNull(cookieFileSeen);
-        Assert.IsFalse(File.Exists(cookieFileSeen), "cookie file should be deleted after the retry");
+        Assert.IsFalse(File.Exists(cookieFileSeen), "the one-time copy must be deleted after the download");
     }
 
     [TestMethod]
-    public async Task DownloadAsync_AuthError_RetryStillFails_ThrowsAuthRequired()
+    public async Task DownloadAsync_AuthError_NoSnapshot_ThrowsAuthRequired()
     {
         var calls = 0;
-        var (downloader, pool) = CreateDownloaderWithPool(
-            download: async (_, _, _, _) =>
+        var downloader = CreateDownloader(
+            download: (_, _, _, _) =>
             {
                 calls++;
-                return new RunResult<string>(
+                return Task.FromResult(new RunResult<string>(
                     false,
                     new[] { "ERROR: [youtube] abc: Sign in to confirm you're not a bot. Use --cookies." },
-                    null!);
-            });
-        pool.UpsertCookies(new[] { new CookieItem { Domain = ".youtube.com", Name = "SID", Value = "x" } });
+                    null!));
+            }).Downloader;
 
-        var task = new TaskItem { Id = "task-dl-4", Url = "https://www.youtube.com/watch?v=abc" };
+        var task = new TaskItem { Id = "task-dl-2", Url = "https://www.youtube.com/watch?v=abc" };
         var analysis = new AnalysisResult { Title = "T", SuggestedFileName = "T.mp4" };
 
         var ex = await Assert.ThrowsExactlyAsync<AuthRequiredException>(
             () => downloader.DownloadAsync(task, analysis, _ => { }, CancellationToken.None));
 
         Assert.AreEqual(AuthFailureReason.LoginRequired, ex.Reason);
+        Assert.AreEqual(1, calls);
     }
 
-    // --- ICookieRefreshStrategy / ICookieDomainMapping (merged into the
-    // downloader): site-specific refresh checks and cross-domain sharing. ---
-
-    private static CookieItem Cookie(string domain, string name, string value = "v") =>
-        new() { Domain = domain, Name = name, Value = value };
+    // --- Web health-gate signal (shared with the export pipeline) ---
 
     [TestMethod]
-    public void RefreshStrategy_IsMatch_MatchesYoutubeUrls()
+    public void IsLoginRedirectUrl_DetectsLoginAndChallengePages()
     {
-        var downloader = CreateDownloader();
-        var group = new CookieGroup
-        {
-            Name = "YouTube",
-            Urls = new List<string> { "https://www.youtube.com/watch?v=1" },
-        };
-
-        Assert.IsTrue(downloader.IsMatch(group));
-    }
-
-    [TestMethod]
-    public void RefreshStrategy_IsMatch_MatchesYoutuBeUrls()
-    {
-        var downloader = CreateDownloader();
-        var group = new CookieGroup { Urls = new List<string> { "https://youtu.be/abc" } };
-
-        Assert.IsTrue(downloader.IsMatch(group));
-    }
-
-    [TestMethod]
-    public void RefreshStrategy_IsMatch_MatchesYoutubeCookieDomains()
-    {
-        var downloader = CreateDownloader();
-        var group = new CookieGroup
-        {
-            Urls = new List<string> { "https://example.com" },
-            Cookies = new List<CookieItem> { Cookie(".youtube.com", "SID") },
-        };
-
-        Assert.IsTrue(downloader.IsMatch(group));
-    }
-
-    [TestMethod]
-    public void RefreshStrategy_IsMatch_DoesNotMatchOtherSites()
-    {
-        var downloader = CreateDownloader();
-        var group = new CookieGroup
-        {
-            Urls = new List<string> { "https://x.com/SpaceX/status/1" },
-            Cookies = new List<CookieItem> { Cookie(".x.com", "auth_token") },
-        };
-
-        Assert.IsFalse(downloader.IsMatch(group));
-    }
-
-    [TestMethod]
-    public void RefreshStrategy_GetSessionRejectionReason_DetectsLoginAndChallengePages()
-    {
-        var downloader = CreateDownloader();
-        Assert.IsNotNull(downloader.GetSessionRejectionReason("https://accounts.google.com/signin"));
-        Assert.IsNotNull(downloader.GetSessionRejectionReason("https://accounts.google.com/servicelogin"));
-        Assert.IsNotNull(downloader.GetSessionRejectionReason("https://www.google.com/sorry/index"));
-        Assert.IsNotNull(downloader.GetSessionRejectionReason("https://example.com/login"));
-        Assert.IsNull(downloader.GetSessionRejectionReason("https://www.youtube.com/"));
-        Assert.IsNull(downloader.GetSessionRejectionReason(null));
-        Assert.IsNull(downloader.GetSessionRejectionReason(""));
-    }
-
-    [TestMethod]
-    public void RefreshStrategy_GetSessionRejectionReason_ReturnsReasonWhenIdentityCookiesVanish()
-    {
-        var downloader = CreateDownloader();
-        var before = new List<CookieItem> { Cookie(".google.com", "SID"), Cookie(".google.com", "APISID") };
-        var exported = new List<CookieItem> { Cookie(".youtube.com", "PREF") };
-
-        var reason = downloader.GetSessionRejectionReason(before, exported);
-
-        Assert.IsNotNull(reason);
-        StringAssert.Contains(reason!, "re-export");
-    }
-
-    [TestMethod]
-    public void RefreshStrategy_GetSessionRejectionReason_NullWhenIdentityCookiesSurvive()
-    {
-        var downloader = CreateDownloader();
-        var before = new List<CookieItem> { Cookie(".google.com", "SID") };
-        var exported = new List<CookieItem> { Cookie(".google.com", "SID", "new-value"), Cookie(".youtube.com", "PREF") };
-
-        Assert.IsNull(downloader.GetSessionRejectionReason(before, exported));
-    }
-
-    [TestMethod]
-    public void RefreshStrategy_GetSessionRejectionReason_NullWhenNoIdentityCookiesBefore()
-    {
-        var downloader = CreateDownloader();
-        var before = new List<CookieItem> { Cookie(".youtube.com", "PREF") };
-        var exported = new List<CookieItem> { Cookie(".youtube.com", "PREF") };
-
-        Assert.IsNull(downloader.GetSessionRejectionReason(before, exported));
-    }
-
-    [TestMethod]
-    public void RefreshStrategy_GetRelatedCookieDomains_ReturnsGoogleCom()
-    {
-        var downloader = CreateDownloader();
-        var group = new CookieGroup { Urls = new List<string> { "https://www.youtube.com" } };
-
-        var domains = downloader.GetRelatedCookieDomains(group);
-
-        CollectionAssert.Contains(domains.ToArray(), "google.com");
-    }
-
-    [TestMethod]
-    public void RefreshStrategy_GetPageContentRejectionReason_RejectsWhenLoggedInFalse()
-    {
-        var downloader = CreateDownloader();
-        var reason = downloader.GetPageContentRejectionReason(new CookieRefreshPageSignals("home", false, false, false));
-
-        Assert.IsNotNull(reason);
-        StringAssert.Contains(reason!, "logged in=false");
-    }
-
-    [TestMethod]
-    public void RefreshStrategy_GetPageContentRejectionReason_RejectsOnSignInButton()
-    {
-        var downloader = CreateDownloader();
-        var reason = downloader.GetPageContentRejectionReason(new CookieRefreshPageSignals("home", null, false, true));
-
-        Assert.IsNotNull(reason);
-        StringAssert.Contains(reason!, "Sign in");
-    }
-
-    [TestMethod]
-    public void RefreshStrategy_GetPageContentRejectionReason_RejectsOnBotCheckText()
-    {
-        var downloader = CreateDownloader();
-        var reason = downloader.GetPageContentRejectionReason(
-            new CookieRefreshPageSignals("Sign in to confirm you're not a bot", null, false, false));
-
-        Assert.IsNotNull(reason);
-        StringAssert.Contains(reason!, "bot-check");
-    }
-
-    [TestMethod]
-    public void RefreshStrategy_GetPageContentRejectionReason_RejectsOnApiAuthFailure()
-    {
-        var downloader = CreateDownloader();
-        var reason = downloader.GetPageContentRejectionReason(new CookieRefreshPageSignals("home", true, true, false));
-
-        Assert.IsNotNull(reason);
-        StringAssert.Contains(reason!, "401/403");
-    }
-
-    [TestMethod]
-    public void RefreshStrategy_GetPageContentRejectionReason_NullOnHealthyPage()
-    {
-        var downloader = CreateDownloader();
-        var reason = downloader.GetPageContentRejectionReason(new CookieRefreshPageSignals("home", true, false, false));
-
-        Assert.IsNull(reason);
-    }
-
-    [TestMethod]
-    public void DomainMapping_MatchesYoutubeAndGoogleGroups()
-    {
-        var downloader = CreateDownloader();
-        CookieGroup Group(string name) => new() { Name = name };
-
-        Assert.IsTrue(downloader.IsMatch(Group("youtube.com")));
-        Assert.IsTrue(downloader.IsMatch(Group("google.com")));
-        Assert.IsFalse(downloader.IsMatch(Group("x.com")));
-    }
-
-    [TestMethod]
-    public void DomainMapping_MatchesByCookieDomain()
-    {
-        var downloader = CreateDownloader();
-        var group = new CookieGroup { Name = "my session" };
-        group.Cookies.Add(new CookieItem { Domain = ".youtube.com", Name = "SID", Value = "v" });
-
-        Assert.IsTrue(downloader.IsMatch(group));
-    }
-
-    [TestMethod]
-    public void DomainMapping_GetSharedDomains_YoutubeToGoogle()
-    {
-        var downloader = CreateDownloader();
-
-        CollectionAssert.Contains(downloader.GetSharedDomains(".youtube.com", "SID").ToArray(), ".google.com");
-    }
-
-    [TestMethod]
-    public void DomainMapping_GetSharedDomains_GoogleToYoutube()
-    {
-        var downloader = CreateDownloader();
-
-        CollectionAssert.Contains(downloader.GetSharedDomains(".google.com", "__Secure-1PSID").ToArray(), ".youtube.com");
-    }
-
-    [TestMethod]
-    public void DomainMapping_GetSharedDomains_EmptyForNonSharedPairs()
-    {
-        var downloader = CreateDownloader();
-
-        Assert.IsEmpty(downloader.GetSharedDomains(".youtube.com", "PREF"));
-        Assert.IsEmpty(downloader.GetSharedDomains(".x.com", "SID"));
-        Assert.IsEmpty(downloader.GetSharedDomains(null, "SID"));
-        Assert.IsEmpty(downloader.GetSharedDomains(".youtube.com", ""));
-    }
-
-    [TestMethod]
-    public void DefaultDomainMapping_MatchesNothingAndSharesNothing()
-    {
-        var mapping = new DefaultCookieDomainMapping();
-
-        Assert.IsFalse(mapping.IsMatch(new CookieGroup { Name = "youtube.com" }));
-        Assert.IsEmpty(mapping.GetSharedDomains(".youtube.com", "SID"));
+        Assert.IsTrue(YouTubeDownloader.IsLoginRedirectUrl("https://accounts.google.com/signin"));
+        Assert.IsTrue(YouTubeDownloader.IsLoginRedirectUrl("https://accounts.google.com/servicelogin"));
+        Assert.IsTrue(YouTubeDownloader.IsLoginRedirectUrl("https://www.google.com/sorry/index"));
+        Assert.IsTrue(YouTubeDownloader.IsLoginRedirectUrl("https://example.com/login"));
+        Assert.IsFalse(YouTubeDownloader.IsLoginRedirectUrl("https://www.youtube.com/"));
+        Assert.IsFalse(YouTubeDownloader.IsLoginRedirectUrl(null));
+        Assert.IsFalse(YouTubeDownloader.IsLoginRedirectUrl(""));
     }
 
     private sealed class DirectProxyService : IProxyService

@@ -337,6 +337,118 @@ public sealed class TaskServiceTests
         throw new AssertFailedException($"Timed out waiting for status {status} of task {id}");
     }
 
+    [TestMethod]
+    public async Task Submit_MultipleTasks_ExecuteInSubmissionOrder()
+    {
+        // Multiple links (and playlist children) must START in submission
+        // order: the start order is recorded, not the completion order
+        // (a shorter later video may finish earlier under concurrency).
+        var order = new List<string>();
+        var gate = new object();
+        _executor!.Handler = (task, progress, ct) =>
+        {
+            lock (gate)
+            {
+                order.Add(task.Url);
+            }
+            return Task.CompletedTask;
+        };
+
+        var urls = Enumerable.Range(0, 5).Select(i => $"https://example.com/{i}.bin").ToList();
+        var ids = urls.Select(u => _service!.Submit("user-1", u)).ToList();
+
+        await Task.WhenAll(ids.Select(id => WaitForStatusAsync(id, TaskStatus.Completed)));
+
+        CollectionAssert.AreEqual(urls, order);
+    }
+
+    [TestMethod]
+    public async Task RecoverPending_RequeuesInSubmissionOrder()
+    {
+        // A restart must not shuffle the order: merged Running+Queued orphans
+        // are re-enqueued oldest first, even when stored in shuffled order.
+        var now = DateTime.UtcNow;
+        var tasks = Enumerable.Range(0, 5)
+            .Select(i => new TaskItem
+            {
+                OwnerUserId = "user-1",
+                Url = $"https://example.com/{i}.bin",
+                Status = i % 2 == 0 ? TaskStatus.Running : TaskStatus.Queued,
+                CreatedAt = now.AddSeconds(i),
+            })
+            .ToList();
+        foreach (var task in tasks.AsEnumerable().Reverse())
+        {
+            _tasks!.Insert(task);
+        }
+
+        var order = new List<string>();
+        var gate = new object();
+        _executor!.Handler = (task, progress, ct) =>
+        {
+            lock (gate)
+            {
+                order.Add(task.Url);
+            }
+            return Task.CompletedTask;
+        };
+
+        _service!.RecoverPending();
+
+        await Task.WhenAll(tasks.Select(t => WaitForStatusAsync(t.Id, TaskStatus.Completed)));
+
+        CollectionAssert.AreEqual(tasks.Select(t => t.Url).ToList(), order);
+    }
+
+    [TestMethod]
+    public async Task Retry_VirtualParent_RequeuesChildrenInPlaylistOrder()
+    {
+        // Retrying a playlist parent re-queues its failed children front to
+        // back (creation order = playlist position), regardless of the
+        // order the children happen to sit in the store.
+        var parent = new TaskItem
+        {
+            OwnerUserId = "user-1",
+            Url = "https://example.com/playlist",
+            IsVirtual = true,
+            Status = TaskStatus.Failed,
+        };
+        _tasks!.Insert(parent);
+
+        var now = DateTime.UtcNow;
+        var children = Enumerable.Range(0, 4)
+            .Select(i => new TaskItem
+            {
+                OwnerUserId = "user-1",
+                Url = $"https://example.com/video-{i}",
+                ParentId = parent.Id,
+                Status = TaskStatus.Failed,
+                CreatedAt = now.AddSeconds(i),
+            })
+            .ToList();
+        foreach (var child in children.AsEnumerable().Reverse())
+        {
+            _tasks!.Insert(child);
+        }
+
+        var order = new List<string>();
+        var gate = new object();
+        _executor!.Handler = (task, progress, ct) =>
+        {
+            lock (gate)
+            {
+                order.Add(task.Url);
+            }
+            return Task.CompletedTask;
+        };
+
+        Assert.IsTrue(_service!.Retry(parent.Id));
+
+        await Task.WhenAll(children.Select(c => WaitForStatusAsync(c.Id, TaskStatus.Completed)));
+
+        CollectionAssert.AreEqual(children.Select(c => c.Url).ToList(), order);
+    }
+
     private sealed class FakeExecutor : ITaskExecutor
     {
         public Func<TaskItem, Action<double>, CancellationToken, Task> Handler { get; set; } =
