@@ -2,7 +2,6 @@
 using FlexFetch.Api;
 using FlexFetch.Config;
 using FlexFetch.Data;
-using FlexFetch.Entities;
 using FlexFetch.Enums;
 using FlexFetch.HostedServices;
 using FlexFetch.Services;
@@ -29,7 +28,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 // Data directory: hidden runtime folder (.flexfetch) holding the database,
 // logs, browser profiles, external components and route files.
-var dataDir = builder.Configuration["Data:Dir"] ?? ConfigRegistry.GetDefault(ConfigKeys.DataDir);
+var dataDir = ConfigRegistry.From(builder.Configuration, ConfigKeys.DataDir);
 Directory.CreateDirectory(dataDir);
 Directory.CreateDirectory(Path.Combine(dataDir, "logs"));
 
@@ -109,7 +108,7 @@ builder.Services.AddHostedService<PotSupervisorHostedService>();
 builder.Services.AddHostedService<CleanupHostedService>();
 
 // Server-side session cookie authentication.
-var sessionHours = int.TryParse(builder.Configuration["Account:SessionHours"], out var sh) ? sh : 168;
+var sessionHours = int.Parse(ConfigRegistry.From(builder.Configuration, ConfigKeys.SessionHours));
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
     .AddCookie(options =>
     {

@@ -1,5 +1,4 @@
 ﻿using FlexFetch.Services.Downloaders;
-using FlexFetch.Services.Routing;
 
 namespace FlexFetch.Tests;
 
@@ -79,16 +78,4 @@ public sealed class DirectLinkDetectorTests
         Assert.IsNull(contentType);
     }
 
-    private sealed class DirectProxyService : IProxyService
-    {
-        public bool ShouldProxy(Uri url) => false;
-
-        public bool ShouldProxyFast(Uri url) => false;
-
-        public HttpMessageHandler CreateHandler(Uri url) => new SocketsHttpHandler { UseProxy = false };
-
-        public string? GetProxyUri(Uri url) => null;
-
-        public string? GetBrowserProxyAddress() => null;
-    }
 }

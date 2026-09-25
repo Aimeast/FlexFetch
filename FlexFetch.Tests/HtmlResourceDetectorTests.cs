@@ -1,6 +1,4 @@
 ﻿using FlexFetch.Services.Downloaders;
-using FlexFetch.Services.Routing;
-using Serilog;
 using ILogger = Serilog.ILogger;
 
 namespace FlexFetch.Tests;
@@ -8,9 +6,7 @@ namespace FlexFetch.Tests;
 [TestClass]
 public sealed class HtmlResourceDetectorTests
 {
-    private static readonly ILogger Log = new LoggerConfiguration()
-        .MinimumLevel.Warning()
-        .CreateLogger();
+    private static readonly ILogger Log = TestLog.Instance;
 
     private static HtmlResourceDetector CreateDetector() =>
         new(new DirectProxyService(), Log);
@@ -53,16 +49,4 @@ public sealed class HtmlResourceDetectorTests
         Assert.AreEqual("Plain Page", analysis.Title);
     }
 
-    private sealed class DirectProxyService : IProxyService
-    {
-        public bool ShouldProxy(Uri url) => false;
-
-        public bool ShouldProxyFast(Uri url) => false;
-
-        public HttpMessageHandler CreateHandler(Uri url) => new SocketsHttpHandler { UseProxy = false };
-
-        public string? GetProxyUri(Uri url) => null;
-
-        public string? GetBrowserProxyAddress() => null;
-    }
 }

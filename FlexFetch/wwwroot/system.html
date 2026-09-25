@@ -33,6 +33,7 @@
         </div>
     </main>
 
+    <script src="/app.js"></script>
     <script>
         const msg = document.getElementById('msg');
 
@@ -68,8 +69,8 @@
                     'Built at': info.buildDateTime || 'unknown',
                     'Configuration': info.buildConfiguration || 'unknown',
                     'Started at': info.startedAt ? new Date(info.startedAt).toLocaleString() : '-',
-                    'Disk free': info.diskFreeBytes != null ? formatSize(info.diskFreeBytes) : '-',
-                    'Disk total': info.diskTotalBytes != null ? formatSize(info.diskTotalBytes) : '-',
+                    'Disk free': fmtSize(info.diskFreeBytes),
+                    'Disk total': fmtSize(info.diskTotalBytes),
                     'Concurrency limit': info.concurrencyLimit,
                     'Running tasks': info.runningTasks,
                     'Queued tasks': info.queuedTasks,
@@ -138,18 +139,6 @@
                 btn.disabled = false;
                 show(e.message);
             }
-        }
-
-        function formatSize(bytes) {
-            const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-            let i = 0;
-            while (bytes >= 1024 && i < units.length - 1) { bytes /= 1024; i++; }
-            return bytes.toFixed(1) + ' ' + units[i];
-        }
-
-        function esc(s) {
-            return (s || '').replace(/[&<>"']/g, c =>
-                ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
         }
 
         document.getElementById('logout-link').onclick = async () => {

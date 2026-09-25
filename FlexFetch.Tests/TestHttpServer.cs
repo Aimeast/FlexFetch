@@ -24,13 +24,13 @@ public sealed class TestHttpServer : IDisposable
         _acceptTask = AcceptLoopAsync();
     }
 
-    public int Port { get; }
+    private int Port { get; }
 
     public string BaseUrl => $"http://127.0.0.1:{Port}";
 
     public List<HttpRequest> Requests { get; } = new();
 
-    public sealed record HttpRequest(string Method, string Path, Dictionary<string, string> Headers);
+    public sealed record HttpRequest(Dictionary<string, string> Headers);
 
     public sealed record HttpResponse(int Status, byte[] Body, Dictionary<string, string>? Headers = null);
 
@@ -66,7 +66,6 @@ public sealed class TestHttpServer : IDisposable
                 }
 
                 var lines = head.Split("\r\n", StringSplitOptions.RemoveEmptyEntries);
-                var requestLine = lines[0].Split(' ');
                 var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 foreach (var line in lines.Skip(1))
                 {
@@ -77,7 +76,7 @@ public sealed class TestHttpServer : IDisposable
                     }
                 }
 
-                var request = new HttpRequest(requestLine[0], requestLine[1], headers);
+                var request = new HttpRequest(headers);
                 lock (Requests)
                 {
                     Requests.Add(request);

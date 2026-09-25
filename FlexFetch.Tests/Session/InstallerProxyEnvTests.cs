@@ -85,6 +85,5 @@ public sealed class InstallerProxyEnvTests
 
         public string? GetProxyUri(Uri url) => _proxyUri;
 
-        public string? GetBrowserProxyAddress() => _proxyUri;
     }
 }

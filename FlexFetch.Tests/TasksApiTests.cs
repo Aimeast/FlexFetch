@@ -244,6 +244,4 @@ public sealed class TasksApiTests
     private sealed record ShareViewResponse(string? FileName, long? FileSize, string Status, double Progress, string? ErrorMessage);
 
     private sealed record TaskItemDto(string Id, string Url, int Status);
-
-    private sealed record LoginResponse(string Id, string UserName, string Role);
 }

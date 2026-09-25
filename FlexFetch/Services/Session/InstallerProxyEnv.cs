@@ -16,8 +16,6 @@ namespace FlexFetch.Services.Session;
 /// </summary>
 public static class InstallerProxyEnv
 {
-    public const string HttpProxyKey = "network.httpProxy";
-
     /// <summary>Resolves the HTTP(S)_PROXY/HTTP_PROXY env entries for an
     /// installer child process (empty = run direct).</summary>
     public static IReadOnlyDictionary<string, string> Resolve(

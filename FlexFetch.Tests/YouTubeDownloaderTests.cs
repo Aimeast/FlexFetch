@@ -1,9 +1,7 @@
 ﻿using FlexFetch.Entities;
 using FlexFetch.Services;
 using FlexFetch.Services.Downloaders;
-using FlexFetch.Services.Routing;
 using FlexFetch.Services.Session;
-using Serilog;
 using YoutubeDLSharp;
 using YoutubeDLSharp.Metadata;
 using YoutubeDLSharp.Options;
@@ -14,9 +12,7 @@ namespace FlexFetch.Tests;
 [TestClass]
 public sealed class YouTubeDownloaderTests
 {
-    private static readonly ILogger Log = new LoggerConfiguration()
-        .MinimumLevel.Warning()
-        .CreateLogger();
+    private static readonly ILogger Log = TestLog.Instance;
 
     private static (YouTubeDownloader Downloader, SessionSnapshotService Snapshot, string Dir) CreateDownloader(
         Func<string, OptionSet, CancellationToken, Task<RunResult<VideoData>>>? fetch = null,
@@ -40,12 +36,6 @@ public sealed class YouTubeDownloaderTests
             },
             new SessionMeta { VisitorData = visitorData });
     }
-
-    private static readonly Func<string, OptionSet, CancellationToken, Task<RunResult<VideoData>>> OkFetch =
-        (_, _, _) => Task.FromResult(new RunResult<VideoData>(
-            true,
-            Array.Empty<string>(),
-            new VideoData { Title = "Fetched Title", Extension = "webm", Url = "https://example.com/v.webm" }));
 
     private static RunResult<VideoData> BotCheckFailure() => new(
         false,
@@ -376,16 +366,4 @@ public sealed class YouTubeDownloaderTests
         Assert.IsFalse(YouTubeDownloader.IsLoginRedirectUrl(""));
     }
 
-    private sealed class DirectProxyService : IProxyService
-    {
-        public bool ShouldProxy(Uri url) => false;
-
-        public bool ShouldProxyFast(Uri url) => false;
-
-        public HttpMessageHandler CreateHandler(Uri url) => new SocketsHttpHandler { UseProxy = false };
-
-        public string? GetProxyUri(Uri url) => null;
-
-        public string? GetBrowserProxyAddress() => null;
-    }
 }

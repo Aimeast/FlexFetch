@@ -1,9 +1,7 @@
 ﻿using System.Net;
 using FlexFetch.Config;
-using FlexFetch.Data;
 using FlexFetch.Services.Routing;
 using Microsoft.Extensions.Configuration;
-using Serilog;
 using ILogger = Serilog.ILogger;
 
 namespace FlexFetch.Tests;
@@ -11,9 +9,7 @@ namespace FlexFetch.Tests;
 [TestClass]
 public sealed class ProxyServiceTests
 {
-    private static readonly ILogger Log = new LoggerConfiguration()
-        .MinimumLevel.Warning()
-        .CreateLogger();
+    private static readonly ILogger Log = TestLog.Instance;
 
     private static readonly string DataDir = Path.GetTempPath();
 

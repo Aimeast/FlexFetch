@@ -1,7 +1,5 @@
 ﻿using System.IO.Compression;
-using FlexFetch.Config;
 using FlexFetch.Services.Downloaders;
-using FlexFetch.Services.Routing;
 using Serilog;
 using ILogger = Serilog.ILogger;
 
@@ -26,23 +24,15 @@ public sealed class PotProviderService
     /// only ships the yt-dlp plugin zip; the script runs from the source).</summary>
     public const string ServerRepoUrl = "https://github.com/Brainicism/bgutil-ytdlp-pot-provider";
 
-    private static readonly TimeSpan DownloadTimeout = TimeSpan.FromMinutes(15);
-
-    private readonly IProxyService _proxy;
     private readonly YtdlpService _ytdlp;
-    private readonly IConfiguration _config;
     private readonly ILogger _log;
     private readonly SemaphoreSlim _installLock = new(1, 1);
 
     public PotProviderService(
-        IProxyService proxy,
         YtdlpService ytdlp,
-        IConfiguration config,
         ILogger log)
     {
-        _proxy = proxy;
         _ytdlp = ytdlp;
-        _config = config;
         _log = log;
     }
 
@@ -138,7 +128,7 @@ public sealed class PotProviderService
     private async Task DownloadServerSourceAsync(CancellationToken cancellationToken)
     {
         var archiveUrl = $"{ServerRepoUrl}/archive/refs/tags/{PotProviderVersion}.zip";
-        var zip = await DownloadBytesAsync(archiveUrl, cancellationToken);
+        var zip = await _ytdlp.DownloadBytesAsync(archiveUrl, cancellationToken);
 
         Directory.CreateDirectory(ComponentsDir);
         var extractDir = Path.Combine(ComponentsDir, $"pot-src-{PotProviderVersion}");
@@ -247,7 +237,7 @@ public sealed class PotProviderService
         // Windows and is expected.
 
         _log.Information("Installing bgutil script dependencies via deno install (npmmirror registry)");
-        await RunProcessAsync(psi, cancellationToken);
+        await YtdlpService.RunProcessAsync(psi, cancellationToken);
         File.WriteAllText(Path.Combine(serverDir, ".deno-deps-ok"), PotProviderVersion);
     }
 
@@ -257,7 +247,7 @@ public sealed class PotProviderService
     private async Task InstallPluginAsync(CancellationToken cancellationToken)
     {
         var url = $"https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/download/{PotProviderVersion}/bgutil-ytdlp-pot-provider.zip";
-        var zip = await DownloadBytesAsync(url, cancellationToken);
+        var zip = await _ytdlp.DownloadBytesAsync(url, cancellationToken);
         var wrapper = Path.Combine(PluginsDir, "bgutil-ytdlp-potprovider");
         Directory.CreateDirectory(wrapper);
 
@@ -265,33 +255,5 @@ public sealed class PotProviderService
         using var archive = new ZipArchive(stream, ZipArchiveMode.Read);
         archive.ExtractToDirectory(wrapper, overwriteFiles: true);
         _log.Information("Installed bgutil yt-dlp plugin {Version} into {Wrapper}", PotProviderVersion, wrapper);
-    }
-
-    private async Task<byte[]> DownloadBytesAsync(string url, CancellationToken cancellationToken)
-    {
-        var uri = new Uri(url);
-        using var handler = _proxy.CreateHandler(uri);
-        using var client = new HttpClient(handler) { Timeout = DownloadTimeout };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("FlexFetch/1.0");
-
-        _log.Information("Downloading {Url} via proxy {Proxy}", url, _proxy.GetProxyUri(uri) ?? "direct");
-        using var response = await client.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        response.EnsureSuccessStatusCode();
-        return await response.Content.ReadAsByteArrayAsync(cancellationToken);
-    }
-
-    private static async Task RunProcessAsync(
-        System.Diagnostics.ProcessStartInfo psi, CancellationToken cancellationToken)
-    {
-        using var process = System.Diagnostics.Process.Start(psi)
-            ?? throw new InvalidOperationException($"Failed to start process: {psi.FileName}");
-        var stdout = await process.StandardOutput.ReadToEndAsync(cancellationToken);
-        var stderr = await process.StandardError.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken);
-        if (process.ExitCode != 0)
-        {
-            throw new InvalidOperationException(
-                $"{Path.GetFileName(psi.FileName)} failed (exit {process.ExitCode}): {stderr.Trim()}");
-        }
     }
 }

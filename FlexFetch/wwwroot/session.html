@@ -102,6 +102,7 @@
         </div>
     </main>
 
+    <script src="/app.js"></script>
     <script>
         const msg = document.getElementById('msg');
 
@@ -335,13 +336,6 @@
 
         function fmtDate(value) {
             return value ? new Date(value).toLocaleString() : '-';
-        }
-
-        function yesNo(v) { return v ? 'yes' : 'no'; }
-
-        function esc(s) {
-            return (s || '').replace(/[&<>"']/g, c =>
-                ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
         }
 
         document.getElementById('logout-link').onclick = async () => {

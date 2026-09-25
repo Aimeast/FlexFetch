@@ -3,7 +3,6 @@ using FlexFetch.Entities;
 using FlexFetch.Services;
 using FlexFetch.Services.Downloaders;
 using FlexFetch.Services.Session;
-using Serilog;
 using ILogger = Serilog.ILogger;
 
 namespace FlexFetch.Tests;
@@ -11,9 +10,7 @@ namespace FlexFetch.Tests;
 [TestClass]
 public sealed class SessionDiagnosisServiceTests
 {
-    private static readonly ILogger Log = new LoggerConfiguration()
-        .MinimumLevel.Warning()
-        .CreateLogger();
+    private static readonly ILogger Log = TestLog.Instance;
 
     private static ProbeResult Result(YtdlpOutputClass cls, bool success) =>
         new(success, cls, success ? Array.Empty<string>() : new[] { "ERROR: injected" }, "Probe Video");
@@ -22,8 +19,8 @@ public sealed class SessionDiagnosisServiceTests
         SessionSnapshotService snapshot,
         Func<string, string?, string, CancellationToken, Task<ProbeResult>> runner) =>
         new(snapshot, new SessionProbeService(
-                new YtdlpService(new TestProxy(), Log, TestApp.CreateTempDataDir()),
-                new TestProxy(), Log),
+                new YtdlpService(new DirectProxyService(), Log, TestApp.CreateTempDataDir()),
+                new DirectProxyService(), Log),
             new TestConfig(), Log, runner);
 
     [TestMethod]
@@ -130,16 +127,4 @@ public sealed class SessionDiagnosisServiceTests
             new[] { failed, bot }), "network/proxy");
     }
 
-    private sealed class TestProxy : Services.Routing.IProxyService
-    {
-        public bool ShouldProxy(Uri url) => false;
-
-        public bool ShouldProxyFast(Uri url) => false;
-
-        public HttpMessageHandler CreateHandler(Uri url) => new SocketsHttpHandler { UseProxy = false };
-
-        public string? GetProxyUri(Uri url) => null;
-
-        public string? GetBrowserProxyAddress() => null;
-    }
 }

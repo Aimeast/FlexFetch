@@ -1,5 +1,4 @@
 ﻿using FlexFetch.Config;
-using FlexFetch.Data;
 using FlexFetch.Services;
 using FlexFetch.Services.Downloaders;
 using FlexFetch.Services.Session;

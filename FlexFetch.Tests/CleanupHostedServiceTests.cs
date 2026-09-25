@@ -5,7 +5,6 @@ using FlexFetch.HostedServices;
 using FlexFetch.Services;
 using FlexFetch.Services.Tasks;
 using Microsoft.Extensions.Hosting;
-using Serilog;
 using ILogger = Serilog.ILogger;
 
 namespace FlexFetch.Tests;
@@ -21,17 +20,14 @@ public sealed class CleanupHostedServiceTests
     private IUserRepository? _users;
     private StorageService? _storage;
 
-    private static readonly ILogger Log = new LoggerConfiguration()
-        .MinimumLevel.Warning()
-        .CreateLogger();
+    private static readonly ILogger Log = TestLog.Instance;
 
     private static readonly IHostApplicationLifetime Lifetime = new FakeLifetime();
 
     [TestInitialize]
     public void Setup()
     {
-        _dir = Path.Combine(Path.GetTempPath(), "flexfetch-test-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(_dir);
+        _dir = TestApp.CreateTempDataDir();
         _store = new LiteDbStore(Path.Combine(_dir, "flexfetch.db"));
         _shares = new ShareRepository(_store);
         _tasks = new TaskRepository(_store);

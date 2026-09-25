@@ -5,16 +5,13 @@ using FlexFetch.Services.Routing;
 using FlexFetch.Services.Session;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Serilog;
 
 namespace FlexFetch.Tests;
 
 [TestClass]
 public sealed class DownloaderFactoryTests
 {
-    private static readonly Serilog.ILogger Log = new LoggerConfiguration()
-        .MinimumLevel.Warning()
-        .CreateLogger();
+    private static readonly Serilog.ILogger Log = TestLog.Instance;
 
     [TestMethod]
     public void SelectDownloaders_SpecificDownloader_ReturnsItAlone()
@@ -164,18 +161,6 @@ public sealed class DownloaderFactoryTests
         }
     }
 
-    private sealed class DirectProxyService : IProxyService
-    {
-        public bool ShouldProxy(Uri url) => false;
-
-        public bool ShouldProxyFast(Uri url) => false;
-
-        public HttpMessageHandler CreateHandler(Uri url) => new SocketsHttpHandler { UseProxy = false };
-
-        public string? GetProxyUri(Uri url) => null;
-
-        public string? GetBrowserProxyAddress() => null;
-    }
 
     private sealed class FakeDownloader : IDownloader
     {

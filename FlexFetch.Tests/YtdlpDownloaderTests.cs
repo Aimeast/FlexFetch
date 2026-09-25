@@ -1,8 +1,6 @@
 ﻿using FlexFetch.Services;
 using FlexFetch.Services.Downloaders;
-using FlexFetch.Services.Routing;
 using FlexFetch.Services.Session;
-using Serilog;
 using YoutubeDLSharp;
 using YoutubeDLSharp.Metadata;
 using YoutubeDLSharp.Options;
@@ -13,9 +11,7 @@ namespace FlexFetch.Tests;
 [TestClass]
 public sealed class YtdlpDownloaderTests
 {
-    private static readonly ILogger Log = new LoggerConfiguration()
-        .MinimumLevel.Warning()
-        .CreateLogger();
+    private static readonly ILogger Log = TestLog.Instance;
 
     private static YtdlpDownloader CreateDownloader(Func<string, OptionSet, CancellationToken, Task<RunResult<VideoData>>>? fetch = null)
     {
@@ -308,16 +304,4 @@ public sealed class YtdlpDownloaderTests
             () => downloader.AnalyzeAsync("https://www.example.com/video/xyz789", "task-1", CancellationToken.None));
     }
 
-    private sealed class DirectProxyService : IProxyService
-    {
-        public bool ShouldProxy(Uri url) => false;
-
-        public bool ShouldProxyFast(Uri url) => false;
-
-        public HttpMessageHandler CreateHandler(Uri url) => new SocketsHttpHandler { UseProxy = false };
-
-        public string? GetProxyUri(Uri url) => null;
-
-        public string? GetBrowserProxyAddress() => null;
-    }
 }

@@ -152,6 +152,4 @@ public sealed class AuthApiTests
         var after = await client.GetAsync("/api/users/pending");
         Assert.AreEqual(HttpStatusCode.Unauthorized, after.StatusCode);
     }
-
-    private sealed record LoginResponse(string Id, string UserName, string Role);
 }

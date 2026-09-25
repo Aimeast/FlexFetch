@@ -1,5 +1,4 @@
-﻿using FlexFetch.Entities;
-
+﻿
 namespace FlexFetch.Entities;
 
 /// <summary>

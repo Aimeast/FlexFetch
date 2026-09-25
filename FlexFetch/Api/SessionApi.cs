@@ -1,6 +1,4 @@
-﻿using FlexFetch.Config;
-using FlexFetch.Services.Session;
-using Microsoft.AspNetCore.Mvc;
+﻿using FlexFetch.Services.Session;
 using ILogger = Serilog.ILogger;
 
 namespace FlexFetch.Api;

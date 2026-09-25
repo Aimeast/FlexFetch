@@ -1,12 +1,14 @@
 ﻿using FlexFetch.Entities;
+using FlexFetch.Services.Session;
 
 namespace FlexFetch.Services.Downloaders;
 
 /// <summary>
 /// Netscape-format cookie file helpers: serialize a snapshot/candidate jar
-/// to text and parse such text back. The text lands wherever the caller
-/// needs it (the snapshot file, one-time copies handed to yt-dlp, candidate
-/// jars for probes) - this class owns only the format.
+/// to text and read such files back (the shared text-format parsing lives
+/// in CookieTextParser). The text lands wherever the caller needs it (the
+/// snapshot file, one-time copies handed to yt-dlp, candidate jars for
+/// probes).
 /// </summary>
 public static class CookieFile
 {
@@ -42,59 +44,12 @@ public static class CookieFile
     }
 
     /// <summary>
-    /// Parses a Netscape cookie file back into cookie items. The HttpOnly
-    /// prefix must be checked BEFORE the generic comment check: the core
-    /// session family is HttpOnly, and a plain StartsWith('#') test silently
-    /// drops every one of those lines. Returns an empty list when the file is
+    /// Parses a Netscape cookie file back into cookie items (the format is
+    /// parsed by CookieTextParser). Returns an empty list when the file is
     /// missing or unreadable.
     /// </summary>
-    public static IReadOnlyList<CookieItem> Read(string path)
-    {
-        var result = new List<CookieItem>();
-        if (!File.Exists(path))
-        {
-            return result;
-        }
-
-        foreach (var raw in File.ReadAllLines(path))
-        {
-            var line = raw.Trim();
-            if (line.Length == 0)
-            {
-                continue;
-            }
-
-            var httpOnly = line.StartsWith(HttpOnlyPrefix, StringComparison.Ordinal);
-            if (httpOnly)
-            {
-                line = line[HttpOnlyPrefix.Length..];
-            }
-            else if (line.StartsWith('#'))
-            {
-                continue;
-            }
-
-            var parts = line.Split('\t');
-            if (parts.Length < 7)
-            {
-                continue;
-            }
-
-            var expires = long.TryParse(parts[4], out var secs) && secs > 0
-                ? (DateTime?)DateTimeOffset.FromUnixTimeSeconds(secs).UtcDateTime
-                : null;
-            result.Add(new CookieItem
-            {
-                Domain = parts[0],
-                Path = parts[2],
-                Secure = string.Equals(parts[3], "TRUE", StringComparison.OrdinalIgnoreCase),
-                HttpOnly = httpOnly,
-                ExpiresAt = expires,
-                Name = parts[5],
-                Value = parts[6],
-            });
-        }
-
-        return result;
-    }
+    public static IReadOnlyList<CookieItem> Read(string path) =>
+        File.Exists(path)
+            ? CookieTextParser.ParseNetscape(File.ReadAllText(path)).Cookies
+            : [];
 }

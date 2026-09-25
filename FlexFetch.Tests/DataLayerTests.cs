@@ -24,8 +24,7 @@ public sealed class DataLayerTests
 
     private string NewDbPath()
     {
-        _dir = Path.Combine(Path.GetTempPath(), "flexfetch-test-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(_dir);
+        _dir = TestApp.CreateTempDataDir();
         return Path.Combine(_dir, "flexfetch.db");
     }
 

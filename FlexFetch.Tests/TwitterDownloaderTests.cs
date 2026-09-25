@@ -1,6 +1,4 @@
 ﻿using FlexFetch.Services.Downloaders;
-using FlexFetch.Services.Routing;
-using Serilog;
 using ILogger = Serilog.ILogger;
 
 namespace FlexFetch.Tests;
@@ -8,9 +6,7 @@ namespace FlexFetch.Tests;
 [TestClass]
 public sealed class TwitterDownloaderTests
 {
-    private static readonly ILogger Log = new LoggerConfiguration()
-        .MinimumLevel.Warning()
-        .CreateLogger();
+    private static readonly ILogger Log = TestLog.Instance;
 
     private static TwitterDownloader CreateDownloader() =>
         new(new DirectProxyService(), Log);
@@ -63,16 +59,4 @@ public sealed class TwitterDownloaderTests
         Assert.IsNull(analysis.ContentText);
     }
 
-    private sealed class DirectProxyService : IProxyService
-    {
-        public bool ShouldProxy(Uri url) => false;
-
-        public bool ShouldProxyFast(Uri url) => false;
-
-        public HttpMessageHandler CreateHandler(Uri url) => new SocketsHttpHandler { UseProxy = false };
-
-        public string? GetProxyUri(Uri url) => null;
-
-        public string? GetBrowserProxyAddress() => null;
-    }
 }

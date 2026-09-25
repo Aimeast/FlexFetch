@@ -31,14 +31,10 @@
         </div>
     </main>
 
+    <script src="/app.js"></script>
     <script>
         const token = new URLSearchParams(location.search).get('token');
         const STATUS = { Queued: 0, Running: 1, Completed: 2, Failed: 3 };
-
-        function esc(s) {
-            return (s || '').replace(/[&<>"']/g, c =>
-                ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-        }
 
         async function load() {
             if (!token) { showError('Missing share token'); return; }
@@ -106,14 +102,6 @@
         function showError(msg) {
             document.getElementById('info').style.display = 'none';
             alert(msg);
-        }
-
-        function fmtSize(bytes) {
-            if (bytes == null) return '-';
-            const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-            let i = 0;
-            while (bytes >= 1024 && i < units.length - 1) { bytes /= 1024; i++; }
-            return (i ? bytes.toFixed(1) : bytes) + ' ' + units[i];
         }
 
         load();

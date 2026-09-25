@@ -1,5 +1,4 @@
-﻿using FlexFetch.Entities;
-using FlexFetch.Enums;
+﻿using FlexFetch.Enums;
 
 namespace FlexFetch.Entities;
 

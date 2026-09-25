@@ -3,7 +3,6 @@ using FlexFetch.Entities;
 using FlexFetch.Services;
 using FlexFetch.Services.Downloaders;
 using FlexFetch.Services.Routing;
-using Serilog;
 using ILogger = Serilog.ILogger;
 using TaskStatus = FlexFetch.Enums.TaskStatus;
 
@@ -16,15 +15,12 @@ public sealed class GenericFileDownloaderTests
     private StorageService? _storage;
     private GenericFileDownloader? _downloader;
 
-    private static readonly ILogger Log = new LoggerConfiguration()
-        .MinimumLevel.Warning()
-        .CreateLogger();
+    private static readonly ILogger Log = TestLog.Instance;
 
     [TestInitialize]
     public void Setup()
     {
-        _dir = Path.Combine(Path.GetTempPath(), "flexfetch-test-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(_dir);
+        _dir = TestApp.CreateTempDataDir();
         _storage = new StorageService(_dir);
         _downloader = new GenericFileDownloader(
             new DirectProxyService(),
@@ -197,6 +193,5 @@ public sealed class GenericFileDownloaderTests
 
         public string? GetProxyUri(Uri url) => null;
 
-        public string? GetBrowserProxyAddress() => null;
     }
 }

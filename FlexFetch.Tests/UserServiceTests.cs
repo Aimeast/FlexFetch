@@ -17,8 +17,7 @@ public sealed class UserServiceTests
     [TestInitialize]
     public void Setup()
     {
-        _dir = Path.Combine(Path.GetTempPath(), "flexfetch-test-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(_dir);
+        _dir = TestApp.CreateTempDataDir();
         _store = new LiteDbStore(Path.Combine(_dir, "flexfetch.db"));
         _config = new TestConfig();
         _service = new UserService(new UserRepository(_store), _config);

@@ -1,6 +1,8 @@
-﻿using Microsoft.AspNetCore.Mvc.Testing;
+﻿using FlexFetch.Services.Routing;
+using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Primitives;
+using Serilog;
 
 namespace FlexFetch.Tests;
 
@@ -17,18 +19,45 @@ public static class TestApp
         return dir;
     }
 
-    public static WebApplicationFactory<Program> CreateFactory(string dataDir, string adminPassword = "admin-pass-1")
+    public static WebApplicationFactory<Program> CreateFactory(string dataDir)
     {
         return new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
-            builder.UseSetting("Data:Dir", dataDir);
-            builder.UseSetting("Admin:InitialPassword", adminPassword);
+            builder.UseSetting("storage:dataDir", dataDir);
+            builder.UseSetting("Admin:InitialPassword", "admin-pass-1");
             // Disable file logging so the temporary data dir is not locked
             // by a rolling log file during cleanup.
             builder.UseSetting("Logging:WriteToFile", "false");
         });
     }
 }
+
+/// <summary>
+/// An IProxyService fake with no proxy configured: every URL goes direct.
+/// </summary>
+public sealed class DirectProxyService : IProxyService
+{
+    public bool ShouldProxy(Uri url) => false;
+
+    public bool ShouldProxyFast(Uri url) => false;
+
+    public HttpMessageHandler CreateHandler(Uri url) => new SocketsHttpHandler { UseProxy = false };
+
+    public string? GetProxyUri(Uri url) => null;
+}
+
+/// <summary>
+/// Serilog logger that swallows records: tests assert outcomes, not log lines.
+/// </summary>
+public static class TestLog
+{
+    public static readonly ILogger Instance = new LoggerConfiguration()
+        .MinimumLevel.Warning()
+        .CreateLogger();
+}
+
+/// <summary>Shape of the /api/auth/login response used by API tests.</summary>
+internal sealed record LoginResponse(string Id, string UserName, string Role);
 
 /// <summary>
 /// Mutable in-memory IConfiguration for unit tests: values are set with the

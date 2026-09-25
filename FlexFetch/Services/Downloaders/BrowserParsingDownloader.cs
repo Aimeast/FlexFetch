@@ -83,38 +83,22 @@ public sealed class BrowserParsingDownloader : IDownloader
 
     /// <summary>
     /// Classifies a network response as media based on Content-Type (video/*,
-    /// audio/*, HLS/DASH manifests) with a URL-extension fallback.
-    /// Pure logic, unit-testable.
+    /// audio/*, HLS/DASH manifests - the shared DirectLinkDetector rules) with
+    /// a URL-extension fallback. A bare octet-stream is deliberately not
+    /// treated as media here: every unknown binary shows up as octet-stream,
+    /// so only the URL extension decides.
     /// </summary>
     public static bool IsMediaResponse(IReadOnlyDictionary<string, string> headers, string url)
     {
-        if (headers.TryGetValue("Content-Type", out var contentType))
+        if (headers.TryGetValue("Content-Type", out var contentType)
+            && DirectLinkDetector.IsMediaContentType(contentType)
+            && !contentType.Contains("octet-stream", StringComparison.OrdinalIgnoreCase))
         {
-            var ct = contentType.ToLowerInvariant();
-            if (ct.StartsWith("video/", StringComparison.Ordinal)
-                || ct.StartsWith("audio/", StringComparison.Ordinal))
-            {
-                return true;
-            }
-
-            // HLS / DASH manifests.
-            if (ct.Contains("mpegurl") || ct.Contains("mpd"))
-            {
-                return true;
-            }
-
-            // Unknown binary often serves media; fall back to the extension.
-            if (ct.Contains("octet-stream") && HasMediaExtension(url))
-            {
-                return true;
-            }
+            return true;
         }
 
-        return HasMediaExtension(url);
+        return DirectLinkDetector.HasMediaExtension(url);
     }
-
-    /// <summary>True when the URL path ends with a common media extension.</summary>
-    public static bool HasMediaExtension(string url) => DirectLinkDetector.HasMediaExtension(url);
 
     /// <summary>Browser sniffing always expands children; nothing to download here.</summary>
     public Task DownloadAsync(TaskItem task, AnalysisResult analysis, Action<double> progress, CancellationToken cancellationToken) =>

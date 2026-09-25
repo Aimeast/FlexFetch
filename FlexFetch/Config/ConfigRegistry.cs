@@ -2,8 +2,8 @@
 
 /// <summary>
 /// Central configuration registry: every config item is declared once here
-/// with its category, default value and validator. The registry is the
-/// single source of truth for the set of known configuration keys.
+/// with its default value and validator. The registry is the single source
+/// of truth for the set of known configuration keys.
 /// </summary>
 public static class ConfigRegistry
 {
@@ -39,49 +39,42 @@ public static class ConfigRegistry
             new()
             {
                 Key = ConfigKeys.RegistrationPolicy,
-                Category = "Account",
                 DefaultValue = "Open",
                 Validator = v => Enum.TryParse<RegistrationPolicy>(v, true, out _) ? null : "Must be Open, Closed or Approval",
             },
             new()
             {
                 Key = ConfigKeys.SessionHours,
-                Category = "Account",
                 DefaultValue = "168",
                 Validator = PositiveInt("Must be a positive number of hours"),
             },
             new()
             {
                 Key = ConfigKeys.InactiveDays,
-                Category = "Account",
                 DefaultValue = "30",
                 Validator = NonNegativeInt("Must be a non-negative number of days (0 disables cleanup)"),
             },
             new()
             {
                 Key = ConfigKeys.MaxConcurrency,
-                Category = "Download",
                 DefaultValue = "2",
                 Validator = PositiveInt("Must be a positive concurrency count"),
             },
             new()
             {
                 Key = ConfigKeys.MaxRetries,
-                Category = "Download",
                 DefaultValue = "3",
                 Validator = NonNegativeInt("Must be a non-negative retry count"),
             },
             new()
             {
                 Key = ConfigKeys.TimeoutSeconds,
-                Category = "Download",
                 DefaultValue = "60",
                 Validator = PositiveInt("Must be a positive number of seconds"),
             },
             new()
             {
                 Key = ConfigKeys.Proxy,
-                Category = "Network",
                 DefaultValue = string.Empty,
                 Validator = v => string.IsNullOrWhiteSpace(v) || Uri.TryCreate(v.StartsWith("socks5") ? v : $"http://{v}", UriKind.Absolute, out _)
                     ? null
@@ -90,7 +83,6 @@ public static class ConfigRegistry
             new()
             {
                 Key = ConfigKeys.NetworkHttpProxy,
-                Category = "Network",
                 // Optional dedicated http proxy for installer child processes
                 // (deno install, Playwright browser download): they cannot use
                 // a socks5 proxy. Empty = installers run direct/mirrored.
@@ -103,114 +95,74 @@ public static class ConfigRegistry
             new()
             {
                 Key = ConfigKeys.RouteRules,
-                Category = "Network",
                 DefaultValue = string.Empty,
                 Validator = _ => null,
             },
             new()
             {
                 Key = ConfigKeys.DefaultAction,
-                Category = "Network",
                 DefaultValue = "UseProxy",
                 Validator = v => v is "UseProxy" or "Direct" ? null : "Must be UseProxy or Direct",
             },
             new()
             {
                 Key = ConfigKeys.SessionPeriodHours,
-                Category = "Session",
                 DefaultValue = "12",
                 Validator = PositiveInt("Must be a positive number of hours"),
             },
             new()
             {
                 Key = ConfigKeys.SessionCanaryReexportThrottleHours,
-                Category = "Session",
                 DefaultValue = "1",
                 Validator = PositiveInt("Must be a positive number of hours"),
             },
             new()
             {
                 Key = ConfigKeys.SessionCanaryFailureThreshold,
-                Category = "Session",
                 DefaultValue = "3",
                 Validator = PositiveInt("Must be a positive failure count"),
             },
             new()
             {
                 Key = ConfigKeys.SessionProbeUrl,
-                Category = "Session",
                 DefaultValue = "https://www.youtube.com/watch?v=aqz-KE-bpKQ",
                 Validator = v => Uri.TryCreate(v, UriKind.Absolute, out _) ? null : "Must be an absolute URL",
             },
             new()
             {
                 Key = ConfigKeys.SessionHumanize,
-                Category = "Session",
                 DefaultValue = "true",
                 Validator = BoolValidator("Must be true or false"),
             },
             new()
             {
                 Key = ConfigKeys.AutoUpgrade,
-                Category = "Operations",
                 DefaultValue = "true",
                 Validator = BoolValidator("Must be true or false"),
             },
             new()
             {
                 Key = ConfigKeys.UpgradeHours,
-                Category = "Operations",
                 DefaultValue = "24",
                 Validator = PositiveInt("Must be a positive number of hours"),
             },
             new()
             {
                 Key = ConfigKeys.AutoInstallDeps,
-                Category = "Operations",
                 DefaultValue = "true",
                 Validator = BoolValidator("Must be true or false"),
             },
             new()
             {
-                Key = ConfigKeys.LogLevel,
-                Category = "Logging",
-                DefaultValue = "Information",
-                Validator = v => Enum.TryParse<Serilog.Events.LogEventLevel>(v, true, out _) ? null : "Must be a Serilog log level",
-            },
-            new()
-            {
-                Key = ConfigKeys.LogOutput,
-                Category = "Logging",
-                DefaultValue = "Console,File",
-                Validator = _ => null,
-            },
-            new()
-            {
                 Key = ConfigKeys.DataDir,
-                Category = "Storage",
                 DefaultValue = ".flexfetch",
                 Validator = v => string.IsNullOrWhiteSpace(v) ? "Must not be empty" : null,
             },
             new()
             {
                 Key = ConfigKeys.ShareTokenHours,
-                Category = "Security",
                 DefaultValue = "0",
                 Validator = NonNegativeInt("Must be a non-negative number of hours (0 means no expiry)"),
-            },
-            new()
-            {
-                Key = ConfigKeys.HttpsEnabled,
-                Category = "Security",
-                DefaultValue = "false",
-                Validator = BoolValidator("Must be true or false"),
-            },
-            new()
-            {
-                Key = ConfigKeys.EnableCompression,
-                Category = "Security",
-                DefaultValue = "true",
-                Validator = BoolValidator("Must be true or false"),
             },
         };
 

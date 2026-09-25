@@ -41,15 +41,9 @@ public static class ConfigKeys
     public const string UpgradeHours = "ops.upgradePeriodHours";
     public const string AutoInstallDeps = "ops.autoInstallDeps";
 
-    // Logging
-    public const string LogLevel = "logging.level";
-    public const string LogOutput = "logging.output";
-
     // Storage
     public const string DataDir = "storage.dataDir";
 
     // Security
     public const string ShareTokenHours = "security.shareTokenHours";
-    public const string HttpsEnabled = "security.httpsEnabled";
-    public const string EnableCompression = "security.enableCompression";
 }

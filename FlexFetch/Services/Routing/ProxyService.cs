@@ -30,13 +30,6 @@ public sealed class ProxyService : IProxyService
         _chain = BuildChain();
     }
 
-    /// <summary>Rebuilds the route chain from current configuration.</summary>
-    public void Reload()
-    {
-        _chain = BuildChain();
-        _log.Information("Proxy routing rules reloaded");
-    }
-
     public bool ShouldProxy(Uri url)
     {
         var proxy = GetProxyAddress();
@@ -71,8 +64,6 @@ public sealed class ProxyService : IProxyService
     /// <summary>Proxy URI for external tools (yt-dlp --proxy), or null for direct.</summary>
     public string? GetProxyUri(Uri url) =>
         ShouldProxy(url) ? GetProxyAddress() : null;
-
-    public string? GetBrowserProxyAddress() => GetProxyAddress();
 
     /// <summary>
     /// Fast, DNS-free proxy decision for the browser route predicate: only

@@ -26,7 +26,7 @@ COPY --from=build /app/publish .
 # Data directory must be writable and is expected to be mounted as a volume.
 ENV ASPNETCORE_ENVIRONMENT=Production
 ENV ASPNETCORE_URLS=http://0.0.0.0:8080
-ENV Data:Dir=/data
+ENV storage:dataDir=/data
 
 RUN mkdir -p /data && chmod 755 /data
 

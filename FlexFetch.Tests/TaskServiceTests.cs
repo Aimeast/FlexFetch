@@ -4,7 +4,6 @@ using FlexFetch.Entities;
 using FlexFetch.Services;
 using FlexFetch.Services.Downloaders;
 using FlexFetch.Services.Tasks;
-using Serilog;
 using ILogger = Serilog.ILogger;
 using TaskStatus = FlexFetch.Enums.TaskStatus;
 
@@ -21,15 +20,12 @@ public sealed class TaskServiceTests
     private FakeExecutor? _executor;
     private StorageService? _storage;
 
-    private static readonly ILogger Log = new LoggerConfiguration()
-        .MinimumLevel.Warning()
-        .CreateLogger();
+    private static readonly ILogger Log = TestLog.Instance;
 
     [TestInitialize]
     public void Setup()
     {
-        _dir = Path.Combine(Path.GetTempPath(), "flexfetch-test-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(_dir);
+        _dir = TestApp.CreateTempDataDir();
         _store = new LiteDbStore(Path.Combine(_dir, "flexfetch.db"));
         _tasks = new TaskRepository(_store);
         var shares = new ShareRepository(_store);

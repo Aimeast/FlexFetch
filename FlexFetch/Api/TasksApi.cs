@@ -4,7 +4,6 @@ using FlexFetch.Data;
 using FlexFetch.Entities;
 using FlexFetch.Services;
 using FlexFetch.Services.Tasks;
-using Microsoft.AspNetCore.Authorization;
 using TaskStatus = FlexFetch.Enums.TaskStatus;
 
 namespace FlexFetch.Api;

@@ -1,6 +1,5 @@
 ﻿using FlexFetch.Config;
 using FlexFetch.Data;
-using FlexFetch.Entities;
 using FlexFetch.Services;
 using FlexFetch.Services.Tasks;
 using ILogger = Serilog.ILogger;

@@ -10,9 +10,6 @@ public enum AuthFailureReason
     /// <summary>The site demands a signed-in session (e.g. bot check).</summary>
     LoginRequired,
 
-    /// <summary>The resource itself is restricted (no access at all).</summary>
-    Restricted,
-
     /// <summary>The resource is private and requires an authorized account.</summary>
     Private,
 

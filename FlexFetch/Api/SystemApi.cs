@@ -20,8 +20,7 @@ public static class SystemApi
         info.MapGet("/info", (
             TaskService tasks,
             IConfiguration config,
-            YtdlpService ytdlp,
-            FirefoxBrowserService browser) =>
+            YtdlpService ytdlp) =>
         {
             var dataDir = ConfigRegistry.From(config, ConfigKeys.DataDir);
             var disk = GetDiskInfo(dataDir);
@@ -42,7 +41,6 @@ public static class SystemApi
                 ffmpegVersion = ytdlp.GetFfmpegVersionAsync().GetAwaiter().GetResult(),
                 playwrightVersion = typeof(Playwright).Assembly.GetName().Version?.ToString() ?? "unknown",
                 firefox = FirefoxBrowserService.FindFirefoxExecutable() ?? "not-detected",
-                browser = browser.IsRunning ? "firefox-running" : "firefox-stopped",
             });
         });
 

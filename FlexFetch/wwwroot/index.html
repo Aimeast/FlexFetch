@@ -61,6 +61,7 @@
         </div>
     </main>
 
+    <script src="/app.js"></script>
     <script>
         const STATUS = { 0: 'Queued', 1: 'Running', 2: 'Completed', 3: 'Failed' };
         let refreshTimer = null;
@@ -361,20 +362,11 @@
             return fmtSize(total);
         }
 
-        function fmtSize(bytes) {
-            if (bytes == null) return '-';
-            const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-            let i = 0;
-            while (bytes >= 1024 && i < units.length - 1) { bytes /= 1024; i++; }
-            return (i ? bytes.toFixed(1) : bytes) + ' ' + units[i];
-        }
-
         function formatTime(iso) {
             if (!iso) return '-';
             const d = new Date(iso);
             return d.toLocaleString();
         }
-
         async function retryTask(id) {
             try { await api('/api/tasks/' + id + '/retry', { method: 'POST' }); loadTasks(); }
             catch (e) { alert(e.message); }
@@ -408,9 +400,8 @@
             taskCache = (await api('/api/tasks')) || [];
             const t = taskCache.find(x => x.id === id);
             if (!t) return;
-            // findTask above populated the cache; a playlist parent has no
-            // file of its own - its children are what will actually be
-            // deleted, so preview a few of their names.
+            // A playlist parent has no file of its own - its children are
+            // what will actually be deleted, so preview a few of their names.
             let detail = 'URL: ' + t.url;
             if (t.fileName) {
                 detail += '\nFile: ' + t.fileName;
@@ -436,17 +427,6 @@
         }
 
         let taskCache = [];
-        async function findTask(id) {
-            if (taskCache.length === 0) {
-                taskCache = (await api('/api/tasks')) || [];
-            }
-            return taskCache.find(t => t.id === id);
-        }
-
-        function esc(s) {
-            return (s || '').replace(/[&<>"']/g, c =>
-                ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-        }
 
         document.getElementById('logout-link').onclick = logout;
 

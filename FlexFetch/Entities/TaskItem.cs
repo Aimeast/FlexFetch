@@ -1,5 +1,4 @@
-﻿using FlexFetch.Entities;
-using TaskStatus = FlexFetch.Enums.TaskStatus;
+﻿using TaskStatus = FlexFetch.Enums.TaskStatus;
 
 namespace FlexFetch.Entities;
 

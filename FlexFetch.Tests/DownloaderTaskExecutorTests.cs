@@ -1,8 +1,5 @@
 ﻿using FlexFetch.Entities;
-using FlexFetch.Services;
 using FlexFetch.Services.Downloaders;
-using FlexFetch.Services.Routing;
-using FlexFetch.Services.Tasks;
 using Serilog;
 
 namespace FlexFetch.Tests;
@@ -10,9 +7,7 @@ namespace FlexFetch.Tests;
 [TestClass]
 public sealed class DownloaderTaskExecutorTests
 {
-    private static readonly ILogger Log = new LoggerConfiguration()
-        .MinimumLevel.Warning()
-        .CreateLogger();
+    private static readonly ILogger Log = TestLog.Instance;
 
     [TestMethod]
     public async Task ExecuteAsync_ManifestContentType_KeepsYtdlpFirst()
@@ -101,18 +96,6 @@ public sealed class DownloaderTaskExecutorTests
         return new DownloaderTaskExecutor(factory, new DirectProxyService(), Log);
     }
 
-    private sealed class DirectProxyService : IProxyService
-    {
-        public bool ShouldProxy(Uri url) => false;
-
-        public bool ShouldProxyFast(Uri url) => false;
-
-        public HttpMessageHandler CreateHandler(Uri url) => new SocketsHttpHandler { UseProxy = false };
-
-        public string? GetProxyUri(Uri url) => null;
-
-        public string? GetBrowserProxyAddress() => null;
-    }
 
     private sealed class FakeDownloader : IDownloader
     {

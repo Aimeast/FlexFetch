@@ -1,8 +1,4 @@
-﻿using System.Net;
-using System.Text.Json;
-using FlexFetch.Config;
-using FlexFetch.Data;
-using FlexFetch.Services.Routing;
+﻿using FlexFetch.Services.Routing;
 using Serilog;
 using YoutubeDLSharp;
 using ILogger = Serilog.ILogger;
@@ -432,25 +428,41 @@ public sealed class YtdlpService
             psi.Environment["HTTP_PROXY"] = proxyUrl;
         }
 
-        using var process = System.Diagnostics.Process.Start(psi);
-        if (process is null)
-        {
-            throw new InvalidOperationException($"Failed to start process: {fileName}");
-        }
+        await RunProcessAsync(psi, cancellationToken, _log);
+    }
+
+    /// <summary>
+    /// Runs a process to completion and throws on a non-zero exit code.
+    /// Shared with the session-side services (deno-based installs). When a
+    /// logger is given the combined output is logged on success.
+    /// </summary>
+    public static async Task RunProcessAsync(System.Diagnostics.ProcessStartInfo psi, CancellationToken cancellationToken, ILogger? log = null)
+    {
+        using var process = System.Diagnostics.Process.Start(psi)
+            ?? throw new InvalidOperationException($"Failed to start process: {psi.FileName}");
 
         var stdout = await process.StandardOutput.ReadToEndAsync(cancellationToken);
         var stderr = await process.StandardError.ReadToEndAsync(cancellationToken);
         await process.WaitForExitAsync(cancellationToken);
         if (process.ExitCode != 0)
         {
-            throw new InvalidOperationException($"{Path.GetFileName(fileName)} {args} failed: {stderr.Trim()}");
+            throw new InvalidOperationException(
+                $"{Path.GetFileName(psi.FileName)} failed (exit {process.ExitCode}): {stderr.Trim()}");
+        }
+
+        if (log is null)
+        {
+            return;
         }
 
         // Some CLIs (e.g. deno upgrade) write their output to stderr even on
         // success, so log both streams to avoid an empty "output:" line.
         var output = string.Join(Environment.NewLine,
             new[] { stdout, stderr }.Where(s => !string.IsNullOrWhiteSpace(s)));
-        _log.Information("{File} {Args} output: {Output}", Path.GetFileName(fileName), args, output.Trim());
+        log.Information("{File} {Args} output: {Output}",
+            Path.GetFileName(psi.FileName),
+            psi.Arguments.Length > 0 ? psi.Arguments : string.Join(' ', psi.ArgumentList),
+            output.Trim());
     }
 
     private async Task DownloadYtDlpAsync(CancellationToken cancellationToken)
@@ -513,8 +525,9 @@ public sealed class YtdlpService
     /// Downloads a file through the proxy policy with a bounded timeout.
     /// The shared routing handler already follows redirects, so latest-release
     /// URLs (yt-dlp/deno) that respond with 302 are downloaded correctly.
+    /// Shared with the session-side services (PO token provider installs).
     /// </summary>
-    private async Task<byte[]> DownloadBytesAsync(string url, CancellationToken cancellationToken)
+    public async Task<byte[]> DownloadBytesAsync(string url, CancellationToken cancellationToken)
     {
         var uri = new Uri(url);
         using var handler = _proxy.CreateHandler(uri);

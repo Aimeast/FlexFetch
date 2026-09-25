@@ -1,5 +1,4 @@
-﻿using FlexFetch.Entities;
-using FlexFetch.Services.Routing;
+﻿using FlexFetch.Services.Routing;
 using FlexFetch.Services.Session;
 using Serilog;
 using YoutubeDLSharp;
