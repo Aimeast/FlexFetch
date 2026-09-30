@@ -10,6 +10,8 @@ public static class ConfigKeys
     public const string RegistrationPolicy = "account.registrationPolicy";
     public const string SessionHours = "account.sessionHours";
     public const string InactiveDays = "account.inactiveDays";
+    public const string AllowAnonymous = "account.allowAnonymous";
+    public const string AnonymousSessionHours = "account.anonymousSessionHours";
 
     // Download
     public const string MaxConcurrency = "download.maxConcurrency";

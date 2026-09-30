@@ -56,6 +56,25 @@ public static class ConfigRegistry
             },
             new()
             {
+                // When enabled, visitors without an account can use the task
+                // API through per-browser guest sessions (read, submit,
+                // download, delete). Account management stays signed-in only.
+                Key = ConfigKeys.AllowAnonymous,
+                DefaultValue = "false",
+                Validator = BoolValidator("Must be true or false"),
+            },
+            new()
+            {
+                // Idle lifetime of a guest session: when the cleanup sweep
+                // finds a session idle beyond this many hours (and with no
+                // tasks still queued/running), the session and all its tasks
+                // and files are deleted. Default: 15 days.
+                Key = ConfigKeys.AnonymousSessionHours,
+                DefaultValue = "360",
+                Validator = PositiveInt("Must be a positive number of hours"),
+            },
+            new()
+            {
                 Key = ConfigKeys.MaxConcurrency,
                 DefaultValue = "2",
                 Validator = PositiveInt("Must be a positive concurrency count"),

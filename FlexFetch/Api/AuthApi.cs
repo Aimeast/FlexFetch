@@ -1,4 +1,5 @@
 ﻿using System.Security.Claims;
+using FlexFetch.Config;
 using FlexFetch.Data;
 using FlexFetch.Entities;
 using FlexFetch.Services;
@@ -10,6 +11,8 @@ namespace FlexFetch.Api;
 public sealed record RegisterRequest(string UserName, string Password);
 
 public sealed record LoginRequest(string UserName, string Password);
+
+public sealed record ChangePasswordRequest(string CurrentPassword, string NewPassword);
 
 public static class AuthApi
 {
@@ -60,6 +63,43 @@ public static class AuthApi
         {
             await ctx.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
             return Results.Ok();
+        });
+
+        // Change the signed-in user's own password. The current password must
+        // be confirmed; the session cookie stays valid afterwards.
+        group.MapPost("/change-password", (ChangePasswordRequest req, UserService users, HttpContext ctx) =>
+        {
+            var userId = ctx.User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrEmpty(userId))
+            {
+                return Results.Unauthorized();
+            }
+
+            return users.ChangePassword(userId, req.CurrentPassword, req.NewPassword) switch
+            {
+                ChangePasswordResult.Success => Results.Ok(),
+                ChangePasswordResult.InvalidCredentials => Results.Json(
+                    new { error = "Current password is incorrect" }, statusCode: StatusCodes.Status401Unauthorized),
+                ChangePasswordResult.InvalidInput => Results.BadRequest(
+                    new { error = "New password must be at least 5 characters" }),
+                _ => Results.Unauthorized(),
+            };
+        }).RequireAuthorization();
+
+        // Public bootstrap info for the web UI: who is signed in and whether
+        // anonymous guest access is enabled on this deployment.
+        group.MapGet("/status", (HttpContext ctx, IUserRepository users, IConfiguration config) =>
+        {
+            var userId = ctx.User.FindFirstValue(ClaimTypes.NameIdentifier);
+            var user = string.IsNullOrEmpty(userId) ? null : users.GetById(userId);
+            return Results.Ok(new
+            {
+                authenticated = user is not null,
+                userName = user?.UserName,
+                role = user?.Role.ToString(),
+                anonymousEnabled = ConfigRegistry.From(config, ConfigKeys.AllowAnonymous)
+                    .Equals("true", StringComparison.OrdinalIgnoreCase),
+            });
         });
 
         // Current signed-in user info (name + role), used by the UI to

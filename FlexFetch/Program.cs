@@ -10,6 +10,7 @@ using FlexFetch.Services.Routing;
 using FlexFetch.Services.Session;
 using FlexFetch.Services.Tasks;
 using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Authorization;
 using Serilog;
 using ILogger = Serilog.ILogger;
 
@@ -58,9 +59,11 @@ builder.Services.AddSingleton(new LiteDbStore(Path.Combine(dataDir, "flexfetch.d
 builder.Services.AddSingleton<IUserRepository, UserRepository>();
 builder.Services.AddSingleton<ITaskRepository, TaskRepository>();
 builder.Services.AddSingleton<IShareRepository, ShareRepository>();
+builder.Services.AddSingleton<IGuestRepository, GuestRepository>();
 
 // Application services.
 builder.Services.AddSingleton<UserService>();
+builder.Services.AddSingleton<GuestSessionService>();
 builder.Services.AddSingleton(Log.Logger);
 
 // Storage + proxy + downloader pipeline.
@@ -127,7 +130,11 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
         };
     });
 builder.Services.AddAuthorizationBuilder()
-    .AddPolicy("Admin", p => p.RequireRole(nameof(UserRole.Admin)));
+    .AddPolicy("Admin", p => p.RequireRole(nameof(UserRole.Admin)))
+    // App functionality (task API): authenticated users, or anonymous
+    // visitors when account.allowAnonymous is enabled (shared guest pool).
+    .AddPolicy("AppAccess", p => p.AddRequirements(new AppAccessRequirement()));
+builder.Services.AddSingleton<IAuthorizationHandler, AppAccessHandler>();
 
 // Production: response compression + HTTPS redirection.
 builder.Services.AddResponseCompression(options => options.EnableForHttps = true);

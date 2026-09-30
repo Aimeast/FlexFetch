@@ -25,6 +25,14 @@ public enum LoginStatus
 
 public sealed record LoginOutcome(LoginStatus Status, User? User);
 
+public enum ChangePasswordResult
+{
+    Success = 0,
+    UserNotFound = 1,
+    InvalidCredentials = 2,
+    InvalidInput = 3,
+}
+
 /// <summary>
 /// Account management: registration policies, password hashing, login/logout,
 /// roles, approve/disable/delete, inactivity determination.
@@ -93,6 +101,34 @@ public sealed class UserService
     }
 
     public User? GetById(string id) => _users.GetById(id);
+
+    /// <summary>
+    /// Changes a user's own password: the current password must verify and
+    /// the new one must satisfy the same rule as registration.
+    /// </summary>
+    public ChangePasswordResult ChangePassword(string userId, string currentPassword, string newPassword)
+    {
+        var user = _users.GetById(userId);
+        if (user is null)
+        {
+            return ChangePasswordResult.UserNotFound;
+        }
+
+        if (!PasswordHasher.Verify(currentPassword, user.PasswordHash))
+        {
+            return ChangePasswordResult.InvalidCredentials;
+        }
+
+        if (!IsValidPassword(newPassword))
+        {
+            return ChangePasswordResult.InvalidInput;
+        }
+
+        user.PasswordHash = PasswordHasher.Hash(newPassword);
+        return _users.Update(user)
+            ? ChangePasswordResult.Success
+            : ChangePasswordResult.UserNotFound;
+    }
 
     public IReadOnlyList<User> GetPending() => _users.GetPending();
 
@@ -186,5 +222,5 @@ public sealed class UserService
     private static bool IsValidUserName(string userName) =>
         userName.Length is >= 3 and <= 32 && userName.All(char.IsLetterOrDigit);
 
-    private static bool IsValidPassword(string password) => password.Length >= 6;
+    private static bool IsValidPassword(string password) => password.Length >= 5;
 }

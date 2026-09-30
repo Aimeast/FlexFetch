@@ -13,6 +13,8 @@
             <a href="/index.html" class="nav-auth" style="display:none">Tasks</a>
             <a href="/session.html" class="nav-auth" style="display:none">Session</a>
             <a href="/system.html" class="nav-auth" style="display:none">System</a>
+            <a href="/account.html" class="nav-user" style="display:none">Account</a>
+            <a href="#" id="signin-link" style="display:none">Sign in</a>
             <a href="#" id="logout-link" style="display:none">Logout</a>
         </nav>
     </header>
@@ -33,6 +35,13 @@
         </div>
 
         <div id="app-section" style="display:none">
+            <div class="msg" id="guest-notice" style="display:none">
+                Guest mode: no sign-in required. Downloads are private to this
+                browser session and are removed from the server when the
+                session expires. Use the Sign in link in the top right corner
+                to switch to your own account.
+            </div>
+
             <div class="card">
                 <h2>New download</h2>
                 <div class="msg" id="submit-msg"></div>
@@ -125,6 +134,7 @@
             document.getElementById('auth-section').style.display = 'block';
             document.getElementById('app-section').style.display = 'none';
             document.getElementById('logout-link').style.display = 'none';
+            document.getElementById('signin-link').style.display = 'none';
             setNavLinks(false);
         }
 
@@ -133,6 +143,8 @@
             document.getElementById('auth-section').style.display = 'none';
             document.getElementById('app-section').style.display = 'block';
             document.getElementById('logout-link').style.display = 'inline';
+            document.getElementById('signin-link').style.display = 'none';
+            document.getElementById('guest-notice').style.display = 'none';
             setNavLinks(true);
             // startRefresh loads tasks immediately once, then keeps the
             // periodic chain alive — no separate loadTasks() call here,
@@ -140,10 +152,37 @@
             startRefresh();
         }
 
-        // Tasks/System/Cookies are admin-only; regular users see only Logout.
+        // Guest mode: anonymous access is enabled and no one is signed in.
+        // The task list shows the shared anonymous pool; the account page
+        // (password change) is meaningless without an account.
+        function showGuest() {
+            stopRefresh();
+            currentRole = 'Guest';
+            document.getElementById('auth-section').style.display = 'none';
+            document.getElementById('app-section').style.display = 'block';
+            document.getElementById('guest-notice').style.display = 'block';
+            document.getElementById('logout-link').style.display = 'none';
+            document.getElementById('signin-link').textContent = 'Sign in';
+            document.getElementById('signin-link').style.display = 'inline';
+            setNavLinks(true);
+            startRefresh();
+        }
+
+        // Guest toggled the Sign in nav link: show the login card instead of
+        // the task list; clicking the link again returns to the task list.
+        function showGuestSignIn() {
+            document.getElementById('auth-section').style.display = 'block';
+            document.getElementById('app-section').style.display = 'none';
+            document.getElementById('signin-link').textContent = 'Back to tasks';
+        }
+
+        // Tasks/System/Session are admin-only; Account is for every signed-in
+        // user. Guests see neither group.
         function setNavLinks(visible) {
             const display = visible && currentRole === 'Admin' ? 'inline' : 'none';
             document.querySelectorAll('.nav-auth').forEach(a => { a.style.display = display; });
+            const userDisplay = visible && currentRole !== 'Guest' ? 'inline' : 'none';
+            document.querySelectorAll('.nav-user').forEach(a => { a.style.display = userDisplay; });
         }
 
         async function login() {
@@ -176,7 +215,7 @@
 
         async function logout() {
             await fetch('/api/auth/logout', { method: 'POST' });
-            showAuth();
+            init();
         }
 
         async function submitTask() {
@@ -430,6 +469,17 @@
 
         document.getElementById('logout-link').onclick = logout;
 
+        // In guest mode the nav link toggles between the login card and the
+        // shared task list; it is hidden in signed-in and logged-out states.
+        document.getElementById('signin-link').onclick = e => {
+            e.preventDefault();
+            if (document.getElementById('auth-section').style.display !== 'none') {
+                showGuest();
+            } else {
+                showGuestSignIn();
+            }
+        };
+
         // Pressing Enter in the username or password field signs in.
         for (const id of ['username', 'password']) {
             document.getElementById(id).addEventListener('keydown', e => {
@@ -462,10 +512,26 @@
             }
         });
 
-        // Detect an existing session: fetch current user; if 401 the auth form shows.
-        fetch('/api/auth/me').then(r => {
-            if (r.ok) r.json().then(me => showApp(me.role));
-        });
+        // Bootstrap: the public status endpoint decides the initial view —
+        // signed in (app), guest mode (anonymous access enabled), or the
+        // login form.
+        async function init() {
+            try {
+                const res = await fetch('/api/auth/status');
+                const status = await res.json();
+                if (status.authenticated) {
+                    showApp(status.role);
+                } else if (status.anonymousEnabled) {
+                    showGuest();
+                } else {
+                    showAuth();
+                }
+            } catch (e) {
+                showAuth();
+            }
+        }
+
+        init();
     </script>
 </body>
 </html>

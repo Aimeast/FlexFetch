@@ -18,6 +18,7 @@ public sealed class CleanupHostedServiceTests
     private ITaskRepository? _tasks;
     private TestConfig? _config;
     private IUserRepository? _users;
+    private IGuestRepository? _guests;
     private StorageService? _storage;
 
     private static readonly ILogger Log = TestLog.Instance;
@@ -33,6 +34,7 @@ public sealed class CleanupHostedServiceTests
         _tasks = new TaskRepository(_store);
         _config = new TestConfig();
         _users = new UserRepository(_store);
+        _guests = new GuestRepository(_store);
         _storage = new StorageService(_dir);
     }
 
@@ -51,7 +53,7 @@ public sealed class CleanupHostedServiceTests
         var tasks = taskService ?? new TaskService(_tasks!, _shares!, _config!, new NoopExecutor(), _storage!, Log);
         var users = userService ?? new UserService(_users!, _config!);
         return new CleanupHostedService(
-            _shares!, _tasks!, _config!, _users!, tasks, users, _storage!, Lifetime, Log);
+            _shares!, _tasks!, _config!, _users!, _guests!, tasks, users, _storage!, Lifetime, Log);
     }
 
     [TestMethod]
@@ -130,6 +132,112 @@ public sealed class CleanupHostedServiceTests
         await service.ExecuteOnceForTestAsync(CancellationToken.None);
 
         Assert.IsNotNull(_tasks!.GetById(taskId));
+    }
+
+    [TestMethod]
+    public async Task ExpiredGuestSession_RemovesTasksFilesAndRecord()
+    {
+        _config!.Set(ConfigKeys.AnonymousSessionHours, "24");
+        var guestId = "guest-testexpire";
+        _guests!.Insert(new GuestSession
+        {
+            Id = guestId,
+            CreatedAt = DateTime.UtcNow.AddHours(-48),
+            LastActiveAt = DateTime.UtcNow.AddHours(-48),
+        });
+
+        // A finished download (inserted directly: Submit would leave the task
+        // queued until a worker picks it up, and queued tasks delay cleanup).
+        var taskId = FlexFetch.Entities.RandomId.New();
+        _tasks!.Insert(new TaskItem
+        {
+            Id = taskId,
+            OwnerUserId = guestId,
+            Url = "https://example.com/a.bin",
+            FileName = "a.bin",
+            Status = Enums.TaskStatus.Completed,
+            Progress = 100,
+        });
+        _storage!.EnsureTaskDir(taskId);
+        File.WriteAllText(_storage.GetTaskFilePath(taskId, "a.bin"), "content");
+
+        var service = CreateService();
+        await service.ExecuteOnceForTestAsync(CancellationToken.None);
+
+        Assert.IsNull(_tasks.GetById(taskId));
+        Assert.IsFalse(Directory.Exists(_storage.GetTaskDir(taskId)));
+        Assert.IsNull(_guests.GetById(guestId));
+    }
+
+    [TestMethod]
+    public async Task ActiveGuestSession_Kept()
+    {
+        _config!.Set(ConfigKeys.AnonymousSessionHours, "24");
+        var guestId = "guest-testactive";
+        _guests!.Insert(new GuestSession { Id = guestId, LastActiveAt = DateTime.UtcNow });
+
+        using var taskService = new TaskService(_tasks!, _shares!, _config, new NoopExecutor(), _storage!, Log);
+        var taskId = taskService.Submit(guestId, "https://example.com/a.bin");
+        _storage!.EnsureTaskDir(taskId);
+        File.WriteAllText(_storage.GetTaskFilePath(taskId, "a.bin"), "content");
+
+        var service = CreateService(taskService);
+        await service.ExecuteOnceForTestAsync(CancellationToken.None);
+
+        Assert.IsNotNull(_tasks!.GetById(taskId));
+        Assert.IsTrue(Directory.Exists(_storage.GetTaskDir(taskId)));
+        Assert.IsNotNull(_guests.GetById(guestId));
+    }
+
+    [TestMethod]
+    public async Task GuestSessionWithRunningTask_KeptUntilFinished()
+    {
+        _config!.Set(ConfigKeys.AnonymousSessionHours, "24");
+        var guestId = "guest-testrunning";
+        _guests!.Insert(new GuestSession
+        {
+            Id = guestId,
+            CreatedAt = DateTime.UtcNow.AddHours(-48),
+            LastActiveAt = DateTime.UtcNow.AddHours(-48),
+        });
+
+        // A long-running download is never interrupted by the sweep; the
+        // session goes once the task no longer runs.
+        var running = new TaskItem
+        {
+            OwnerUserId = guestId,
+            Url = "https://example.com/slow.bin",
+            Status = Enums.TaskStatus.Running,
+        };
+        _tasks!.Insert(running);
+
+        var service = CreateService();
+        await service.ExecuteOnceForTestAsync(CancellationToken.None);
+
+        Assert.IsNotNull(_tasks.GetById(running.Id));
+        Assert.IsNotNull(_guests.GetById(guestId));
+    }
+
+    [TestMethod]
+    public async Task GuestSessionCleanup_DisabledWhenThresholdZero()
+    {
+        _config!.Set(ConfigKeys.AnonymousSessionHours, "0");
+        var guestId = "guest-testdisabled";
+        _guests!.Insert(new GuestSession
+        {
+            Id = guestId,
+            CreatedAt = DateTime.UtcNow.AddDays(-30),
+            LastActiveAt = DateTime.UtcNow.AddDays(-30),
+        });
+
+        using var taskService = new TaskService(_tasks!, _shares!, _config, new NoopExecutor(), _storage!, Log);
+        var taskId = taskService.Submit(guestId, "https://example.com/a.bin");
+
+        var service = CreateService(taskService);
+        await service.ExecuteOnceForTestAsync(CancellationToken.None);
+
+        Assert.IsNotNull(_tasks!.GetById(taskId));
+        Assert.IsNotNull(_guests.GetById(guestId));
     }
 
     private sealed class FakeLifetime : IHostApplicationLifetime

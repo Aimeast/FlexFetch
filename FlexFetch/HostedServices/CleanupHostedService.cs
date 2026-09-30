@@ -3,6 +3,7 @@ using FlexFetch.Data;
 using FlexFetch.Services;
 using FlexFetch.Services.Tasks;
 using ILogger = Serilog.ILogger;
+using TaskStatus = FlexFetch.Enums.TaskStatus;
 
 namespace FlexFetch.HostedServices;
 
@@ -12,7 +13,9 @@ namespace FlexFetch.HostedServices;
 ///    directories whose task no longer exists);
 /// 2. removes download resources (tasks and files) of accounts inactive
 ///    beyond the configured threshold - accounts themselves are kept, and a
-///    re-login starts from an empty state (disabled when the threshold is 0).
+///    re-login starts from an empty state (disabled when the threshold is 0);
+/// 3. removes expired anonymous guest sessions with all their tasks and
+///    files (disabled when the threshold is 0).
 /// </summary>
 public sealed class CleanupHostedService : IntervalHostedService
 {
@@ -20,6 +23,7 @@ public sealed class CleanupHostedService : IntervalHostedService
     private readonly ITaskRepository _tasks;
     private readonly IConfiguration _config;
     private readonly IUserRepository _users;
+    private readonly IGuestRepository _guests;
     private readonly TaskService _taskService;
     private readonly UserService _userService;
     private readonly StorageService _storage;
@@ -29,6 +33,7 @@ public sealed class CleanupHostedService : IntervalHostedService
         ITaskRepository tasks,
         IConfiguration config,
         IUserRepository users,
+        IGuestRepository guests,
         TaskService taskService,
         UserService userService,
         StorageService storage,
@@ -40,6 +45,7 @@ public sealed class CleanupHostedService : IntervalHostedService
         _tasks = tasks;
         _config = config;
         _users = users;
+        _guests = guests;
         _taskService = taskService;
         _userService = userService;
         _storage = storage;
@@ -95,6 +101,36 @@ public sealed class CleanupHostedService : IntervalHostedService
                 {
                     _taskService.Delete(task.Id);
                 }
+            }
+        }
+
+        // Expired anonymous guest sessions: delete the session together with
+        // all its tasks and files. Not time-critical - a session idle beyond
+        // the threshold is removed by this sweep as soon as it runs, except
+        // while it still has tasks queued or running.
+        var guestHours = int.TryParse(Get(ConfigKeys.AnonymousSessionHours), out var hours) ? hours : 360;
+        if (guestHours > 0)
+        {
+            var guestCutoff = now.AddHours(-guestHours);
+            foreach (var guest in _guests.GetIdleBefore(guestCutoff))
+            {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                var guestTasks = _taskService.GetByOwner(guest.Id);
+                if (guestTasks.Any(t => t.Status is TaskStatus.Queued or TaskStatus.Running))
+                {
+                    continue;
+                }
+
+                foreach (var task in guestTasks)
+                {
+                    _taskService.Delete(task.Id);
+                }
+
+                _guests.Delete(guest.Id);
             }
         }
 

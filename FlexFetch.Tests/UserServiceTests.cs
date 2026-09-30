@@ -95,7 +95,15 @@ public sealed class UserServiceTests
     public void Register_InvalidInput_Rejected()
     {
         Assert.AreEqual(RegisterResult.InvalidInput, _service!.Register("ab", "password1"));
-        Assert.AreEqual(RegisterResult.InvalidInput, _service.Register("validname", "123"));
+        Assert.AreEqual(RegisterResult.InvalidInput, _service.Register("validname", "1234"));
+    }
+
+    [TestMethod]
+    public void Register_FiveCharacterPassword_Accepted()
+    {
+        // The only password rule is the minimum length of 5.
+        Assert.AreEqual(RegisterResult.Success, _service!.Register("shorty", "abcde"));
+        Assert.AreEqual(LoginStatus.Success, _service.Login("shorty", "abcde").Status);
     }
 
     [TestMethod]
@@ -121,6 +129,67 @@ public sealed class UserServiceTests
         Assert.IsNotNull(user);
         Assert.IsNotNull(user.LastLoginAt);
         Assert.IsTrue(user.LastLoginAt >= before);
+    }
+
+    [TestMethod]
+    public void ChangePassword_Success_OldPasswordStopsWorking()
+    {
+        _service!.Register("heidi", "password1");
+        var user = _service.Login("heidi", "password1").User;
+        Assert.IsNotNull(user);
+
+        var result = _service.ChangePassword(user.Id, "password1", "newpass1");
+
+        Assert.AreEqual(ChangePasswordResult.Success, result);
+        Assert.AreEqual(LoginStatus.InvalidCredentials, _service.Login("heidi", "password1").Status);
+        Assert.AreEqual(LoginStatus.Success, _service.Login("heidi", "newpass1").Status);
+    }
+
+    [TestMethod]
+    public void ChangePassword_WrongCurrentPassword_Rejected()
+    {
+        _service!.Register("ivan", "password1");
+        var user = _service.Login("ivan", "password1").User;
+        Assert.IsNotNull(user);
+
+        var result = _service.ChangePassword(user.Id, "wrong", "newpass1");
+
+        Assert.AreEqual(ChangePasswordResult.InvalidCredentials, result);
+        Assert.AreEqual(LoginStatus.Success, _service.Login("ivan", "password1").Status);
+    }
+
+    [TestMethod]
+    public void ChangePassword_ShortNewPassword_Rejected()
+    {
+        _service!.Register("judy", "password1");
+        var user = _service.Login("judy", "password1").User;
+        Assert.IsNotNull(user);
+
+        var result = _service.ChangePassword(user.Id, "password1", "abcd");
+
+        Assert.AreEqual(ChangePasswordResult.InvalidInput, result);
+        Assert.AreEqual(LoginStatus.Success, _service.Login("judy", "password1").Status);
+    }
+
+    [TestMethod]
+    public void ChangePassword_FiveCharacterPassword_Accepted()
+    {
+        _service!.Register("karl", "password1");
+        var user = _service.Login("karl", "password1").User;
+        Assert.IsNotNull(user);
+
+        var result = _service.ChangePassword(user.Id, "password1", "abcde");
+
+        Assert.AreEqual(ChangePasswordResult.Success, result);
+        Assert.AreEqual(LoginStatus.Success, _service.Login("karl", "abcde").Status);
+    }
+
+    [TestMethod]
+    public void ChangePassword_UnknownUser_NotFound()
+    {
+        var result = _service!.ChangePassword("missing-user-id", "password1", "newpass1");
+
+        Assert.AreEqual(ChangePasswordResult.UserNotFound, result);
     }
 
     [TestMethod]

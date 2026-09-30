@@ -152,4 +152,68 @@ public sealed class AuthApiTests
         var after = await client.GetAsync("/api/users/pending");
         Assert.AreEqual(HttpStatusCode.Unauthorized, after.StatusCode);
     }
+
+    [TestMethod]
+    public async Task ChangePassword_EndToEnd()
+    {
+        using var factory = TestApp.CreateFactory(_dataDir!);
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/auth/register", new { userName = "alice", password = "password1" });
+        await client.PostAsJsonAsync("/api/auth/login", new { userName = "alice", password = "password1" });
+
+        // Wrong current password: 401, password unchanged.
+        var wrong = await client.PostAsJsonAsync(
+            "/api/auth/change-password", new { currentPassword = "wrong", newPassword = "newpass1" });
+        Assert.AreEqual(HttpStatusCode.Unauthorized, wrong.StatusCode);
+
+        // Too-short new password: 400.
+        var shortPw = await client.PostAsJsonAsync(
+            "/api/auth/change-password", new { currentPassword = "password1", newPassword = "abcd" });
+        Assert.AreEqual(HttpStatusCode.BadRequest, shortPw.StatusCode);
+
+        // Success, then only the new password logs in (on a fresh client).
+        var ok = await client.PostAsJsonAsync(
+            "/api/auth/change-password", new { currentPassword = "password1", newPassword = "newpass1" });
+        Assert.AreEqual(HttpStatusCode.OK, ok.StatusCode);
+
+        using var fresh = factory.CreateClient();
+        var oldLogin = await fresh.PostAsJsonAsync("/api/auth/login", new { userName = "alice", password = "password1" });
+        Assert.AreEqual(HttpStatusCode.Unauthorized, oldLogin.StatusCode);
+        var newLogin = await fresh.PostAsJsonAsync("/api/auth/login", new { userName = "alice", password = "newpass1" });
+        Assert.AreEqual(HttpStatusCode.OK, newLogin.StatusCode);
+    }
+
+    [TestMethod]
+    public async Task ChangePassword_RequiresAuthentication()
+    {
+        using var factory = TestApp.CreateFactory(_dataDir!);
+        using var client = factory.CreateClient();
+
+        var anon = await client.PostAsJsonAsync(
+            "/api/auth/change-password", new { currentPassword = "x", newPassword = "yyyyyy" });
+
+        Assert.AreEqual(HttpStatusCode.Unauthorized, anon.StatusCode);
+    }
+
+    [TestMethod]
+    public async Task Status_ReportsAuthenticationAndAnonymousFlag()
+    {
+        using var factory = TestApp.CreateFactory(_dataDir!);
+        using var client = factory.CreateClient();
+
+        var anon = await client.GetFromJsonAsync<StatusResponse>("/api/auth/status");
+        Assert.IsNotNull(anon);
+        Assert.IsFalse(anon.Authenticated);
+        Assert.IsNull(anon.UserName);
+        Assert.IsFalse(anon.AnonymousEnabled);
+
+        await client.PostAsJsonAsync("/api/auth/register", new { userName = "alice", password = "password1" });
+        await client.PostAsJsonAsync("/api/auth/login", new { userName = "alice", password = "password1" });
+        var signedIn = await client.GetFromJsonAsync<StatusResponse>("/api/auth/status");
+        Assert.IsNotNull(signedIn);
+        Assert.IsTrue(signedIn.Authenticated);
+        Assert.AreEqual("alice", signedIn.UserName);
+        Assert.AreEqual("User", signedIn.Role);
+        Assert.IsFalse(signedIn.AnonymousEnabled);
+    }
 }

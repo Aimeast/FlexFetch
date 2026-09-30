@@ -1,0 +1,95 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Account - FlexFetch</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <header>
+        <h1>FlexFetch</h1>
+        <nav>
+            <a href="/index.html">Tasks</a>
+            <a href="/session.html">Session</a>
+            <a href="/system.html">System</a>
+            <a href="/account.html">Account</a>
+            <a href="#" id="logout-link">Logout</a>
+        </nav>
+    </header>
+    <main>
+        <div class="msg" id="msg"></div>
+
+        <div class="card">
+            <h2>Change password</h2>
+            <label for="current-password">Current password</label>
+            <input id="current-password" type="password" autocomplete="current-password">
+            <label for="new-password">New password</label>
+            <input id="new-password" type="password" autocomplete="new-password">
+            <label for="confirm-password">Confirm new password</label>
+            <input id="confirm-password" type="password" autocomplete="new-password">
+            <div class="row" style="margin-top:0.75rem">
+                <button onclick="changePassword()">Change password</button>
+            </div>
+        </div>
+    </main>
+
+    <script src="/app.js"></script>
+    <script>
+        const msg = document.getElementById('msg');
+
+        async function api(path, options) {
+            const res = await fetch(path, options);
+            if (res.status === 401) { location.href = '/index.html'; return null; }
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.json();
+        }
+
+        let msgTimer = null;
+
+        function show(text, ok) {
+            msg.textContent = text;
+            msg.className = ok ? 'msg ok' : 'msg error';
+            if (msgTimer) clearTimeout(msgTimer);
+            msgTimer = setTimeout(() => { msg.className = 'msg'; }, 4000);
+        }
+
+        async function changePassword() {
+            const currentPassword = document.getElementById('current-password').value;
+            const newPassword = document.getElementById('new-password').value;
+            const confirmPassword = document.getElementById('confirm-password').value;
+            if (newPassword !== confirmPassword) {
+                show('New passwords do not match');
+                return;
+            }
+            try {
+                const res = await fetch('/api/auth/change-password', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ currentPassword, newPassword }),
+                });
+                if (res.status === 400) { show('New password must be at least 5 characters'); return; }
+                if (res.status === 401) { show('Current password is incorrect'); return; }
+                if (!res.ok) { show('HTTP ' + res.status); return; }
+                show('Password changed', true);
+                document.getElementById('current-password').value = '';
+                document.getElementById('new-password').value = '';
+                document.getElementById('confirm-password').value = '';
+            } catch (e) { show(e.message); }
+        }
+
+        document.getElementById('logout-link').onclick = async () => {
+            await fetch('/api/auth/logout', { method: 'POST' });
+            location.href = '/index.html';
+        };
+
+        // The page only makes sense signed in; guests and logged-out
+        // visitors are bounced back to the tasks page (its login form).
+        fetch('/api/auth/status').then(r => r.json()).then(status => {
+            if (!status.authenticated) {
+                location.href = '/index.html';
+            }
+        });
+    </script>
+</body>
+</html>

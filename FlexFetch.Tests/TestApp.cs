@@ -19,7 +19,7 @@ public static class TestApp
         return dir;
     }
 
-    public static WebApplicationFactory<Program> CreateFactory(string dataDir)
+    public static WebApplicationFactory<Program> CreateFactory(string dataDir, bool allowAnonymous = false)
     {
         return new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
@@ -28,6 +28,10 @@ public static class TestApp
             // Disable file logging so the temporary data dir is not locked
             // by a rolling log file during cleanup.
             builder.UseSetting("Logging:WriteToFile", "false");
+            // Always pin the flag explicitly: the test host runs with the
+            // Development environment and would otherwise inherit whatever
+            // appsettings.Development.json happens to set for it.
+            builder.UseSetting("account:allowAnonymous", allowAnonymous ? "true" : "false");
         });
     }
 }
@@ -58,6 +62,9 @@ public static class TestLog
 
 /// <summary>Shape of the /api/auth/login response used by API tests.</summary>
 internal sealed record LoginResponse(string Id, string UserName, string Role);
+
+/// <summary>Shape of the public /api/auth/status response used by API tests.</summary>
+internal sealed record StatusResponse(bool Authenticated, string? UserName, string? Role, bool AnonymousEnabled);
 
 /// <summary>
 /// Mutable in-memory IConfiguration for unit tests: values are set with the
