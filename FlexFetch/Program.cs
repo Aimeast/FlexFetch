@@ -11,6 +11,8 @@ using FlexFetch.Services.Session;
 using FlexFetch.Services.Tasks;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
 using Serilog;
 using ILogger = Serilog.ILogger;
 
@@ -142,10 +144,30 @@ builder.Services.AddResponseCompression(options => options.EnableForHttps = true
 var app = builder.Build();
 
 app.UseResponseCompression();
-if (!builder.Environment.IsDevelopment())
+
+// http traffic redirects to the https endpoint actually bound by the
+// server (IServerAddressesFeature): when https failed to start (unusable
+// certificate, port taken) or is not configured at all, requests stay on
+// http instead of hitting a dead redirect target.
+var serverFeatures = app.Services.GetRequiredService<IServer>().Features;
+app.Use(async (context, next) =>
 {
-    app.UseHttpsRedirection();
-}
+    if (context.Request.Scheme == "http")
+    {
+        var httpsAddress = serverFeatures.Get<IServerAddressesFeature>()?.Addresses
+            .FirstOrDefault(a => a.StartsWith("https://", StringComparison.OrdinalIgnoreCase));
+        if (httpsAddress is not null)
+        {
+            context.Response.StatusCode = StatusCodes.Status307TemporaryRedirect;
+            context.Response.Headers.Location =
+                $"https://{context.Request.Host.Host}:{new Uri(httpsAddress).Port}{context.Request.Path}{context.Request.QueryString}";
+            return;
+        }
+    }
+
+    await next(context);
+});
+
 
 app.UseAuthentication();
 app.UseAuthorization();
