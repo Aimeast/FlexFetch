@@ -14,14 +14,17 @@ public sealed class PotSupervisorHostedService : IntervalHostedService
     private static readonly TimeSpan Interval = TimeSpan.FromMinutes(3);
 
     private readonly PotProviderService _pot;
+    private readonly StartupTasksHostedService _startup;
 
     public PotSupervisorHostedService(
         PotProviderService pot,
+        StartupTasksHostedService startup,
         IHostApplicationLifetime lifetime,
         ILogger log)
         : base(lifetime, log, "PotSupervisor")
     {
         _pot = pot;
+        _startup = startup;
     }
 
     protected override bool RunImmediately => true;
@@ -30,6 +33,9 @@ public sealed class PotSupervisorHostedService : IntervalHostedService
 
     protected override async Task ExecuteOnceAsync(CancellationToken cancellationToken)
     {
+        // The first round may install missing pieces (deno, bgutil) - wait
+        // for the startup component plan so it precedes any install line.
+        await _startup.WhenComponentPlanLogged.WaitAsync(cancellationToken);
         await _pot.EnsureRunningAsync(cancellationToken);
     }
 }

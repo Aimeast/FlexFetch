@@ -1,4 +1,5 @@
-﻿using FlexFetch.Services;
+﻿using FlexFetch.Entities;
+using FlexFetch.Services;
 using FlexFetch.Services.Downloaders;
 using FlexFetch.Services.Session;
 using YoutubeDLSharp;
@@ -304,4 +305,76 @@ public sealed class YtdlpDownloaderTests
             () => downloader.AnalyzeAsync("https://www.example.com/video/xyz789", "task-1", CancellationToken.None));
     }
 
+    [TestMethod]
+    public async Task DownloadAsync_NamesFileUpfront_AndRequestsStreamedProgress()
+    {
+        // yt-dlp repaints its progress bar with \r when piped; without
+        // --newline the updates buffer until the download ends and the task
+        // page shows no progress at all. The file name is known before the
+        // first byte is fetched and must show during the download.
+        var dir = TestApp.CreateTempDataDir();
+        try
+        {
+            var storage = new StorageService(dir);
+            var proxy = new DirectProxyService();
+            var ytdlp = new YtdlpService(proxy, Log, dir);
+            var task = new TaskItem { Id = "t-progress", Url = "https://vimeo.com/123" };
+            var analysis = new AnalysisResult { Title = "Clip", SuggestedFileName = "Clip.webm" };
+            OptionSet? captured = null;
+            string? nameDuringDownload = null;
+            var downloader = new YtdlpDownloader(ytdlp, proxy, storage, Log,
+                download: (_, options, _, _) =>
+                {
+                    captured = options;
+                    nameDuringDownload = task.FileName;
+                    return Task.FromResult(new RunResult<string>(true, Array.Empty<string>(), string.Empty));
+                });
+
+            await downloader.DownloadAsync(task, analysis, _ => { }, CancellationToken.None);
+
+            Assert.AreEqual("Clip.webm", nameDuringDownload, "the file name must be set before the download runs");
+            Assert.AreEqual("Clip.webm", task.FileName);
+            Assert.IsNotNull(captured);
+            Assert.IsTrue(captured!.Newline, "--newline is required for streamed progress");
+            Assert.IsTrue(captured!.Progress);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task DownloadAsync_UsesReportedFinalFileAfterMerge()
+    {
+        // A merged container can differ from the -o template (e.g. webm
+        // fragments merged into mp4): the final name and size must come from
+        // yt-dlp's post-move report, not from the template path.
+        var dir = TestApp.CreateTempDataDir();
+        try
+        {
+            var storage = new StorageService(dir);
+            var proxy = new DirectProxyService();
+            var ytdlp = new YtdlpService(proxy, Log, dir);
+            var task = new TaskItem { Id = "t-merge", Url = "https://vimeo.com/123" };
+            var analysis = new AnalysisResult { Title = "Clip", SuggestedFileName = "Clip.webm" };
+            var downloader = new YtdlpDownloader(ytdlp, proxy, storage, Log,
+                download: (_, _, _, _) =>
+                {
+                    var merged = Path.Combine(storage.GetTaskDir(task.Id), "Clip.mp4");
+                    Directory.CreateDirectory(storage.GetTaskDir(task.Id));
+                    File.WriteAllText(merged, "abc");
+                    return Task.FromResult(new RunResult<string>(true, Array.Empty<string>(), merged));
+                });
+
+            await downloader.DownloadAsync(task, analysis, _ => { }, CancellationToken.None);
+
+            Assert.AreEqual("Clip.mp4", task.FileName);
+            Assert.AreEqual(3L, task.FileSize);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
 }

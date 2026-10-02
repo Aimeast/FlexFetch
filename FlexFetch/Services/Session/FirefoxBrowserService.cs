@@ -144,20 +144,74 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
         }
     }
 
-    /// <summary>True when a Playwright Firefox build is already installed and
-    /// the OS-level libraries it links against are in place (the marker also
-    /// covers an upgraded deployment: browser present on the volume, slim
-    /// image without the libraries).</summary>
+    /// <summary>True when any Playwright-installed Firefox executable exists.
+    /// The executable alone says nothing about the build the running driver
+    /// pins - use <see cref="IsFirefoxReady"/> for launch readiness.</summary>
     public bool IsFirefoxInstalled() => FindFirefoxExecutable() is not null;
 
     public bool IsOsDepsInstalled() =>
         BrowserInstaller.OsDepsInstalled(OsDepsMarkerPath, PlaywrightVersion());
 
-    /// <summary>First Playwright browser root (the env override wins), which
-    /// also hosts the OS-dependency marker - on the data volume in containers.</summary>
+    /// <summary>
+    /// Marker file in the browser root recording the Playwright package
+    /// version that installed the current firefox build. The driver launches
+    /// the exact build its package pins (a package bump changes the expected
+    /// build number), so the presence of "some" firefox build is not launch
+    /// readiness: a stale marker forces a reinstall at the next check. The
+    /// marker lives in the browser root, next to the build it marks, so its
+    /// lifetime matches the build's filesystem (the data volume).
+    /// </summary>
+    public const string BuildMarkerName = ".firefox-build-ok";
+
+    public static void WriteFirefoxBuildMarker() => WriteFirefoxBuildMarker(BrowserRoot());
+
+    public static void WriteFirefoxBuildMarker(string browserRoot)
+    {
+        Directory.CreateDirectory(browserRoot);
+        File.WriteAllText(Path.Combine(browserRoot, BuildMarkerName), PlaywrightVersion());
+    }
+
+    public static bool IsFirefoxBuildCurrent() => IsFirefoxBuildCurrent(BrowserRoot());
+
+    /// <summary>True when the build in the given browser root was put in
+    /// place by the running Playwright package (marker present, version
+    /// matches). The root-taking overloads exist so tests never touch the
+    /// process-global browsers-path environment variable.</summary>
+    public static bool IsFirefoxBuildCurrent(string browserRoot)
+    {
+        try
+        {
+            var markerPath = Path.Combine(browserRoot, BuildMarkerName);
+            return File.Exists(markerPath)
+                && File.ReadAllText(markerPath).Trim() == PlaywrightVersion();
+        }
+        catch
+        {
+            // An unreadable marker counts as stale: the reinstall it
+            // triggers is safe and rewrites it.
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Full launch readiness: a firefox executable exists, the OS-level
+    /// libraries it links against are in place, and the build matches the
+    /// running Playwright package's pinned build number.
+    /// </summary>
+    public bool IsFirefoxReady() =>
+        IsFirefoxInstalled() && IsOsDepsInstalled() && IsFirefoxBuildCurrent();
+
+    /// <summary>First Playwright browser root (the env override wins).</summary>
     public static string BrowserRoot() => GetPlaywrightBrowserRoots().First();
 
-    private string OsDepsMarkerPath => Path.Combine(BrowserRoot(), ".os-deps-ok");
+    /// <summary>
+    /// The OS-dependency marker lives next to the application binaries, NOT
+    /// on the data volume: apt installs the libraries into the container (or
+    /// host) filesystem, so the marker's lifetime must match that filesystem.
+    /// A volume-persistent marker survived container recreation while the
+    /// libraries did not, leaving Firefox unable to load libgtk-3.
+    /// </summary>
+    public string OsDepsMarkerPath => Path.Combine(AppContext.BaseDirectory, ".os-deps-ok");
 
     private static string PlaywrightVersion() =>
         typeof(Playwright).Assembly.GetName().Version?.ToString() ?? "unknown";
@@ -169,7 +223,6 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
             return; // no apt step on Windows, no marker concept either
         }
 
-        Directory.CreateDirectory(BrowserRoot());
         File.WriteAllText(OsDepsMarkerPath, PlaywrightVersion());
     }
 
@@ -183,7 +236,7 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
     /// </summary>
     public async Task EnsureInstalledAsync(CancellationToken cancellationToken = default)
     {
-        if (IsFirefoxInstalled() && IsOsDepsInstalled())
+        if (IsFirefoxReady())
         {
             return;
         }
@@ -193,13 +246,14 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
         {
             // Re-check under the lock: another flow may have finished the
             // install while we waited.
-            if (IsFirefoxInstalled() && IsOsDepsInstalled())
+            if (IsFirefoxReady())
             {
                 return;
             }
 
             await InstallFirefoxCoreAsync(cancellationToken);
             WriteOsDepsMarker();
+            WriteFirefoxBuildMarker();
         }
         finally
         {
@@ -278,7 +332,35 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
                 $"Firefox install exited with code {process.ExitCode}: {output.Trim()}");
         }
 
-        _log.Information("Playwright Firefox install finished: {Output}", output.Trim());
+        // Success lines name what this child process put in place - the OS
+        // libraries (apt) and the browser build are two separate components,
+        // and a bare "install finished" dump does not say what succeeded.
+        if (!OperatingSystem.IsWindows())
+        {
+            _log.Information("Firefox OS libraries installed (apt)");
+        }
+
+        var executable = FindFirefoxExecutable();
+        _log.Information("Firefox {Build} installed ({Executable})",
+            BuildNameFromExecutable(executable), executable ?? "(executable not found)");
+        _log.Information("Playwright installer output: {Output}", output.Trim());
+    }
+
+    /// <summary>Extracts the Playwright build directory name (e.g.
+    /// "firefox-1532") from an installed firefox executable path, for the
+    /// install success log; "unknown build" when the layout is unexpected.</summary>
+    public static string BuildNameFromExecutable(string? executable)
+    {
+        if (string.IsNullOrWhiteSpace(executable))
+        {
+            return "unknown build";
+        }
+
+        // <root>/firefox-1532/firefox/firefox(.exe) -> "firefox-1532"
+        var binaryDir = Path.GetDirectoryName(executable);
+        var buildDir = binaryDir is null ? null : Path.GetDirectoryName(binaryDir);
+        var name = buildDir is null ? string.Empty : Path.GetFileName(buildDir);
+        return name.Length > 0 ? name : "unknown build";
     }
 
     /// <summary>Last up-to-N non-empty lines of a text (a short output must not break slicing).</summary>
@@ -346,7 +428,7 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
                 return;
             }
 
-            if (!IsFirefoxInstalled() || !IsOsDepsInstalled())
+            if (!IsFirefoxReady())
             {
                 await EnsureInstalledAsync();
             }

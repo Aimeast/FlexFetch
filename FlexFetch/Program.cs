@@ -11,6 +11,7 @@ using FlexFetch.Services.Session;
 using FlexFetch.Services.Tasks;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.Extensions.Configuration;
@@ -62,6 +63,13 @@ if (args.Length > 0 && args[0] == "--install-browser")
         }
     }
 
+    if (exitCode == 0 && browserName == "firefox")
+    {
+        // Mark the installed build with this package's version so the
+        // firefox readiness check can detect a future package/build skew.
+        FirefoxBrowserService.WriteFirefoxBuildMarker();
+    }
+
     Environment.Exit(exitCode);
 }
 
@@ -85,6 +93,16 @@ if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(FirefoxBrowserS
         FirefoxBrowserService.BrowsersPathEnv,
         Path.Combine(Path.GetFullPath(dataDir), "components", "ms-playwright"));
 }
+
+// yt-dlp resolves its JS runtime (deno - n-challenge solving and the bgutil
+// PO token script provider) through PATH alone on Linux; the frozen-binary
+// directory shortcut only exists on Windows. The data directory is never on
+// PATH in deployments, so export it here: every spawned child (yt-dlp and
+// the deno it launches for PO tokens) inherits the parent environment.
+// Applied before any component exists - an entry without files is harmless.
+Environment.SetEnvironmentVariable("PATH", YtdlpService.AppendToPathValue(
+    Environment.GetEnvironmentVariable("PATH"),
+    Path.Combine(Path.GetFullPath(dataDir), "components")));
 
 // Editable runtime configuration on the data directory: seeded from the
 // bundled template on first start and loaded last, so volume-persistent
@@ -184,14 +202,24 @@ builder.Services.AddSingleton<ITaskExecutor>(sp => new DownloaderTaskExecutor(
     }));
 builder.Services.AddSingleton<TaskService>();
 
-// Background periodic services. Session maintenance is registered as a
-// concrete singleton first so the session status API can inject it.
+// Background periodic services. Session maintenance and the startup task
+// service are registered as concrete singletons first so other services can
+// inject them (the session status API reads maintenance; the pot supervisor
+// and maintenance await the startup component plan).
 builder.Services.AddSingleton<SessionMaintenanceHostedService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<SessionMaintenanceHostedService>());
-builder.Services.AddHostedService<StartupTasksHostedService>();
+builder.Services.AddSingleton<StartupTasksHostedService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<StartupTasksHostedService>());
 builder.Services.AddHostedService<DependencyUpgradeHostedService>();
 builder.Services.AddHostedService<PotSupervisorHostedService>();
 builder.Services.AddHostedService<CleanupHostedService>();
+
+// The auth cookie is protected by the Data Protection key ring; keep it in
+// the data dir (volume-backed) so cookies survive container recreation -
+// keys left in the container layer die with the image update and force
+// every logged-in browser to re-login.
+builder.Services.AddDataProtection()
+    .PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(dataDir, "keys")));
 
 // Server-side session cookie authentication.
 var sessionHours = int.Parse(ConfigRegistry.From(builder.Configuration, ConfigKeys.SessionHours));

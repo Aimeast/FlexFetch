@@ -194,6 +194,18 @@ public class YtdlpDownloader : IDownloader
             + (analysis.SuggestedFileName ?? task.FileName ?? "video.mp4");
         var options = BuildOptions(new Uri(task.Url), outputPath);
 
+        // yt-dlp repaints its progress bar with carriage returns on a single
+        // line when piped; the process line reader only fires on \n, so
+        // without --newline every update would buffer until the download
+        // ends and the task page would show no progress at all.
+        options.Progress = true;
+        options.Newline = true;
+
+        // The file name is decided before the first byte is fetched: show it
+        // in the task list during the download (it is persisted together
+        // with the first progress update), not only after completion.
+        task.FileName = Path.GetFileName(outputPath);
+
         var result = await _downloadVideo(task.Url, options, progress, cancellationToken);
         string? cookieFile = null;
         try
@@ -216,8 +228,12 @@ public class YtdlpDownloader : IDownloader
             }
 
             ExamineSuccessOutput(result.ErrorOutput, task.Id);
-            task.FileName = Path.GetFileName(outputPath);
-            task.FileSize = File.Exists(outputPath) ? new FileInfo(outputPath).Length : null;
+            // Prefer the path yt-dlp reports after its move/merge step
+            // ("outfile:"): a merged container can differ from the -o
+            // template (e.g. webm fragments merged into mp4).
+            var finalPath = string.IsNullOrWhiteSpace(result.Data) ? outputPath : result.Data;
+            task.FileName = Path.GetFileName(finalPath);
+            task.FileSize = File.Exists(finalPath) ? new FileInfo(finalPath).Length : null;
         }
         finally
         {

@@ -20,6 +20,7 @@ public sealed class SessionMaintenanceHostedService : IntervalHostedService
     private readonly SessionSnapshotService _snapshot;
     private readonly SessionProbeService _probe;
     private readonly SessionExportService _export;
+    private readonly StartupTasksHostedService _startup;
     private readonly ILogger _log;
 
     public SessionMaintenanceHostedService(
@@ -27,6 +28,7 @@ public sealed class SessionMaintenanceHostedService : IntervalHostedService
         SessionSnapshotService snapshot,
         SessionProbeService probe,
         SessionExportService export,
+        StartupTasksHostedService startup,
         IHostApplicationLifetime lifetime,
         ILogger log)
         : base(lifetime, log, "SessionMaintenance")
@@ -35,6 +37,7 @@ public sealed class SessionMaintenanceHostedService : IntervalHostedService
         _snapshot = snapshot;
         _probe = probe;
         _export = export;
+        _startup = startup;
         _log = log;
     }
 
@@ -58,6 +61,10 @@ public sealed class SessionMaintenanceHostedService : IntervalHostedService
 
     protected override async Task ExecuteOnceAsync(CancellationToken cancellationToken)
     {
+        // A check or export can trigger component installs (probe, browser) -
+        // wait for the startup component plan so it precedes any install line.
+        await _startup.WhenComponentPlanLogged.WaitAsync(cancellationToken);
+
         // Importing a session is what opts the deployment in: with a
         // snapshot present maintenance runs, without one it idles.
         if (!_snapshot.Exists)

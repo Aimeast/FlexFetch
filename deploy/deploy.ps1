@@ -102,42 +102,12 @@ else {
 
 # --- 3. Publish from source ----------------------------------------------------
 
-Write-Step 'Publishing from source (dotnet publish)'
-$publishDir = Join-Path $AppDir 'publish'
-if (Test-Path $AppDir) {
-    Write-Host "  App dir exists ($AppDir); publish artifacts will be refreshed in place"
-}
-& dotnet publish (Join-Path $repoRoot 'FlexFetch/FlexFetch.csproj') `
-    -c Release -o $publishDir
-if ($LASTEXITCODE -ne 0) { throw 'dotnet publish failed' }
-
-# --- 4. Configuration generation ----------------------------------------------
-
-Write-Step 'Generating configuration'
-$dataRoot = [IO.Path]::GetFullPath($DataDir)
-New-Item -ItemType Directory -Force -Path $dataRoot | Out-Null
-New-Item -ItemType Directory -Force -Path (Join-Path $dataRoot 'logs') | Out-Null
-
-# appsettings.Production.json: data dir + proxy (proxy optional).
-$production = @{
-    Serilog = @{
-        MinimumLevel = @{
-            Default = 'Information'
-            Override = @{ 'Microsoft.AspNetCore' = 'Warning' }
-        }
-    }
-    Data = @{ Dir = $dataRoot }
-}
-if ($Proxy) {
-    $production.Network = @{ Proxy = $Proxy }
-}
-$productionJson = $production | ConvertTo-Json -Depth 5
-$settingsPath = Join-Path $publishDir 'appsettings.Production.json'
-Set-Content -Path $settingsPath -Value $productionJson -Encoding utf8
-Write-Host "  Wrote $settingsPath"
-
-# --- 5. Service registration & start -------------------------------------------
-
+# Resolve the mode early: in Docker mode the publish output lands at the
+# repository root, where the compose build context expects it (deploy/
+# Dockerfile copies publish/ into the image). Publishing on the host also
+# captures the git reference for System information - a container build
+# never sees .git, so building from source inside the image is no longer
+# supported.
 function Resolve-Mode {
     if ($Mode -ne 'Auto') { return $Mode }
     if (Test-Command docker) { return 'Docker' }
@@ -147,7 +117,54 @@ function Resolve-Mode {
 }
 
 $mode = Resolve-Mode
-Write-Step "Service registration ($mode)"
+Write-Host "  Mode: $mode"
+
+Write-Step 'Publishing from source (dotnet publish)'
+$publishDir = Join-Path $AppDir 'publish'
+if ($mode -eq 'Docker') {
+    $publishDir = Join-Path $repoRoot 'publish'
+}
+if (Test-Path $AppDir) {
+    Write-Host "  App dir exists ($AppDir); publish artifacts will be refreshed in place"
+}
+# Docker mode publishes on a foreign host (e.g. Windows) for a Linux image:
+# the Playwright node driver must match the target OS, not the build machine's
+# RID, or the container's browser install fails with "missing required assets".
+$playwrightPlatform = if ($mode -eq 'Docker') { @('-p:PlaywrightPlatform=linux-x64') } else { @() }
+& dotnet publish (Join-Path $repoRoot 'FlexFetch/FlexFetch.csproj') `
+    -c Release -o $publishDir @playwrightPlatform
+if ($LASTEXITCODE -ne 0) { throw 'dotnet publish failed' }
+
+# --- 4. Configuration generation ----------------------------------------------
+
+Write-Step 'Generating configuration'
+$dataRoot = [IO.Path]::GetFullPath($DataDir)
+New-Item -ItemType Directory -Force -Path $dataRoot | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $dataRoot 'logs') | Out-Null
+
+# appsettings.Production.json: data dir + proxy (proxy optional). Docker
+# images take their configuration from /data (the seeded template) - a
+# baked-in Production file would point Data.Dir at host paths.
+if ($mode -ne 'Docker') {
+    $production = @{
+        Serilog = @{
+            MinimumLevel = @{
+                Default = 'Information'
+                Override = @{ 'Microsoft.AspNetCore' = 'Warning' }
+            }
+        }
+        Data = @{ Dir = $dataRoot }
+    }
+    if ($Proxy) {
+        $production.Network = @{ Proxy = $Proxy }
+    }
+    $productionJson = $production | ConvertTo-Json -Depth 5
+    $settingsPath = Join-Path $publishDir 'appsettings.Production.json'
+    Set-Content -Path $settingsPath -Value $productionJson -Encoding utf8
+    Write-Host "  Wrote $settingsPath"
+}
+
+# --- 5. Service registration & start -------------------------------------------
 
 switch ($mode) {
     'None' {

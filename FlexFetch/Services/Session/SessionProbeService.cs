@@ -1,6 +1,7 @@
 ﻿using FlexFetch.Config;
 using FlexFetch.Services.Downloaders;
 using FlexFetch.Services.Routing;
+using Newtonsoft.Json;
 using Serilog;
 using YoutubeDLSharp;
 using YoutubeDLSharp.Metadata;
@@ -55,20 +56,31 @@ public sealed class SessionProbeService
     /// Runs one metadata probe against the probe URL with the given cookie
     /// file (a copy or candidate jar - never the snapshot itself) and client
     /// posture. Returns the classified result; a timeout comes back as a
-    /// Retryable verdict instead of hanging.
+    /// Retryable verdict instead of hanging. When <paramref name="progress"/>
+    /// is given, yt-dlp's own stderr lines ("Downloading webpage", the PO
+    /// token generation, ...) are forwarded as they arrive so callers can
+    /// show what the probe is doing right now.
     /// </summary>
     public async Task<ProbeResult> ProbeAsync(
         string probeUrl,
         string? cookieFilePath,
         string extractorArgs,
         CancellationToken cancellationToken = default,
-        TimeSpan? timeout = null)
+        TimeSpan? timeout = null,
+        IProgress<string>? progress = null)
     {
         var effective = timeout ?? DefaultTimeout;
         await _ytdlp.EnsureInstalledAsync(cancellationToken);
 
+        // Mirrors what YoutubeDL.RunVideoDataFetch used to build (dump-json +
+        // flat playlist, no config, no playlist walk), without its buffered
+        // output: the process events stream lines while the run is alive.
         var options = new OptionSet
         {
+            DumpSingleJson = true,
+            FlatPlaylist = true,
+            IgnoreConfig = true,
+            NoPlaylist = true,
             ExtractorArgs = extractorArgs,
         };
         // Mirror the download posture: the probe gets the same script-deno
@@ -88,24 +100,60 @@ public sealed class SessionProbeService
             options.Proxy = YtdlpDownloader.NormalizeProxyForYtdlp(proxyUri);
         }
 
-        var ytdlp = new YoutubeDL { YoutubeDLPath = _ytdlp.BinaryPath };
-        if (File.Exists(_ytdlp.FfmpegPath))
-        {
-            ytdlp.FFmpegPath = _ytdlp.FfmpegPath;
-        }
-
         _log.Information("Session probe: {Url} cookies={Cookies} args={Args} timeout={Timeout}s",
             probeUrl, cookieFilePath is not null ? "attached" : "anonymous", extractorArgs, effective.TotalSeconds);
 
-        // Linked CTS: the hard timeout cancels the yt-dlp process (YoutubeDLSharp
-        // kills it), while a caller shutdown still propagates.
+        // Linked CTS: the hard timeout cancels the yt-dlp process (kills the
+        // tree), while a caller shutdown still propagates.
         using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         bounded.CancelAfter(effective);
 
-        RunResult<VideoData> result;
+        // stderr carries yt-dlp's log lines (warnings, extractor and PO token
+        // progress) - collected for the classifier and streamed live; stdout
+        // carries the single-line -J JSON dump, kept when it parses.
+        var process = new YoutubeDLProcess(_ytdlp.BinaryPath);
+        var stderr = new List<string>();
+        var stderrLock = new object();
+        VideoData? data = null;
+        process.ErrorReceived += (_, e) =>
+        {
+            if (e.Data is null)
+            {
+                return;
+            }
+
+            lock (stderrLock)
+            {
+                stderr.Add(e.Data);
+            }
+            progress?.Report(e.Data);
+        };
+        process.OutputReceived += (_, e) =>
+        {
+            if (string.IsNullOrEmpty(e.Data))
+            {
+                return;
+            }
+
+            try
+            {
+                data = JsonConvert.DeserializeObject<VideoData>(e.Data);
+            }
+            catch (JsonException)
+            {
+                // Not the JSON dump: the library routed such lines into the
+                // error output - keep them for the classifier as well.
+                lock (stderrLock)
+                {
+                    stderr.Add(e.Data);
+                }
+            }
+        };
+
+        int exitCode;
         try
         {
-            result = await ytdlp.RunVideoDataFetch(probeUrl, ct: bounded.Token, overrideOptions: options);
+            exitCode = await process.RunAsync(new[] { probeUrl }, options, bounded.Token);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -119,12 +167,19 @@ public sealed class SessionProbeService
                 string.Empty);
         }
 
-        var class_ = YtdlpOutputClassifier.Classify(result.ErrorOutput, result.Success);
-        var title = result.Data?.Title ?? string.Empty;
+        List<string> lines;
+        lock (stderrLock)
+        {
+            lines = new List<string>(stderr);
+        }
+
+        var success = exitCode == 0;
+        var class_ = YtdlpOutputClassifier.Classify(lines, success);
+        var title = data?.Title ?? string.Empty;
 
         _log.Information("Session probe verdict: {Class} (run success={Success}, {Lines} output lines)",
-            class_, result.Success, result.ErrorOutput.Length);
-        return new ProbeResult(result.Success, class_, result.ErrorOutput, title);
+            class_, success, lines.Count);
+        return new ProbeResult(success, class_, lines, title);
     }
 
     /// <summary>Probe URL from configuration (a stable public video).</summary>

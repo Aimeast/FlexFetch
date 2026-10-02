@@ -26,6 +26,15 @@ public sealed class StartupTasksHostedService : BackgroundService
     private readonly FirefoxBrowserService _browser;
     private readonly ILogger _log;
 
+    /// <summary>Completed once the component plan (ready / to-install) has
+    /// been logged. Services that can trigger installs on their own first
+    /// round await it, so the plan always precedes any install log line.</summary>
+    private readonly TaskCompletionSource _componentPlanLogged = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public Task WhenComponentPlanLogged => _componentPlanLogged.Task;
+
+    private void SignalComponentPlanLogged() => _componentPlanLogged.TrySetResult();
+
     public StartupTasksHostedService(
         IHostApplicationLifetime lifetime,
         IConfiguration config,
@@ -96,10 +105,12 @@ public sealed class StartupTasksHostedService : BackgroundService
         if (_ytdlp.IsYtDlpInstalled()) ready.Add("yt-dlp"); else toInstall.Add("yt-dlp");
         if (_ytdlp.IsDenoInstalled()) ready.Add("deno"); else toInstall.Add("deno");
         if (_ytdlp.IsFfmpegInstalled()) ready.Add("ffmpeg"); else toInstall.Add("ffmpeg");
-        // Firefox readiness includes the OS-level libraries: an upgraded
-        // deployment may carry the browser on the volume while the new image
-        // no longer ships its system libraries.
-        if (_browser.IsFirefoxInstalled() && _browser.IsOsDepsInstalled()) ready.Add("firefox"); else toInstall.Add("firefox");
+        // Firefox readiness covers the three layers that can drift apart:
+        // the browser binary (persistent volume), the apt-installed OS
+        // libraries (ephemeral container filesystem) and the build number
+        // the running Playwright package pins (changes on a package bump) -
+        // each has its own check/marker so any mismatch triggers a reinstall.
+        if (_browser.IsFirefoxReady()) ready.Add("firefox"); else toInstall.Add("firefox");
 
         if (ready.Count > 0)
         {
@@ -109,12 +120,23 @@ public sealed class StartupTasksHostedService : BackgroundService
         if (toInstall.Count > 0 && (!bool.TryParse(Get(ConfigKeys.AutoInstallDeps), out var autoInstall) || !autoInstall))
         {
             _log.Information("Components missing and auto-install disabled: {Components}", string.Join(", ", toInstall));
+            SignalComponentPlanLogged();
             return;
         }
 
         if (toInstall.Count > 0)
         {
             _log.Information("Installing missing components: {Components}", string.Join(", ", toInstall));
+        }
+
+        // Signal BEFORE any install work starts: the pot supervisor and the
+        // session maintenance can both trigger installs on their first round -
+        // they wait for this signal, so the plan above always precedes every
+        // individual install line no matter which service wins the race.
+        SignalComponentPlanLogged();
+
+        if (toInstall.Count > 0)
+        {
             try
             {
                 // yt-dlp/deno/ffmpeg: only missing ones are installed (installed are silent).
@@ -124,12 +146,15 @@ public sealed class StartupTasksHostedService : BackgroundService
                 }
 
                 // Firefox: the session source browser (Playwright build);
-                // EnsureInstalledAsync is a fast no-op when both the browser
-                // and the OS libraries are already in place.
-                if (!_browser.IsFirefoxInstalled() || !_browser.IsOsDepsInstalled())
+                // EnsureInstalledAsync is a fast no-op when the browser is
+                // fully ready (executable, OS libraries, pinned build).
+                if (!_browser.IsFirefoxReady())
                 {
                     await _browser.EnsureInstalledAsync(stoppingToken);
                 }
+
+                _log.Information("All components ready: {Components}",
+                    string.Join(", ", ready.Concat(toInstall)));
             }
             catch (Exception ex)
             {

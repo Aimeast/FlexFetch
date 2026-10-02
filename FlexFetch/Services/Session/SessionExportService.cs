@@ -65,6 +65,11 @@ public sealed class SessionExportService
     /// <summary>Pipeline stage currently executing (for the status API).</summary>
     public string CurrentStage { get; private set; } = "idle";
 
+    /// <summary>Latest live line from the running probe, e.g. yt-dlp's own
+    /// "Downloading webpage" or the PO token generation (status API surface;
+    /// null while no pipeline runs).</summary>
+    public string? CurrentDetail { get; private set; }
+
     /// <summary>
     /// Identity family a logged-in YouTube jar must contain (all of them);
     /// missing entries mean the jar is anonymous - exporting it would
@@ -116,6 +121,7 @@ public sealed class SessionExportService
         {
             LastRunAt = DateTime.UtcNow;
             CurrentStage = "idle";
+            CurrentDetail = null;
             _exportLock.Release();
         }
     }
@@ -155,6 +161,7 @@ public sealed class SessionExportService
 
         // Authoritative gate: probe a candidate jar with a one-time copy.
         CurrentStage = "probe";
+        CurrentDetail = null;
         var visitorData = ExtractVisitorData(jar);
         var candidatePath = WriteCandidateJar(jar);
         try
@@ -163,7 +170,8 @@ public sealed class SessionExportService
                 _probe.GetProbeUrl(_config),
                 candidatePath,
                 YouTubePosture.BuildExtractorArgs(YouTubePosture.CookieClients, visitorData),
-                cancellationToken);
+                cancellationToken,
+                progress: ProbeProgress());
             meta.LastProbeClass = probe.Class.ToString();
             if (!probe.Healthy)
             {
@@ -227,6 +235,7 @@ public sealed class SessionExportService
 
         try
         {
+            CurrentStage = "parse";
             var parse = CookieTextParser.Parse(text, url);
             if (parse.Cookies.Count == 0)
             {
@@ -246,11 +255,14 @@ public sealed class SessionExportService
             var candidatePath = WriteCandidateJar(merged);
             try
             {
+                CurrentStage = "probe";
+                CurrentDetail = null;
                 var probe = await _probe.ProbeAsync(
                     _probe.GetProbeUrl(_config),
                     candidatePath,
                     YouTubePosture.BuildExtractorArgs(YouTubePosture.CookieClients, visitorData),
-                    cancellationToken);
+                    cancellationToken,
+                    progress: ProbeProgress());
 
                 if (!probe.Healthy)
                 {
@@ -276,6 +288,7 @@ public sealed class SessionExportService
             meta.Health = SessionHealth.Ok.ToString();
             meta.VisitorData = visitorData;
             meta.LastError = null;
+            CurrentStage = "write";
             _snapshot.WriteSnapshot(merged, meta);
             _log.Information("Session import accepted: {Imported} imported, {Total} total in snapshot",
                 filtered.Count, merged.Count);
@@ -285,6 +298,7 @@ public sealed class SessionExportService
         {
             LastRunAt = DateTime.UtcNow;
             CurrentStage = "idle";
+            CurrentDetail = null;
             _exportLock.Release();
         }
     }
@@ -380,15 +394,27 @@ public sealed class SessionExportService
         return path;
     }
 
+    /// <summary>Wires the probe's live output lines into <see cref="CurrentDetail"/>.</summary>
+    private IProgress<string> ProbeProgress() => new Progress<string>(line => CurrentDetail = line);
+
     private int CurrentCount() => _snapshot.ReadCookies().Count;
 
-    private static string Describe(ProbeResult probe)
+    /// <summary>
+    /// Builds the user-facing probe output excerpt. ERROR lines lead because
+    /// they carry the exit cause - a failed run can trail its decisive ERROR
+    /// behind several benign-looking WARNINGs (e.g. a missing JS runtime
+    /// surfaces as warnings while "requested format is not available" is what
+    /// actually failed the probe); warnings follow for context.
+    /// </summary>
+    public static string Describe(ProbeResult probe)
     {
-        var lines = probe.Output
-            .Where(l => l.StartsWith("WARNING:", StringComparison.OrdinalIgnoreCase)
-                || l.StartsWith("ERROR:", StringComparison.OrdinalIgnoreCase))
-            .Take(2)
-            .ToList();
+        var errors = probe.Output
+            .Where(l => l.StartsWith("ERROR:", StringComparison.OrdinalIgnoreCase))
+            .Take(2);
+        var warnings = probe.Output
+            .Where(l => l.StartsWith("WARNING:", StringComparison.OrdinalIgnoreCase))
+            .Take(2);
+        var lines = errors.Concat(warnings).Take(3).ToList();
         return lines.Count > 0 ? string.Join(" | ", lines) : $"exit={probe.RunSucceeded}";
     }
 

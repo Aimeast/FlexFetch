@@ -120,4 +120,31 @@ public static class FileMime
         return mime.StartsWith("video/", StringComparison.OrdinalIgnoreCase)
             || mime.StartsWith("audio/", StringComparison.OrdinalIgnoreCase);
     }
+
+    /// <summary>
+    /// Builds the Content-Disposition header for a media file that is played
+    /// inline but must still carry its real name for the browser's "save
+    /// link as": <c>inline; filename=...; filename*=utf-8''...</c> (RFC 5987
+    /// for non-ASCII names). Per RFC 6266 the filename parameters of an
+    /// inline disposition never influence rendering, only save operations,
+    /// so playback is unaffected. Returns null when there is no name to
+    /// advertise (the response then carries no disposition, like today).
+    /// </summary>
+    public static string? InlineDispositionFor(string? fileName)
+    {
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            return null;
+        }
+
+        // Quotes and control characters would corrupt the header value;
+        // names are filesystem-sanitized but on Unix can legally hold both.
+        var cleaned = new string(fileName
+            .Select(c => c == '"' || char.IsControl(c) ? '_' : c)
+            .ToArray());
+
+        var disposition = new Microsoft.Net.Http.Headers.ContentDispositionHeaderValue("inline");
+        disposition.SetHttpFileName(cleaned);
+        return disposition.ToString();
+    }
 }

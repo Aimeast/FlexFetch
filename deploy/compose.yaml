@@ -1,7 +1,15 @@
-# FlexFetch compose template. Build the image from source and run it with
-# a persistent data volume plus a certificate mount. No environment
-# variables are required: /data/appsettings.json (seeded on first start)
-# owns the endpoints, the proxy policy and every other tunable.
+# FlexFetch compose template. Runs the app with a persistent data volume
+# plus a certificate mount. No environment variables are required for the
+# container itself: /data/appsettings.json (seeded on first start) owns the
+# endpoints, the proxy policy and every other tunable.
+#
+# The image is assembled from the pre-published output (see
+# deploy/Dockerfile): run
+#   dotnet publish FlexFetch/FlexFetch.csproj -c Release -o publish
+# before `docker compose build` - deploy.ps1 (Mode Docker) does both steps
+# automatically. Building from source inside the container is no longer
+# supported: the git reference for System information cannot be captured
+# without the working tree.
 
 services:
   flexfetch:

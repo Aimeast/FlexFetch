@@ -67,6 +67,30 @@ public sealed class TaskServiceTests
     }
 
     [TestMethod]
+    public async Task Submit_StoresProgressOnHundredScale()
+    {
+        // Downloaders report a 0..1 fraction; the store must carry 0..100
+        // (the UI divides by 100 and the completion path writes 100).
+        var reported = new TaskCompletionSource();
+        var release = new TaskCompletionSource();
+        _executor!.Handler = (task, progress, ct) =>
+        {
+            progress(0.5);
+            reported.TrySetResult();
+            return release.Task;
+        };
+
+        var id = _service!.Submit("user-1", "https://example.com/file.bin");
+
+        await reported.Task;
+        Assert.AreEqual(50, _service.GetById(id)!.Progress);
+
+        release.SetResult();
+        await WaitForStatusAsync(id, TaskStatus.Completed);
+        Assert.AreEqual(100, _service.GetById(id)!.Progress);
+    }
+
+    [TestMethod]
     public async Task Submit_FailedTask_RetriesUpToLimitThenFails()
     {
         _config!.Set(ConfigKeys.MaxRetries, "2");

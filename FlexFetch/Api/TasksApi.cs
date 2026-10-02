@@ -105,12 +105,22 @@ public static class TasksApi
             }
 
             var stream = File.OpenRead(path);
-            // Media (video/audio) is served without a download name so the
-            // browser plays it inline; other types keep the name and download.
+            // Media is served with an inline disposition carrying the real
+            // name: the browser plays it (RFC 6266 - inline filenames never
+            // influence rendering) and uses that same name for "save link
+            // as" instead of deriving "file.mp4" from the generic URL.
+            // Other types keep the attachment name and download.
             var mime = FileMime.For(task.FileName);
-            return FileMime.IsMedia(task.FileName)
-                ? Results.File(stream, mime, enableRangeProcessing: true)
-                : Results.File(stream, mime, task.FileName, enableRangeProcessing: true);
+            if (FileMime.IsMedia(task.FileName))
+            {
+                var disposition = FileMime.InlineDispositionFor(task.FileName);
+                if (disposition is not null)
+                {
+                    ctx.Response.Headers.ContentDisposition = disposition;
+                }
+                return Results.File(stream, mime, enableRangeProcessing: true);
+            }
+            return Results.File(stream, mime, task.FileName, enableRangeProcessing: true);
         });
 
         group.MapPost("/{id}/share", (string id, TaskService tasks, IShareRepository shares, IConfiguration config, GuestSessionService guests, HttpContext ctx) =>

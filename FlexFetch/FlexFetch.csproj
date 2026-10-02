@@ -20,12 +20,7 @@
     install locations are prepended (same approach as HttpGetUrl).
   -->
   <Target Name="GenerateBuildInfo" BeforeTargets="BeforeBuild">
-    <Exec Command="git log -1 --format=reference"
-          Condition="Exists('..\.git')"
-          EnvironmentVariables="PATH=$(GitSearchPath.Replace(';', '%3B'))"
-          StdOutEncoding="utf-8"
-          ConsoleToMSBuild="true"
-          IgnoreExitCode="true">
+    <Exec Command="git log -1 --format=reference" Condition="Exists('..\.git')" EnvironmentVariables="PATH=$(GitSearchPath.Replace(';', '%3B'))" StdOutEncoding="utf-8" ConsoleToMSBuild="true" IgnoreExitCode="true">
       <Output TaskParameter="ConsoleOutput" PropertyName="GitLog" />
     </Exec>
 
@@ -46,9 +41,9 @@
   </Target>
 
   <ItemGroup>
-    <PackageReference Include="FFMpegCore" Version="5.4.0" />
+    <PackageReference Include="FFMpegCore" Version="5.5.0" />
     <PackageReference Include="LiteDB" Version="5.0.21" />
-    <PackageReference Include="Microsoft.Playwright" Version="1.61.0" />
+    <PackageReference Include="Microsoft.Playwright" Version="1.63.0" />
     <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
     <PackageReference Include="Serilog.Sinks.Console" Version="6.1.1" />
     <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />

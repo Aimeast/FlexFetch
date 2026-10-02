@@ -36,4 +36,47 @@ public sealed class FileMimeTests
         Assert.AreEqual("application/octet-stream", FileMime.For("noextension"));
         Assert.AreEqual("application/octet-stream", FileMime.For(null));
     }
+
+    [TestMethod]
+    public void InlineDispositionFor_AsciiName_InlineWithFilename()
+    {
+        var header = FileMime.InlineDispositionFor("clip.mp4");
+
+        Assert.IsNotNull(header);
+        Assert.IsTrue(header.StartsWith("inline", StringComparison.Ordinal));
+        StringAssert.Contains(header, "clip.mp4");
+    }
+
+    [TestMethod]
+    public void InlineDispositionFor_NonAsciiName_UsesRfc5987()
+    {
+        // Non-ASCII names (FileNameRules keeps CJK) must reach the browser
+        // through filename* so "save link as" proposes the real title. The
+        // decoded round-trip is asserted by the TasksApi integration tests.
+        var header = FileMime.InlineDispositionFor("\u6807\u9898.mp4");
+
+        Assert.IsNotNull(header);
+        Assert.IsTrue(header.StartsWith("inline", StringComparison.Ordinal));
+        StringAssert.Contains(header, "filename*=");
+        Assert.IsFalse(header.Contains("\u6807\u9898", StringComparison.Ordinal),
+            "raw non-ASCII must not leak into the header value");
+    }
+
+    [TestMethod]
+    public void InlineDispositionFor_ScrubsQuoteAndControlCharacters()
+    {
+        var header = FileMime.InlineDispositionFor("we\"rd\nname.mp4");
+
+        Assert.IsNotNull(header);
+        Assert.DoesNotContain('\n', header);
+        Assert.DoesNotContain('\r', header);
+        StringAssert.Contains(header, "we_rd_name.mp4");
+    }
+
+    [TestMethod]
+    public void InlineDispositionFor_Blank_ReturnsNull()
+    {
+        Assert.IsNull(FileMime.InlineDispositionFor(null));
+        Assert.IsNull(FileMime.InlineDispositionFor(" "));
+    }
 }

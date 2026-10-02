@@ -43,6 +43,14 @@ public static class SessionApi
             {
                 return Results.Conflict(new { error = ex.Message });
             }
+            catch (OperationCanceledException)
+            {
+                // The browser gave up on the probe (typically a user retry
+                // after a long, previously silent wait) - log it so the gap
+                // is visible in the file log too.
+                log.Information("Session import aborted by the client");
+                throw;
+            }
         });
 
         group.MapPost("/export", (SessionExportService export, ILogger log) =>
@@ -70,6 +78,7 @@ public static class SessionApi
         {
             export.IsRunning,
             export.CurrentStage,
+            export.CurrentDetail,
             export.LastRunAt,
             lastResult = export.LastResult.ToString(),
             export.LastError,

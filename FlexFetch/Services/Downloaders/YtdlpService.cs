@@ -60,23 +60,88 @@ public sealed class YtdlpService
 
     public string DenoPath => Path.Combine(_componentsDir, OperatingSystem.IsWindows() ? "deno.exe" : "deno");
 
+    /// <summary>
+    /// Appends a directory to a PATH-style value. An entry already present is
+    /// kept once (case-insensitively on Windows, where paths compare without
+    /// case). Pure so tests exercise it without touching process state.
+    /// </summary>
+    public static string AppendToPathValue(string? pathValue, string directory)
+    {
+        var entries = (pathValue ?? string.Empty)
+            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToList();
+        var comparer = OperatingSystem.IsWindows()
+            ? StringComparer.OrdinalIgnoreCase
+            : StringComparer.Ordinal;
+        if (!entries.Contains(directory, comparer))
+        {
+            entries.Add(directory);
+        }
+
+        return string.Join(Path.PathSeparator, entries);
+    }
+
     public string FfmpegPath => Path.Combine(_componentsDir, OperatingSystem.IsWindows() ? "ffmpeg.exe" : "ffmpeg");
 
-    /// <summary>Returns the installed yt-dlp version, or null when missing.</summary>
-    public string? GetVersion()
+    /// <summary>
+    /// Returns the installed yt-dlp version, or null when missing or the
+    /// binary cannot run. Runs the binary: YoutubeDLSharp's Version property
+    /// reads the PE version resource, which the Linux PyInstaller build does
+    /// not carry, so containers always reported "not installed".
+    /// </summary>
+    public async Task<string?> GetVersionAsync(CancellationToken cancellationToken = default)
     {
         if (!File.Exists(BinaryPath))
         {
             return null;
         }
 
-        var ytdlp = new YoutubeDL { YoutubeDLPath = BinaryPath };
-        return ytdlp.Version;
-    }
+        var psi = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = BinaryPath,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        psi.ArgumentList.Add("--version");
+        System.Diagnostics.Process? process = null;
+        try
+        {
+            // A PyInstaller single-file binary re-extracts on every run:
+            // bound the whole call so a stuck launch never holds the caller.
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(20));
+            process = System.Diagnostics.Process.Start(psi);
+            if (process is null)
+            {
+                return null;
+            }
 
-    /// <summary>Returns the installed yt-dlp version, or null when missing.</summary>
-    public Task<string?> GetVersionAsync(CancellationToken cancellationToken = default) =>
-        Task.FromResult(GetVersion());
+            var line = await process.StandardOutput.ReadLineAsync(timeout.Token);
+            await process.WaitForExitAsync(timeout.Token);
+            var version = line?.Trim();
+            return string.IsNullOrEmpty(version) ? null : version;
+        }
+        catch (OperationCanceledException)
+        {
+            _log.Warning("yt-dlp --version did not finish in time; reporting no version");
+            return null;
+        }
+        catch (System.ComponentModel.Win32Exception ex)
+        {
+            _log.Warning("yt-dlp --version could not be executed: {Message}", ex.Message);
+            return null;
+        }
+        finally
+        {
+            // A timed-out process must not outlive the call.
+            if (process is not null && !process.HasExited)
+            {
+                try { process.Kill(entireProcessTree: true); } catch { }
+            }
+        }
+    }
 
     /// <summary>Returns the installed deno version, or null when missing.</summary>
     public async Task<string?> GetDenoVersionAsync(CancellationToken cancellationToken = default)
@@ -202,12 +267,16 @@ public sealed class YtdlpService
             {
                 _log.Information("Installing yt-dlp");
                 await DownloadYtDlpAsync(cancellationToken);
+                _log.Information("yt-dlp {Version} installed",
+                    await GetVersionAsync(cancellationToken) ?? "(version unknown)");
             }
 
             if (!File.Exists(DenoPath))
             {
                 _log.Information("Installing deno");
                 await DownloadDenoAsync(cancellationToken);
+                _log.Information("deno {Version} installed",
+                    await GetDenoVersionAsync(cancellationToken) ?? "(version unknown)");
             }
 
             // ffmpeg is only bundled when a system install is missing (yt-dlp
@@ -216,6 +285,8 @@ public sealed class YtdlpService
             {
                 _log.Information("Installing ffmpeg");
                 await DownloadFfmpegAsync(cancellationToken);
+                _log.Information("ffmpeg {Version} installed",
+                    await GetFfmpegVersionAsync(cancellationToken) ?? "(version unknown)");
             }
 
             // Set only after the full check succeeded, so a failed download

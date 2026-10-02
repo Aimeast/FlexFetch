@@ -117,6 +117,26 @@ public sealed class TasksApiTests
     }
 
     [TestMethod]
+    public async Task Share_MediaFile_ServesInlineWithRealName()
+    {
+        using var factory = TestApp.CreateFactory(_dataDir!);
+        var (alice, aliceId) = await LoginAsync(factory, "alice");
+        var taskId = SeedCompletedTask(factory, aliceId, "clip.mp4", "FFMPEGDATA");
+        var share = await alice.PostAsync($"/api/tasks/{taskId}/share", null);
+        var shareBody = await share.Content.ReadFromJsonAsync<ShareResponse>();
+        Assert.IsNotNull(shareBody);
+
+        using var visitor = factory.CreateClient();
+        var response = await visitor.GetAsync($"/api/share/{shareBody.Token}/file");
+
+        Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+        var disposition = response.Content.Headers.ContentDisposition;
+        Assert.IsNotNull(disposition);
+        Assert.AreEqual("inline", disposition.DispositionType);
+        Assert.AreEqual("clip.mp4", disposition.FileNameStar);
+    }
+
+    [TestMethod]
     public async Task TaskFile_DownloadByOwner()
     {
         using var factory = TestApp.CreateFactory(_dataDir!);
@@ -148,6 +168,38 @@ public sealed class TasksApiTests
         Assert.IsNotNull(created);
         var unfinished = await alice.GetAsync($"/api/tasks/{created.Id}/file");
         Assert.AreEqual(HttpStatusCode.Conflict, unfinished.StatusCode);
+    }
+
+    [TestMethod]
+    public async Task TaskFile_Media_PlaysInlineWithRealName()
+    {
+        using var factory = TestApp.CreateFactory(_dataDir!);
+        var (alice, aliceId) = await LoginAsync(factory, "alice");
+        var taskId = SeedCompletedTask(factory, aliceId, "clip.mp4", "FFMPEGDATA");
+
+        var response = await alice.GetAsync($"/api/tasks/{taskId}/file");
+
+        Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+        var disposition = response.Content.Headers.ContentDisposition;
+        Assert.IsNotNull(disposition);
+        Assert.AreEqual("inline", disposition.DispositionType);
+        Assert.AreEqual("clip.mp4", disposition.FileNameStar);
+    }
+
+    [TestMethod]
+    public async Task TaskFile_MediaNonAsciiName_EncodesRfc5987()
+    {
+        using var factory = TestApp.CreateFactory(_dataDir!);
+        var (alice, aliceId) = await LoginAsync(factory, "alice");
+        var taskId = SeedCompletedTask(factory, aliceId, "\u6807\u9898.mp4", "DATA");
+
+        var response = await alice.GetAsync($"/api/tasks/{taskId}/file");
+
+        Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+        var disposition = response.Content.Headers.ContentDisposition;
+        Assert.IsNotNull(disposition);
+        Assert.AreEqual("inline", disposition.DispositionType);
+        Assert.AreEqual("\u6807\u9898.mp4", disposition.FileNameStar);
     }
 
     [TestMethod]

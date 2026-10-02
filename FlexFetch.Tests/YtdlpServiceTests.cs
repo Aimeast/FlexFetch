@@ -36,4 +36,55 @@ public sealed class YtdlpServiceTests
             "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/ffmpeg-macOS-arm64",
             YtdlpService.FfmpegDownloadUrl(isWindows: false, isLinux: false, isArm64: true));
     }
+
+    [TestMethod]
+    public void AppendToPathValue_AppendsToExistingEntries()
+    {
+        var existing = string.Join(Path.PathSeparator, "one", "two");
+        Assert.AreEqual(
+            existing + Path.PathSeparator + "three",
+            YtdlpService.AppendToPathValue(existing, "three"));
+    }
+
+    [TestMethod]
+    public void AppendToPathValue_HandlesEmptyCurrent()
+    {
+        Assert.AreEqual("dir", YtdlpService.AppendToPathValue(null, "dir"));
+        Assert.AreEqual("dir", YtdlpService.AppendToPathValue(string.Empty, "dir"));
+    }
+
+    [TestMethod]
+    public void AppendToPathValue_IsIdempotent()
+    {
+        var once = YtdlpService.AppendToPathValue("one", "dir");
+        Assert.AreEqual(once, YtdlpService.AppendToPathValue(once, "dir"));
+    }
+
+    [TestMethod]
+    public void AppendToPathValue_DedupeIgnoresCaseOnWindows()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Inconclusive("Windows-only path comparison");
+        }
+
+        // Already-present entries are kept once, in their original form.
+        Assert.AreEqual(
+            "c:" + Path.DirectorySeparatorChar + "tools",
+            YtdlpService.AppendToPathValue(
+                "c:" + Path.DirectorySeparatorChar + "tools",
+                "C:" + Path.DirectorySeparatorChar + "Tools"));
+    }
+
+    [TestMethod]
+    public async Task GetVersionAsync_MissingBinary_ReturnsNull()
+    {
+        // The System page reports "not installed" only when the binary is
+        // really absent: the version itself comes from running the binary
+        // (the Linux PyInstaller build carries no PE version resource).
+        var dir = TestApp.CreateTempDataDir();
+        var ytdlp = new YtdlpService(new DirectProxyService(), TestLog.Instance, dir);
+
+        Assert.IsNull(await ytdlp.GetVersionAsync());
+    }
 }

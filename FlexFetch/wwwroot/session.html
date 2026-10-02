@@ -100,6 +100,7 @@
             <div class="row" style="margin-top:0.5rem">
                 <button onclick="importSession(this)">Import</button>
             </div>
+            <div class="muted" id="import-progress" style="margin-top:0.5rem; display:none"></div>
         </div>
     </main>
 
@@ -192,6 +193,9 @@
                     'Imported at': fmtDate(meta.importedAt),
                     'Exported at': fmtDate(meta.exportedAt),
                     'Refresh pipeline': status.isRunning ? 'running (' + status.currentStage + ')' : 'idle',
+                    'Current activity': status.isRunning && status.currentDetail
+                        ? esc(status.currentDetail)
+                        : undefined,
                     'Last refresh': fmtDate(status.lastRunAt),
                     'Last refresh result': status.lastResult,
                     'Last error': status.lastError,
@@ -313,7 +317,26 @@
             const text = document.getElementById('import-text').value;
             if (!text.trim()) { show('Paste the cookie text first'); return; }
             btn.disabled = true;
-            show('Importing and probing (this runs a real yt-dlp check)...', true);
+            // Live feedback: the probe runs a real yt-dlp fetch (webpage, the
+            // JS challenge and the PO token generation) and typically takes
+            // 30-90s. The status API streams the probe's own output lines, so
+            // show the current stage, elapsed time and the latest line -
+            // a silent wait looks like a hang and gets cancelled.
+            const progress = document.getElementById('import-progress');
+            const started = Date.now();
+            const render = (stage, detail) => {
+                const secs = Math.round((Date.now() - started) / 1000);
+                progress.textContent = stage + '... ' + secs + 's'
+                    + (detail ? ' - ' + detail : '');
+            };
+            render('starting', null);
+            progress.style.display = '';
+            const poll = setInterval(async () => {
+                const status = await api('/api/session/export/status').catch(() => null);
+                if (status && status.isRunning) {
+                    render(status.currentStage || 'probing', status.currentDetail);
+                }
+            }, 1000);
             try {
                 const res = await fetch('/api/session/import', {
                     method: 'POST',
@@ -330,6 +353,9 @@
             } catch (e) {
                 show(e.message);
             } finally {
+                clearInterval(poll);
+                progress.style.display = 'none';
+                progress.textContent = '';
                 btn.disabled = false;
                 loadStatus();
             }

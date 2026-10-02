@@ -478,10 +478,18 @@ public sealed class TaskService : IDisposable
         }
     }
 
+    /// <summary>
+    /// Persists download progress. Downloaders report a 0..1 fraction, while
+    /// Progress is stored on a 0..100 scale (the completion paths write 100
+    /// and the UI divides by 100), so the callback is scaled here - the one
+    /// funnel every downloader's progress passes through. The 1-point
+    /// threshold keeps the original store-write cadence of one update per
+    /// progress percent.
+    /// </summary>
     private void UpdateProgress(TaskItem task, double progress)
     {
-        var rounded = Math.Round(progress, 2);
-        if (Math.Abs(task.Progress - rounded) < 0.01)
+        var rounded = Math.Round(progress * 100, 2);
+        if (Math.Abs(task.Progress - rounded) < 1)
         {
             return;
         }
