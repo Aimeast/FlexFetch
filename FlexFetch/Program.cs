@@ -13,27 +13,108 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.Extensions.Configuration;
 using Serilog;
 using ILogger = Serilog.ILogger;
 
 Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
 // Child-process entry used by the startup service to install the headless
-// browser: runs Playwright's install command and exits without starting the
-// web application.
+// browser: runs Playwright's OS-dependency and install commands and exits
+// without starting the web application.
 if (args.Length > 0 && args[0] == "--install-browser")
 {
     var browserName = args.Length > 1 ? args[1] : "firefox";
-    Environment.Exit(Microsoft.Playwright.Program.Main(new[] { "install", browserName }));
+    // The parent process normally exports the browser cache location; a
+    // manually invoked child resolves it from the data directory itself.
+    if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(FirefoxBrowserService.BrowsersPathEnv)))
+    {
+        var childDataDir = Program.ResolveDataDir(
+            new ConfigurationBuilder().AddEnvironmentVariables().Build());
+        Environment.SetEnvironmentVariable(
+            FirefoxBrowserService.BrowsersPathEnv,
+            Path.Combine(Path.GetFullPath(childDataDir), "components", "ms-playwright"));
+    }
+
+    var exitCode = 0;
+    foreach (var step in BrowserInstaller.Steps(browserName, OperatingSystem.IsWindows()))
+    {
+        if (step[0] == "install-deps")
+        {
+            // apt only reads the lowercase proxy variables, and its fetches
+            // are the least reliable when driven by environment variables
+            // alone - mirror them and pin the proxy in apt's own config.
+            BrowserInstaller.MirrorProxyEnvToLowerCase();
+            BrowserInstaller.WriteAptProxyConf(
+                Environment.GetEnvironmentVariable("HTTP_PROXY"),
+                OperatingSystem.IsWindows());
+            // Plain http to the Ubuntu archives breaks through restrictive
+            // proxies; upgrade to https, or a mirror when one is configured.
+            BrowserInstaller.PrepareAptSources(
+                Environment.GetEnvironmentVariable(BrowserInstaller.AptMirrorEnv),
+                OperatingSystem.IsWindows());
+        }
+
+        exitCode = Microsoft.Playwright.Program.Main(step);
+        if (exitCode != 0)
+        {
+            break;
+        }
+    }
+
+    Environment.Exit(exitCode);
 }
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Data directory: hidden runtime folder (.flexfetch) holding the database,
-// logs, browser profiles, external components and route files.
-var dataDir = ConfigRegistry.From(builder.Configuration, ConfigKeys.DataDir);
+// logs, browser profiles, external components and route files. Container
+// deployments mount the persistent volume at /data, which the app adopts
+// without an environment variable.
+var dataDir = ResolveDataDir(builder.Configuration);
 Directory.CreateDirectory(dataDir);
 Directory.CreateDirectory(Path.Combine(dataDir, "logs"));
+
+// Self-managed components live under the data directory (in containers the
+// volume survives recreation, so nothing re-downloads): point Playwright's
+// browser cache into components/ms-playwright unless the deployment pinned
+// it explicitly.
+if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(FirefoxBrowserService.BrowsersPathEnv)))
+{
+    Environment.SetEnvironmentVariable(
+        FirefoxBrowserService.BrowsersPathEnv,
+        Path.Combine(Path.GetFullPath(dataDir), "components", "ms-playwright"));
+}
+
+// Editable runtime configuration on the data directory: seeded from the
+// bundled template on first start and loaded last, so volume-persistent
+// user edits override appsettings*.json without touching the image. A
+// malformed user edit is moved aside (never loaded, never destroyed) and
+// re-seeded, so a typo in the config cannot keep the web server from
+// starting.
+UserConfigFile.Seed(dataDir, AppContext.BaseDirectory);
+var userConfigPath = UserConfigFile.PathFor(dataDir);
+if (!UserConfigFile.TryValidate(userConfigPath, out var configProblem) && configProblem is not null)
+{
+    var aside = userConfigPath + ".invalid-" + DateTimeOffset.UtcNow.ToString("yyyyMMddHHmmss");
+    File.Move(userConfigPath, aside);
+    Console.WriteLine($"User configuration {userConfigPath} is invalid ({configProblem}); moved to {aside} and re-seeded.");
+    UserConfigFile.Seed(dataDir, AppContext.BaseDirectory);
+}
+
+// https endpoints whose certificate cannot be used are dropped from the
+// configuration (giving up https) instead of failing the whole service at
+// bind time; the http-endpoint default below only fires afterwards when no
+// endpoints survive.
+foreach (var notice in UserConfigFile.RemoveUnusableHttpsEndpoints(userConfigPath))
+{
+    Console.WriteLine($"Kestrel: {notice}");
+}
+
+// Older or hand-written configuration files without a Kestrel section must
+// not leave the container without a listener.
+UserConfigFile.EnsureHttpEndpoint(userConfigPath);
+builder.Configuration.AddJsonFile(userConfigPath, optional: true, reloadOnChange: true);
 
 // Configure Serilog: structured logging to console and rolling files
 // (file output can be disabled via Logging:WriteToFile, e.g. in tests).
@@ -144,30 +225,31 @@ builder.Services.AddResponseCompression(options => options.EnableForHttps = true
 var app = builder.Build();
 
 app.UseResponseCompression();
-
-// http traffic redirects to the https endpoint actually bound by the
-// server (IServerAddressesFeature): when https failed to start (unusable
-// certificate, port taken) or is not configured at all, requests stay on
-// http instead of hitting a dead redirect target.
-var serverFeatures = app.Services.GetRequiredService<IServer>().Features;
-app.Use(async (context, next) =>
+if (!app.Environment.IsDevelopment())
 {
-    if (context.Request.Scheme == "http")
+    // http traffic redirects to the https endpoint actually bound by the
+    // server (IServerAddressesFeature): when https failed to start
+    // (unusable certificate, port taken) or is not configured at all,
+    // requests stay on http instead of hitting a dead redirect target.
+    var serverFeatures = app.Services.GetRequiredService<IServer>().Features;
+    app.Use(async (context, next) =>
     {
-        var httpsAddress = serverFeatures.Get<IServerAddressesFeature>()?.Addresses
-            .FirstOrDefault(a => a.StartsWith("https://", StringComparison.OrdinalIgnoreCase));
-        if (httpsAddress is not null)
+        if (context.Request.Scheme == "http")
         {
-            context.Response.StatusCode = StatusCodes.Status307TemporaryRedirect;
-            context.Response.Headers.Location =
-                $"https://{context.Request.Host.Host}:{new Uri(httpsAddress).Port}{context.Request.Path}{context.Request.QueryString}";
-            return;
+            var httpsAddress = serverFeatures.Get<IServerAddressesFeature>()?.Addresses
+                .FirstOrDefault(a => a.StartsWith("https://", StringComparison.OrdinalIgnoreCase));
+            if (httpsAddress is not null)
+            {
+                context.Response.StatusCode = StatusCodes.Status307TemporaryRedirect;
+                context.Response.Headers.Location =
+                    $"https://{context.Request.Host.Host}:{new Uri(httpsAddress).Port}{context.Request.Path}{context.Request.QueryString}";
+                return;
+            }
         }
-    }
 
-    await next(context);
-});
-
+        await next(context);
+    });
+}
 
 app.UseAuthentication();
 app.UseAuthorization();
@@ -213,4 +295,20 @@ public partial class Program
     /// <summary>True when shutdown was requested via the system API, so the
     /// stop log can distinguish it from Ctrl+C / host signals.</summary>
     public static volatile bool ShutdownByApi;
+
+    /// <summary>
+    /// Resolves the data directory: an explicit storage.dataDir wins;
+    /// without one, the /data mount is adopted when it exists (container
+    /// deployments map the persistent volume there - no environment
+    /// variable needed), else the default hidden .flexfetch folder.
+    /// </summary>
+    public static string ResolveDataDir(IConfiguration configuration)
+    {
+        var configured = ConfigRegistry.From(configuration, ConfigKeys.DataDir);
+        return configured != ConfigRegistry.GetDefault(ConfigKeys.DataDir)
+            || !OperatingSystem.IsLinux()
+            || !Directory.Exists("/data")
+            ? configured
+            : "/data";
+    }
 }

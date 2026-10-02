@@ -9,13 +9,11 @@ public sealed class ConfigRegistryTests
     public void Registry_DeclaresAllKeysWithDefaults()
     {
         // Keys whose empty default is intentional (e.g. proxy must not be
-        // hardcoded; route rules are optional; the dedicated installer proxy
-        // is usually unset so installers follow the primary proxy or direct).
+        // hardcoded; route rules are optional).
         var allowEmpty = new HashSet<string>
         {
             ConfigKeys.Proxy,
             ConfigKeys.RouteRules,
-            ConfigKeys.NetworkHttpProxy,
         };
 
         var keys = typeof(ConfigKeys).GetFields()

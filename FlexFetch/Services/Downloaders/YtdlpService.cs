@@ -467,13 +467,29 @@ public sealed class YtdlpService
 
     private async Task DownloadYtDlpAsync(CancellationToken cancellationToken)
     {
-        const string baseUrl = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp";
-        var url = OperatingSystem.IsWindows() ? baseUrl + ".exe"
-            : OperatingSystem.IsMacOS() ? baseUrl + "_macos"
-            : baseUrl;
+        var url = YtDlpDownloadUrl(
+            OperatingSystem.IsWindows(),
+            OperatingSystem.IsMacOS());
 
         var bytes = await DownloadBytesAsync(url, cancellationToken);
         await File.WriteAllBytesAsync(BinaryPath, bytes, cancellationToken);
+        MakeExecutable(BinaryPath);
+    }
+
+    /// <summary>
+    /// yt-dlp release download URL per platform. Linux uses the standalone
+    /// PyInstaller build: the bare "yt-dlp" asset is a python zipapp that
+    /// needs a system python, which slim containers lack.
+    /// </summary>
+    public static string YtDlpDownloadUrl(bool isWindows, bool isMacOS)
+    {
+        const string baseUrl = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp";
+        if (isWindows)
+        {
+            return baseUrl + ".exe";
+        }
+
+        return isMacOS ? baseUrl + "_macos" : baseUrl + "_linux";
     }
 
     private async Task DownloadDenoAsync(CancellationToken cancellationToken)
@@ -496,29 +512,90 @@ public sealed class YtdlpService
         using var target = File.Create(DenoPath);
         await using var source = entry.Open();
         await source.CopyToAsync(target, cancellationToken);
+        MakeExecutable(DenoPath);
     }
 
     private async Task DownloadFfmpegAsync(CancellationToken cancellationToken)
     {
-        // Windows: gyan.dev stable release essentials archive, which contains
-        // ffmpeg-x.y-essentials_build/bin/ffmpeg.exe (the file we copy out;
-        // the rest of the archive is discarded). Stable releases are used
-        // instead of the rolling BtbN master builds.
-        const string url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
-
-        var bytes = await DownloadBytesAsync(url, cancellationToken);
-        using var stream = new MemoryStream(bytes);
-        using var archive = new System.IO.Compression.ZipArchive(stream, System.IO.Compression.ZipArchiveMode.Read);
-        var entry = archive.Entries.FirstOrDefault(e =>
-            string.Equals(Path.GetFileName(e.FullName), "ffmpeg.exe", StringComparison.OrdinalIgnoreCase));
-        if (entry is null)
+        if (OperatingSystem.IsWindows())
         {
-            throw new InvalidOperationException("ffmpeg archive does not contain ffmpeg.exe");
+            // gyan.dev stable release essentials archive, which contains
+            // ffmpeg-x.y-essentials_build/bin/ffmpeg.exe (the file we copy
+            // out; the rest of the archive is discarded). Stable releases
+            // are used instead of the rolling BtbN master builds.
+            const string url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
+
+            var bytes = await DownloadBytesAsync(url, cancellationToken);
+            using var stream = new MemoryStream(bytes);
+            using var archive = new System.IO.Compression.ZipArchive(stream, System.IO.Compression.ZipArchiveMode.Read);
+            var entry = archive.Entries.FirstOrDefault(e =>
+                string.Equals(Path.GetFileName(e.FullName), "ffmpeg.exe", StringComparison.OrdinalIgnoreCase));
+            if (entry is null)
+            {
+                throw new InvalidOperationException("ffmpeg archive does not contain ffmpeg.exe");
+            }
+
+            using var target = File.Create(FfmpegPath);
+            await using var source = entry.Open();
+            await source.CopyToAsync(target, cancellationToken);
+            return;
         }
 
-        using var target = File.Create(FfmpegPath);
-        await using var source = entry.Open();
-        await source.CopyToAsync(target, cancellationToken);
+        // Linux/macOS: gyan.dev serves Windows builds only, so pull a
+        // ready-to-run static binary from the ffmpeg-static GitHub releases
+        // - the same host as yt-dlp/deno, so a proxy policy that reaches
+        // those reaches this too.
+        var unixUrl = FfmpegDownloadUrl(
+            OperatingSystem.IsWindows(),
+            OperatingSystem.IsLinux(),
+            System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture
+                == System.Runtime.InteropServices.Architecture.Arm64);
+        var unixBytes = await DownloadBytesAsync(unixUrl, cancellationToken);
+        await File.WriteAllBytesAsync(FfmpegPath, unixBytes, cancellationToken);
+        MakeExecutable(FfmpegPath);
+    }
+
+    /// <summary>
+    /// ffmpeg release download URL per platform. Windows: the gyan.dev
+    /// stable essentials archive; Linux/macOS: the ffmpeg-static project's
+    /// static binaries (gyan.dev has no builds for them).
+    /// </summary>
+    public static string FfmpegDownloadUrl(bool isWindows, bool isLinux, bool isArm64)
+    {
+        if (isWindows)
+        {
+            return "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
+        }
+
+        if (isLinux)
+        {
+            return isArm64
+                ? "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/ffmpeg-linux-arm64"
+                : "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/ffmpeg-linux-x64";
+        }
+
+        return isArm64
+            ? "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/ffmpeg-macOS-arm64"
+            : "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/ffmpeg-macOS-x64";
+    }
+
+    /// <summary>
+    /// Sets the executable bit on a downloaded component binary. Without it
+    /// a Unix process start fails with EACCES; a no-op on Windows where the
+    /// .exe suffix carries the meaning.
+    /// </summary>
+    private static void MakeExecutable(string path)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        const System.IO.UnixFileMode mode = System.IO.UnixFileMode.UserRead | System.IO.UnixFileMode.UserWrite
+            | System.IO.UnixFileMode.UserExecute | System.IO.UnixFileMode.GroupRead
+            | System.IO.UnixFileMode.GroupExecute | System.IO.UnixFileMode.OtherRead
+            | System.IO.UnixFileMode.OtherExecute;
+        File.SetUnixFileMode(path, mode);
     }
 
     /// <summary>

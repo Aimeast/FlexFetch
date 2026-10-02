@@ -10,13 +10,13 @@ public sealed class InstallerProxyEnvTests
     [TestMethod]
     public void EnvFor_HttpAndHttpsProxy_PassesThrough()
     {
-        var http = InstallerProxyEnv.EnvFor("http://[::1]:1088");
+        var http = InstallerProxyEnv.EnvFor("http://proxy.example.com:3128");
         Assert.HasCount(2, http);
-        Assert.AreEqual("http://[::1]:1088", http["HTTP_PROXY"]);
-        Assert.AreEqual("http://[::1]:1088", http["HTTPS_PROXY"]);
+        Assert.AreEqual("http://proxy.example.com:3128", http["HTTP_PROXY"]);
+        Assert.AreEqual("http://proxy.example.com:3128", http["HTTPS_PROXY"]);
 
-        var https = InstallerProxyEnv.EnvFor("https://proxy.corp:3128");
-        Assert.AreEqual("https://proxy.corp:3128", https["HTTPS_PROXY"]);
+        var https = InstallerProxyEnv.EnvFor("https://proxy.example.com:3128");
+        Assert.AreEqual("https://proxy.example.com:3128", https["HTTPS_PROXY"]);
     }
 
     [TestMethod]
@@ -25,8 +25,8 @@ public sealed class InstallerProxyEnvTests
         // Installers (deno, the Playwright downloader) cannot use socks
         // proxies: a socks value in their environment hangs or fails the
         // download silently, so it must be omitted entirely.
-        Assert.IsEmpty(InstallerProxyEnv.EnvFor("socks5://[::1]:1082"));
-        Assert.IsEmpty(InstallerProxyEnv.EnvFor("socks5h://[::1]:1082"));
+        Assert.IsEmpty(InstallerProxyEnv.EnvFor("socks5://socks.example.net:1080"));
+        Assert.IsEmpty(InstallerProxyEnv.EnvFor("socks5h://socks.example.net:1080"));
     }
 
     [TestMethod]
@@ -37,38 +37,43 @@ public sealed class InstallerProxyEnvTests
     }
 
     [TestMethod]
-    public void Resolve_DedicatedHttpProxy_WinsOverPrimarySocks()
+    public void Resolve_HttpPrimary_PassedToInstaller()
     {
-        var config = new TestConfig();
-        config.Set(ConfigKeys.NetworkHttpProxy, "http://[::1]:1088");
-
         var env = InstallerProxyEnv.Resolve(
-            config, new SocksProxyStub("socks5://[::1]:1082"), "https://cdn.playwright.dev/");
+            new SocksProxyStub("http://proxy.example.com:3128"), "https://cdn.playwright.dev/");
 
         Assert.HasCount(2, env);
-        Assert.AreEqual("http://[::1]:1088", env["HTTP_PROXY"]);
+        Assert.AreEqual("http://proxy.example.com:3128", env["HTTP_PROXY"]);
     }
 
     [TestMethod]
-    public void Resolve_NoDedicatedProxy_FallsBackToPrimaryWhenHttp()
+    public void Resolve_SocksPrimary_YieldsNoEnv()
     {
-        var config = new TestConfig();
-        var proxy = new SocksProxyStub("http://[::1]:1088");
-
-        var env = InstallerProxyEnv.Resolve(config, proxy, "https://cdn.playwright.dev/");
-
-        Assert.AreEqual("http://[::1]:1088", env["HTTP_PROXY"]);
-    }
-
-    [TestMethod]
-    public void Resolve_SocksPrimaryAndNoDedicated_YieldsNoEnv()
-    {
-        var config = new TestConfig();
-
+        // The single network.proxy address is socks: installers cannot use
+        // it and run direct against mirrored registries.
         var env = InstallerProxyEnv.Resolve(
-            config, new SocksProxyStub("socks5://[::1]:1082"), "https://cdn.playwright.dev/");
+            new SocksProxyStub("socks5://socks.example.net:1080"), "https://cdn.playwright.dev/");
 
         Assert.IsEmpty(env);
+    }
+
+    [TestMethod]
+    public void Resolve_NoProxy_YieldsNoEnv()
+    {
+        var env = InstallerProxyEnv.Resolve(
+            new SocksProxyStub(null), "https://cdn.playwright.dev/");
+
+        Assert.IsEmpty(env);
+    }
+
+    [TestMethod]
+    public void Describe_ReportsProxyOrDirect()
+    {
+        Assert.AreEqual("http://proxy.example.com:3128",
+            InstallerProxyEnv.Describe(InstallerProxyEnv.EnvFor("http://proxy.example.com:3128")));
+        // Socks proxies yield no env: the install runs direct.
+        Assert.AreEqual("direct", InstallerProxyEnv.Describe(InstallerProxyEnv.EnvFor("socks5://socks.example.net:1080")));
+        Assert.AreEqual("direct", InstallerProxyEnv.Describe(new Dictionary<string, string>()));
     }
 
     private sealed class SocksProxyStub : IProxyService

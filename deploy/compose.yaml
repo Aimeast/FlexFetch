@@ -1,5 +1,7 @@
-﻿# FlexFetch compose template. Build the image from source and run it with
-# a persistent data volume. Customize the proxy via environment when needed.
+# FlexFetch compose template. Build the image from source and run it with
+# a persistent data volume plus a certificate mount. No environment
+# variables are required: /data/appsettings.json (seeded on first start)
+# owns the endpoints, the proxy policy and every other tunable.
 
 services:
   flexfetch:
@@ -10,15 +12,18 @@ services:
     container_name: flexfetch
     restart: unless-stopped
     ports:
-      - "${FLEXFETCH_PORT:-8080}:8080"
-    environment:
-      ASPNETCORE_ENVIRONMENT: Production
-      ASPNETCORE_URLS: http://0.0.0.0:8080
-      Data__Dir: /data
-      # Optional: route downloads through a proxy (HTTP/SOCKS5).
-      # Network__Proxy: socks5://127.0.0.1:1080
+      # Defaults from /data/appsettings.json: http 5080 (redirects to
+      # https), https 5081.
+      - "5080:5080"
+      - "5081:5081"
     volumes:
+      # /data/appsettings.json is seeded on first start and is the editable
+      # configuration; it survives container recreation.
       - flexfetch-data:/data
+      # Certificates for the https endpoint (see /data/appsettings.json).
+      # When they cannot be used the app starts without https (http keeps
+      # serving).
+      - ./certs:/certs
 
 volumes:
   flexfetch-data:

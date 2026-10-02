@@ -1,5 +1,6 @@
 ﻿using System.IO.Compression;
 using FlexFetch.Services.Downloaders;
+using FlexFetch.Services.Routing;
 using Serilog;
 using ILogger = Serilog.ILogger;
 
@@ -25,14 +26,17 @@ public sealed class PotProviderService
     public const string ServerRepoUrl = "https://github.com/Brainicism/bgutil-ytdlp-pot-provider";
 
     private readonly YtdlpService _ytdlp;
+    private readonly IProxyService _proxy;
     private readonly ILogger _log;
     private readonly SemaphoreSlim _installLock = new(1, 1);
 
     public PotProviderService(
         YtdlpService ytdlp,
+        IProxyService proxy,
         ILogger log)
     {
         _ytdlp = ytdlp;
+        _proxy = proxy;
         _log = log;
     }
 
@@ -206,13 +210,15 @@ public sealed class PotProviderService
 
     /// <summary>
     /// Installs the script's npm dependencies with <c>deno install</c> (deno
-    /// populates node_modules itself; no Node.js is involved). deno's own
-    /// proxy networking proved unreliable in every mode (socks env and
-    /// http-proxy env both stall mid-install), so the install runs DIRECT
-    /// against the npmmirror registry pinned via .npmrc (the integrity
-    /// hashes in deno.lock are tarball digests, registry-independent). A
-    /// version marker skips re-resolution once the tree is in place;
-    /// deleting node_modules (or the marker) triggers a reinstall.
+    /// populates node_modules itself; no Node.js is involved). The project's
+    /// proxy policy decides how the pinned npmmirror registry is reached: an
+    /// http(s) proxy is passed to the child process env (the Firefox
+    /// installer proves the node-family handles this fine), while a socks
+    /// primary is dropped by <see cref="InstallerProxyEnv"/> and the install
+    /// runs direct - the .npmrc pin below is registry-independent (deno.lock
+    /// holds tarball digests), so both paths work. A version marker skips
+    /// re-resolution once the tree is in place; deleting node_modules (or
+    /// the marker) triggers a reinstall.
     /// </summary>
     private async Task InstallServerDepsAsync(CancellationToken cancellationToken)
     {
@@ -229,14 +235,17 @@ public sealed class PotProviderService
         };
         psi.ArgumentList.Add("install");
         psi.Environment["DENO_NO_UPDATE_CHECK"] = "1";
-        // Deliberately NO proxy env here, even when network.httpProxy is
-        // configured: deno's proxy networking (socks and http-proxy env
-        // alike) stalled mid-install in practice, while npmmirror is
-        // directly reachable and fast. The .npmrc pin above is the reliable
-        // path; node_modules linking after download takes a while on
-        // Windows and is expected.
+        // Route the install like every other component: the configured proxy
+        // policy applies (an unreachable direct route must not hang the
+        // install on hosts without direct egress).
+        var installerEnv = InstallerProxyEnv.Resolve(_proxy, "https://registry.npmmirror.com/");
+        foreach (var (key, value) in installerEnv)
+        {
+            psi.Environment[key] = value;
+        }
 
-        _log.Information("Installing bgutil script dependencies via deno install (npmmirror registry)");
+        _log.Information("Installing bgutil script dependencies via deno install via {Proxy} (npmmirror registry)",
+            InstallerProxyEnv.Describe(installerEnv));
         await YtdlpService.RunProcessAsync(psi, cancellationToken);
         File.WriteAllText(Path.Combine(serverDir, ".deno-deps-ok"), PotProviderVersion);
     }

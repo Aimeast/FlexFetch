@@ -96,7 +96,10 @@ public sealed class StartupTasksHostedService : BackgroundService
         if (_ytdlp.IsYtDlpInstalled()) ready.Add("yt-dlp"); else toInstall.Add("yt-dlp");
         if (_ytdlp.IsDenoInstalled()) ready.Add("deno"); else toInstall.Add("deno");
         if (_ytdlp.IsFfmpegInstalled()) ready.Add("ffmpeg"); else toInstall.Add("ffmpeg");
-        if (_browser.IsFirefoxInstalled()) ready.Add("firefox"); else toInstall.Add("firefox");
+        // Firefox readiness includes the OS-level libraries: an upgraded
+        // deployment may carry the browser on the volume while the new image
+        // no longer ships its system libraries.
+        if (_browser.IsFirefoxInstalled() && _browser.IsOsDepsInstalled()) ready.Add("firefox"); else toInstall.Add("firefox");
 
         if (ready.Count > 0)
         {
@@ -120,8 +123,10 @@ public sealed class StartupTasksHostedService : BackgroundService
                     await _ytdlp.EnsureInstalledAsync(stoppingToken);
                 }
 
-                // Firefox: the session source browser (Playwright build).
-                if (!_browser.IsFirefoxInstalled())
+                // Firefox: the session source browser (Playwright build);
+                // EnsureInstalledAsync is a fast no-op when both the browser
+                // and the OS libraries are already in place.
+                if (!_browser.IsFirefoxInstalled() || !_browser.IsOsDepsInstalled())
                 {
                     await _browser.EnsureInstalledAsync(stoppingToken);
                 }

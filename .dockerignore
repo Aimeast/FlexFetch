@@ -1,0 +1,15 @@
+# Build context for deploy/Dockerfile: only the two project folders are
+# copied into the build stage; everything else stays out of the context.
+.git/
+.vs/
+**/bin/
+**/obj/
+**/.flexfetch/
+scripts/
+deploy/
+!deploy/appsettings.docker.json
+*.md
+*.tar
+.editorconfig
+.gitattributes
+.gitignore

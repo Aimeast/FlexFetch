@@ -93,23 +93,15 @@ public static class ConfigRegistry
             },
             new()
             {
+                // The single proxy address for everything: yt-dlp/ffmpeg
+                // downloads, the Firefox browser and the installer child
+                // processes (the latter can only use http/https - a socks
+                // value makes them run direct against mirrored registries).
                 Key = ConfigKeys.Proxy,
                 DefaultValue = string.Empty,
                 Validator = v => string.IsNullOrWhiteSpace(v) || Uri.TryCreate(v.StartsWith("socks5") ? v : $"http://{v}", UriKind.Absolute, out _)
                     ? null
                     : "Must be a valid proxy URL (http/https/socks5) or empty",
-            },
-            new()
-            {
-                Key = ConfigKeys.NetworkHttpProxy,
-                // Optional dedicated http proxy for installer child processes
-                // (deno install, Playwright browser download): they cannot use
-                // a socks5 proxy. Empty = installers run direct/mirrored.
-                DefaultValue = string.Empty,
-                Validator = v => string.IsNullOrWhiteSpace(v) || (Uri.TryCreate(v, UriKind.Absolute, out var u)
-                    && (u.Scheme == Uri.UriSchemeHttp || u.Scheme == Uri.UriSchemeHttps))
-                    ? null
-                    : "Must be an absolute http/https proxy URL or empty",
             },
             new()
             {

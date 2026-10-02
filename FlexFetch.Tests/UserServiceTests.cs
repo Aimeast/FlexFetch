@@ -291,7 +291,10 @@ public sealed class UserServiceTests
         var prodService = new UserService(new UserRepository(prodStore), new TestConfig());
         var prodPassword = prodService.EnsureInitialAdmin(null, isDevelopment: false);
         Assert.IsNotNull(prodPassword);
-        Assert.IsGreaterThanOrEqualTo(prodPassword!.Length, 18);
+        // Product decision: the initial password is 5 characters over
+        // [A-Za-z0-9], meant to be read from the console and replaced.
+        Assert.AreEqual(5, prodPassword!.Length);
+        Assert.IsTrue(prodPassword.All(char.IsAsciiLetterOrDigit), $"unexpected characters: {prodPassword}");
         Assert.AreEqual(LoginStatus.Success, prodService.Login("admin", prodPassword).Status);
         prodStore.Dispose();
     }

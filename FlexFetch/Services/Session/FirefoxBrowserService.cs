@@ -62,9 +62,13 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
         "https://m.youtube.com/",
     };
 
+    /// <summary>Playwright's browser-cache override. When set, it replaces the
+    /// default per-OS cache location for installs, launches and probes alike;
+    /// Program.cs points it into the data directory's components folder.</summary>
+    public const string BrowsersPathEnv = "PLAYWRIGHT_BROWSERS_PATH";
+
     private readonly IProxyService _proxy;
     private readonly StorageService _storage;
-    private readonly IConfiguration _config;
     private readonly ILogger _log;
     private readonly string _profileDir;
     private readonly SemaphoreSlim _lock = new(1, 1);
@@ -72,11 +76,10 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
     private IPlaywright? _playwright;
     private IBrowserContext? _sessionContext;
 
-    public FirefoxBrowserService(IProxyService proxy, StorageService storage, IConfiguration config, ILogger log)
+    public FirefoxBrowserService(IProxyService proxy, StorageService storage, ILogger log)
     {
         _proxy = proxy;
         _storage = storage;
-        _config = config;
         _log = log;
         _profileDir = Path.Combine(storage.DataDir, "profiles", "Firefox");
     }
@@ -113,6 +116,17 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
 
     private static IEnumerable<string> GetPlaywrightBrowserRoots()
     {
+        // The override must win: the installer writes there and the driver
+        // launches from there, so the installed-probe has to look in the same
+        // place - a container pointing the cache at the data volume would
+        // otherwise re-run the installer on every start.
+        var configured = Environment.GetEnvironmentVariable(BrowsersPathEnv);
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            yield return configured;
+            yield break;
+        }
+
         if (OperatingSystem.IsWindows())
         {
             yield return Path.Combine(
@@ -130,8 +144,34 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
         }
     }
 
-    /// <summary>True when a Playwright Firefox build is already installed.</summary>
+    /// <summary>True when a Playwright Firefox build is already installed and
+    /// the OS-level libraries it links against are in place (the marker also
+    /// covers an upgraded deployment: browser present on the volume, slim
+    /// image without the libraries).</summary>
     public bool IsFirefoxInstalled() => FindFirefoxExecutable() is not null;
+
+    public bool IsOsDepsInstalled() =>
+        BrowserInstaller.OsDepsInstalled(OsDepsMarkerPath, PlaywrightVersion());
+
+    /// <summary>First Playwright browser root (the env override wins), which
+    /// also hosts the OS-dependency marker - on the data volume in containers.</summary>
+    public static string BrowserRoot() => GetPlaywrightBrowserRoots().First();
+
+    private string OsDepsMarkerPath => Path.Combine(BrowserRoot(), ".os-deps-ok");
+
+    private static string PlaywrightVersion() =>
+        typeof(Playwright).Assembly.GetName().Version?.ToString() ?? "unknown";
+
+    private void WriteOsDepsMarker()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return; // no apt step on Windows, no marker concept either
+        }
+
+        Directory.CreateDirectory(BrowserRoot());
+        File.WriteAllText(OsDepsMarkerPath, PlaywrightVersion());
+    }
 
     private readonly SemaphoreSlim _installLock = new(1, 1);
 
@@ -143,7 +183,7 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
     /// </summary>
     public async Task EnsureInstalledAsync(CancellationToken cancellationToken = default)
     {
-        if (IsFirefoxInstalled())
+        if (IsFirefoxInstalled() && IsOsDepsInstalled())
         {
             return;
         }
@@ -153,12 +193,13 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
         {
             // Re-check under the lock: another flow may have finished the
             // install while we waited.
-            if (IsFirefoxInstalled())
+            if (IsFirefoxInstalled() && IsOsDepsInstalled())
             {
                 return;
             }
 
             await InstallFirefoxCoreAsync(cancellationToken);
+            WriteOsDepsMarker();
         }
         finally
         {
@@ -194,20 +235,21 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
         }
 
         // The installer is a Node program: it supports http(s) proxy URLs
-        // only, a socks5 URL makes the download fail silently. The Playwright
-        // CDN is directly reachable, so with a socks-only outlet we run
-        // without proxy env instead.
-        // The installer is a Node program: it supports http(s) proxy URLs
-        // only, a socks5 URL makes the download fail silently. network.httpProxy
-        // (or an http(s) primary proxy) routes the download through the fixed
-        // egress; the Playwright CDN is directly reachable as the fallback.
-        foreach (var (key, value) in InstallerProxyEnv.Resolve(
-            _config, _proxy, "https://cdn.playwright.dev/"))
+        // only, a socks5 URL makes the download fail silently. The single
+        // network.proxy address routes the download when it is http(s);
+        // the Playwright CDN is directly reachable as the socks fallback.
+        var installerEnv = InstallerProxyEnv.Resolve(_proxy, "https://cdn.playwright.dev/");
+        foreach (var (key, value) in installerEnv)
         {
             startInfo.Environment[key] = value;
         }
 
-        _log.Information("Installing Playwright Firefox");
+        _log.Information("Installing Playwright Firefox via {Proxy}", InstallerProxyEnv.Describe(installerEnv));
+        var aptMirror = Environment.GetEnvironmentVariable(BrowserInstaller.AptMirrorEnv);
+        if (!OperatingSystem.IsWindows() && !string.IsNullOrWhiteSpace(aptMirror))
+        {
+            _log.Information("Using apt mirror {Mirror} for browser OS dependencies", aptMirror.Trim());
+        }
         using var process = Process.Start(startInfo);
         if (process is null)
         {
@@ -304,7 +346,7 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
                 return;
             }
 
-            if (!IsFirefoxInstalled())
+            if (!IsFirefoxInstalled() || !IsOsDepsInstalled())
             {
                 await EnsureInstalledAsync();
             }

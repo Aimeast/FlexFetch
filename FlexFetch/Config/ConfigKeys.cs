@@ -20,7 +20,6 @@ public static class ConfigKeys
 
     // Network
     public const string Proxy = "network.proxy";
-    public const string NetworkHttpProxy = "network.httpProxy";
     public const string RouteRules = "network.routeRules";
     public const string DefaultAction = "network.defaultAction";
 

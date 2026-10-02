@@ -180,8 +180,8 @@ public sealed class UserService
     /// Creates the initial admin when the database has no users yet - admin is
     /// always the first account, so the name can never be taken by a regular
     /// user. Password priority: configured value, else a simple dev password
-    /// in development, else a generated strong password. Returns the created
-    /// password, or null when no admin was created.
+    /// in development, else a generated 5-character initial password. Returns
+    /// the created password, or null when no admin was created.
     /// </summary>
     public string? EnsureInitialAdmin(string? configuredPassword, bool isDevelopment)
     {
@@ -191,7 +191,7 @@ public sealed class UserService
         }
 
         var password = configuredPassword
-            ?? (isDevelopment ? "admin" : GenerateStrongPassword());
+            ?? (isDevelopment ? "admin" : GenerateInitialPassword());
 
         _users.Insert(new User
         {
@@ -204,15 +204,19 @@ public sealed class UserService
         return password;
     }
 
-    private static string GenerateStrongPassword()
+    /// <summary>
+    /// The initial password for a fresh install: 5 random characters over
+    /// [A-Za-z0-9] (product decision - short and typeable; it is meant to be
+    /// read from the console and replaced, so it bypasses the stricter
+    /// user-changed password validation).
+    /// </summary>
+    private static string GenerateInitialPassword()
     {
-        const string chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+";
-        var bytes = new byte[18];
-        RandomNumberGenerator.Fill(bytes);
-        var sb = new StringBuilder(chars.Length);
-        foreach (var b in bytes)
+        const string chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        var sb = new StringBuilder(5);
+        for (var i = 0; i < 5; i++)
         {
-            sb.Append(chars[b % chars.Length]);
+            sb.Append(chars[RandomNumberGenerator.GetInt32(chars.Length)]);
         }
         return sb.ToString();
     }

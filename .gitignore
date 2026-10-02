@@ -36,6 +36,9 @@ packages/
 publish/
 artifacts/
 
+# Docker image exports (flexfetch-image.tar)
+*.tar
+
 # FlexFetch runtime data (hidden runtime folder: db, logs, profiles, components, route files)
 **/.flexfetch/
 

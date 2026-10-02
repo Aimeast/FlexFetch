@@ -125,7 +125,6 @@ public sealed class DownloaderFactoryTests
             services.AddSingleton(sp => new FirefoxBrowserService(
                 sp.GetRequiredService<IProxyService>(),
                 sp.GetRequiredService<StorageService>(),
-                sp.GetRequiredService<IConfiguration>(),
                 sp.GetRequiredService<Serilog.ILogger>()));
             services.AddSingleton(sp => new SessionProbeService(
                 sp.GetRequiredService<YtdlpService>(),
