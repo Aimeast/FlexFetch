@@ -17,13 +17,20 @@ public static class SystemApi
     {
         var info = app.MapGroup("/api/system").RequireAuthorization();
 
-        info.MapGet("/info", (
+        info.MapGet("/info", async (
             TaskService tasks,
             IConfiguration config,
             YtdlpService ytdlp) =>
         {
             var dataDir = ConfigRegistry.From(config, ConfigKeys.DataDir);
             var disk = GetDiskInfo(dataDir);
+            // Version probes run concurrently and are memoized in YtdlpService,
+            // so only the first request after a start or upgrade pays for the
+            // process spawns (the PyInstaller yt-dlp re-extracts on every run).
+            var ytdlpVersion = ytdlp.GetVersionAsync();
+            var denoVersion = ytdlp.GetDenoVersionAsync();
+            var ffmpegVersion = ytdlp.GetFfmpegVersionAsync();
+            await Task.WhenAll(ytdlpVersion, denoVersion, ffmpegVersion);
             return Results.Ok(new
             {
                 version = BuildInfo.Version,
@@ -36,9 +43,9 @@ public static class SystemApi
                 concurrencyLimit = tasks.ConcurrencyLimit,
                 runningTasks = tasks.RunningCount,
                 queuedTasks = tasks.QueuedCount,
-                ytdlpVersion = ytdlp.GetVersionAsync().GetAwaiter().GetResult(),
-                denoVersion = ytdlp.GetDenoVersionAsync().GetAwaiter().GetResult(),
-                ffmpegVersion = ytdlp.GetFfmpegVersionAsync().GetAwaiter().GetResult(),
+                ytdlpVersion = await ytdlpVersion,
+                denoVersion = await denoVersion,
+                ffmpegVersion = await ffmpegVersion,
                 playwrightVersion = typeof(Playwright).Assembly.GetName().Version?.ToString() ?? "unknown",
                 firefox = FirefoxBrowserService.FindFirefoxExecutable() ?? "not-detected",
             });

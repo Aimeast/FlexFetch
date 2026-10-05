@@ -43,6 +43,14 @@ public sealed class YtdlpService
     /// <summary>Set after the first full component check; later calls skip logging.</summary>
     private bool _checked;
 
+    /// <summary>
+    /// Memoized version probes (see <see cref="CachedVersionAsync"/>); nulled
+    /// after an install or upgrade so the next probe reflects the new binary.
+    /// </summary>
+    private volatile Task<string?>? _ytdlpVersion;
+    private volatile Task<string?>? _denoVersion;
+    private volatile Task<string?>? _ffmpegVersion;
+
     public YtdlpService(
         IProxyService proxy,
         ILogger log,
@@ -88,8 +96,80 @@ public sealed class YtdlpService
     /// binary cannot run. Runs the binary: YoutubeDLSharp's Version property
     /// reads the PE version resource, which the Linux PyInstaller build does
     /// not carry, so containers always reported "not installed".
+    /// Memoized: a PyInstaller single-file binary re-extracts on every run,
+    /// so repeated probes cost seconds each.
     /// </summary>
-    public async Task<string?> GetVersionAsync(CancellationToken cancellationToken = default)
+    public Task<string?> GetVersionAsync(CancellationToken cancellationToken = default)
+        => CachedVersionAsync(
+            () => _ytdlpVersion,
+            version => _ytdlpVersion = version,
+            // The shared task outlives the first caller's request, so the
+            // probe must not observe that request's cancellation token.
+            () => QueryYtdlpVersionAsync(CancellationToken.None));
+
+    /// <summary>
+    /// Returns the installed deno version, or null when missing.
+    /// Memoized for the same reason as <see cref="GetVersionAsync"/>.
+    /// </summary>
+    public Task<string?> GetDenoVersionAsync(CancellationToken cancellationToken = default)
+        => CachedVersionAsync(
+            () => _denoVersion,
+            version => _denoVersion = version,
+            () => QueryDenoVersionAsync(CancellationToken.None));
+
+    /// <summary>Returns the installed ffmpeg version string, or null when missing.</summary>
+    public Task<string?> GetFfmpegVersionAsync(CancellationToken cancellationToken = default)
+        => CachedVersionAsync(
+            () => _ffmpegVersion,
+            version => _ffmpegVersion = version,
+            () => QueryFfmpegVersionAsync(CancellationToken.None));
+
+    /// <summary>
+    /// Shared memoization for the version probes: the first caller starts the
+    /// query and concurrent callers await the same task (single flight), so a
+    /// page load and a background install never spawn duplicate processes. A
+    /// null result (component missing or probe failed) is not cached, so a
+    /// later call retries cheaply; install/upgrade paths reset the stored
+    /// task to re-probe the new binary.
+    /// Pure so tests exercise it without touching process state.
+    /// </summary>
+    public static async Task<string?> CachedVersionAsync(
+        Func<Task<string?>?> read,
+        Action<Task<string?>?> write,
+        Func<Task<string?>> fresh)
+    {
+        var cached = read();
+        if (cached is not null)
+        {
+            return await cached;
+        }
+
+        var task = fresh();
+        write(task);
+        try
+        {
+            var version = await task;
+            // Clear only when no newer probe has replaced the stored task in
+            // the meantime, so a late null never clobbers a fresh result.
+            if (version is null && ReferenceEquals(read(), task))
+            {
+                write(null);
+            }
+
+            return version;
+        }
+        catch
+        {
+            if (ReferenceEquals(read(), task))
+            {
+                write(null);
+            }
+
+            throw;
+        }
+    }
+
+    private async Task<string?> QueryYtdlpVersionAsync(CancellationToken cancellationToken)
     {
         if (!File.Exists(BinaryPath))
         {
@@ -128,7 +208,7 @@ public sealed class YtdlpService
             _log.Warning("yt-dlp --version did not finish in time; reporting no version");
             return null;
         }
-        catch (System.ComponentModel.Win32Exception ex)
+        catch (Exception ex)
         {
             _log.Warning("yt-dlp --version could not be executed: {Message}", ex.Message);
             return null;
@@ -143,8 +223,7 @@ public sealed class YtdlpService
         }
     }
 
-    /// <summary>Returns the installed deno version, or null when missing.</summary>
-    public async Task<string?> GetDenoVersionAsync(CancellationToken cancellationToken = default)
+    private async Task<string?> QueryDenoVersionAsync(CancellationToken cancellationToken)
     {
         if (!File.Exists(DenoPath))
         {
@@ -158,15 +237,93 @@ public sealed class YtdlpService
             UseShellExecute = false,
             CreateNoWindow = true,
         };
-        using var process = System.Diagnostics.Process.Start(psi);
-        if (process is null)
+        System.Diagnostics.Process? process = null;
+        try
         {
+            // Bound the probe: a hung launch would otherwise hold every later
+            // caller waiting on the shared result.
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(10));
+            process = System.Diagnostics.Process.Start(psi);
+            if (process is null)
+            {
+                return null;
+            }
+
+            var output = await process.StandardOutput.ReadToEndAsync(timeout.Token);
+            await process.WaitForExitAsync(timeout.Token);
+            return output.Trim();
+        }
+        catch (OperationCanceledException)
+        {
+            _log.Warning("deno --version did not finish in time; reporting no version");
             return null;
         }
+        catch (Exception ex)
+        {
+            _log.Warning("deno --version could not be executed: {Message}", ex.Message);
+            return null;
+        }
+        finally
+        {
+            // A timed-out process must not outlive the call.
+            if (process is not null && !process.HasExited)
+            {
+                try { process.Kill(entireProcessTree: true); } catch { }
+            }
+        }
+    }
 
-        var output = await process.StandardOutput.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken);
-        return output.Trim();
+    private async Task<string?> QueryFfmpegVersionAsync(CancellationToken cancellationToken)
+    {
+        var path = File.Exists(FfmpegPath) ? FfmpegPath : "ffmpeg";
+        System.Diagnostics.Process? process = null;
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo(path, "-version")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            // Same probe bound as the other components (see QueryDenoVersionAsync).
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(10));
+            process = System.Diagnostics.Process.Start(psi);
+            if (process is null)
+            {
+                return null;
+            }
+
+            var output = await process.StandardOutput.ReadToEndAsync(timeout.Token);
+            await process.WaitForExitAsync(timeout.Token);
+            if (process.ExitCode != 0)
+            {
+                return null;
+            }
+
+            var first = output.Split('\n').FirstOrDefault()?.Trim();
+            return string.IsNullOrWhiteSpace(first) ? null : first;
+        }
+        catch (OperationCanceledException)
+        {
+            _log.Warning("ffmpeg -version did not finish in time; reporting no version");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _log.Warning("ffmpeg -version could not be executed: {Message}", ex.Message);
+            return null;
+        }
+        finally
+        {
+            // A timed-out process must not outlive the call.
+            if (process is not null && !process.HasExited)
+            {
+                try { process.Kill(entireProcessTree: true); } catch { }
+            }
+        }
     }
 
     /// <summary>True when the yt-dlp binary is present.</summary>
@@ -210,41 +367,6 @@ public sealed class YtdlpService
         }
     }
 
-    /// <summary>Returns the installed ffmpeg version string, or null when missing.</summary>
-    public async Task<string?> GetFfmpegVersionAsync(CancellationToken cancellationToken = default)
-    {
-        var path = File.Exists(FfmpegPath) ? FfmpegPath : "ffmpeg";
-        try
-        {
-            var psi = new System.Diagnostics.ProcessStartInfo(path, "-version")
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
-            using var process = System.Diagnostics.Process.Start(psi);
-            if (process is null)
-            {
-                return null;
-            }
-
-            var output = await process.StandardOutput.ReadToEndAsync(cancellationToken);
-            await process.WaitForExitAsync(cancellationToken);
-            if (process.ExitCode != 0)
-            {
-                return null;
-            }
-
-            var first = output.Split('\n').FirstOrDefault()?.Trim();
-            return string.IsNullOrWhiteSpace(first) ? null : first;
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
     /// <summary>
     /// Installs yt-dlp and deno when missing (idempotent, serialized).
     /// Existing components are left silent - readiness is summarized by the
@@ -267,6 +389,7 @@ public sealed class YtdlpService
             {
                 _log.Information("Installing yt-dlp");
                 await DownloadYtDlpAsync(cancellationToken);
+                _ytdlpVersion = null; // the fresh binary needs a fresh probe
                 _log.Information("yt-dlp {Version} installed",
                     await GetVersionAsync(cancellationToken) ?? "(version unknown)");
             }
@@ -275,6 +398,7 @@ public sealed class YtdlpService
             {
                 _log.Information("Installing deno");
                 await DownloadDenoAsync(cancellationToken);
+                _denoVersion = null;
                 _log.Information("deno {Version} installed",
                     await GetDenoVersionAsync(cancellationToken) ?? "(version unknown)");
             }
@@ -285,6 +409,7 @@ public sealed class YtdlpService
             {
                 _log.Information("Installing ffmpeg");
                 await DownloadFfmpegAsync(cancellationToken);
+                _ffmpegVersion = null;
                 _log.Information("ffmpeg {Version} installed",
                     await GetFfmpegVersionAsync(cancellationToken) ?? "(version unknown)");
             }
@@ -350,6 +475,7 @@ public sealed class YtdlpService
         {
             _log.Information("Upgrading yt-dlp");
             await RunProcessAsync(BinaryPath, BuildArgs("-U"), cancellationToken);
+            _ytdlpVersion = null; // the self-update may have changed the version
         }
         finally
         {
@@ -369,6 +495,7 @@ public sealed class YtdlpService
         {
             _log.Information("Upgrading deno");
             await RunProcessAsync(DenoPath, "upgrade", cancellationToken, GetProxy());
+            _denoVersion = null;
         }
         finally
         {
@@ -418,6 +545,7 @@ public sealed class YtdlpService
         {
             _log.Information("Upgrading ffmpeg ({Old} -> {New})", ExtractFfmpegVersionNumber(localLine) ?? "none", latest);
             await DownloadFfmpegAsync(cancellationToken);
+            _ffmpegVersion = null;
         }
         finally
         {

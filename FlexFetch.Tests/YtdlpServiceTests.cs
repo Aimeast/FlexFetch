@@ -87,4 +87,91 @@ public sealed class YtdlpServiceTests
 
         Assert.IsNull(await ytdlp.GetVersionAsync());
     }
+
+    [TestMethod]
+    public async Task CachedVersionAsync_ReusesCompletedProbe()
+    {
+        // A PyInstaller yt-dlp spawn costs seconds, so the second query must
+        // reuse the first result instead of running the binary again.
+        var probes = 0;
+        Task<string?> Probe()
+        {
+            probes++;
+            return Task.FromResult<string?>("2026.10.05");
+        }
+
+        Task<string?>? cached = null;
+        var first = await YtdlpService.CachedVersionAsync(() => cached, v => cached = v, Probe);
+        var second = await YtdlpService.CachedVersionAsync(() => cached, v => cached = v, Probe);
+
+        Assert.AreEqual("2026.10.05", first);
+        Assert.AreEqual("2026.10.05", second);
+        Assert.AreEqual(1, probes);
+    }
+
+    [TestMethod]
+    public async Task CachedVersionAsync_DoesNotCacheNullResult()
+    {
+        // Null means "missing or probe failed"; caching it would pin the
+        // page to "not installed" until restart, so every call retries.
+        var probes = 0;
+        Task<string?> Probe()
+        {
+            probes++;
+            return Task.FromResult<string?>(null);
+        }
+
+        Task<string?>? cached = null;
+        var first = await YtdlpService.CachedVersionAsync(() => cached, v => cached = v, Probe);
+        var second = await YtdlpService.CachedVersionAsync(() => cached, v => cached = v, Probe);
+
+        Assert.IsNull(first);
+        Assert.IsNull(second);
+        Assert.AreEqual(2, probes);
+    }
+
+    [TestMethod]
+    public async Task CachedVersionAsync_ConcurrentCallersShareOneProbe()
+    {
+        // Concurrent callers (page load + install log) must single-flight on
+        // one probe instead of spawning duplicate processes.
+        var probes = 0;
+        var gate = new TaskCompletionSource();
+        Task<string?> Probe()
+        {
+            probes++;
+            return gate.Task.ContinueWith(_ => (string?)"2026.10.05");
+        }
+
+        Task<string?>? cached = null;
+        var first = YtdlpService.CachedVersionAsync(() => cached, v => cached = v, Probe);
+        var second = YtdlpService.CachedVersionAsync(() => cached, v => cached = v, Probe);
+        gate.SetResult();
+
+        Assert.AreEqual("2026.10.05", await first);
+        Assert.AreEqual("2026.10.05", await second);
+        Assert.AreEqual(1, probes);
+    }
+
+    [TestMethod]
+    public async Task CachedVersionAsync_LateNullDoesNotClobberFreshResult()
+    {
+        // After an install resets the cache and a new probe stores the fresh
+        // version, a still-running old probe completing with null must not
+        // clear the stored value.
+        var slow = new TaskCompletionSource();
+        Task<string?>? cached = null;
+        var slowCall = YtdlpService.CachedVersionAsync(
+            () => cached, v => cached = v, () => slow.Task.ContinueWith(_ => (string?)null));
+
+        cached = Task.FromResult<string?>("2026.10.05");
+        slow.SetResult();
+
+        Assert.IsNull(await slowCall);
+        Assert.AreEqual(
+            "2026.10.05",
+            await YtdlpService.CachedVersionAsync(
+                () => cached, v => cached = v,
+                () => throw new InvalidOperationException("fresh probe must not run")));
+    }
 }
