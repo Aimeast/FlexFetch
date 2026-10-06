@@ -7,17 +7,22 @@ using ILogger = Serilog.ILogger;
 
 namespace FlexFetch.Services.Session;
 
-/// <summary>A page opened in a throw-away Firefox instance; disposal closes the whole browser.</summary>
+/// <summary>
+/// A page opened in a throw-away Firefox instance; disposal closes the whole
+/// browser and releases the idle-sweep hold it was opened with.
+/// </summary>
 public sealed class EphemeralBrowserPage : IAsyncDisposable
 {
     private readonly IBrowserContext _context;
     private readonly IBrowser _browser;
+    private readonly IDisposable? _hold;
 
-    public EphemeralBrowserPage(IPage page, IBrowserContext context, IBrowser browser)
+    public EphemeralBrowserPage(IPage page, IBrowserContext context, IBrowser browser, IDisposable? hold = null)
     {
         Page = page;
         _context = context;
         _browser = browser;
+        _hold = hold;
     }
 
     public IPage Page { get; }
@@ -32,6 +37,34 @@ public sealed class EphemeralBrowserPage : IAsyncDisposable
         catch
         {
             // A crashed browser must not break the caller's cleanup path.
+        }
+        finally
+        {
+            // Released exactly once even when disposal throws: a leaked hold
+            // would keep the idle sweep from ever closing the session browser.
+            _hold?.Dispose();
+        }
+    }
+}
+
+/// <summary>
+/// Marks the session browser busy: the idle sweep (see
+/// <see cref="FirefoxBrowserService.IdleCloseTimeout"/>) will not close it
+/// while any hold is active. A hold covers long non-browser stages too (the
+/// InnerTube probe runs yt-dlp for minutes between browser operations).
+/// </summary>
+public sealed class SessionUseHold : IDisposable
+{
+    private int _released;
+    private readonly Action _release;
+
+    internal SessionUseHold(Action release) => _release = release;
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _released, 1) == 0)
+        {
+            _release();
         }
     }
 }
@@ -54,6 +87,11 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
     public static readonly TimeSpan PageCloseTimeout = TimeSpan.FromSeconds(5);
     public static readonly TimeSpan ContextCloseTimeout = TimeSpan.FromSeconds(10);
 
+    /// <summary>Idle time after which the sweeper (SessionBrowserIdleHostedService)
+    /// closes the session browser: the next export relaunches it from the
+    /// persistent profile on demand, so idle time costs no memory.</summary>
+    public static readonly TimeSpan IdleCloseTimeout = TimeSpan.FromMinutes(5);
+
     /// <summary>Domains the session browser reads cookies for (identity
     /// cookies live on the root domain, so both are queried).</summary>
     public static readonly string[] SessionJarUrls =
@@ -75,6 +113,30 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
 
     private IPlaywright? _playwright;
     private IBrowserContext? _sessionContext;
+
+    // Idle accounting for the sweeper: Environment.TickCount64 at the last
+    // session operation, and holds currently active (an export pipeline stage
+    // or an open ephemeral browser - both must defer the idle close).
+    private long _lastSessionUseTicks;
+    private int _useHolds;
+
+    /// <summary>Holds currently active (export stages and ephemeral browsers);
+    /// the idle sweep defers while this is above zero. Diagnostics/tests.</summary>
+    public int ActiveUseHolds => Interlocked.CompareExchange(ref _useHolds, 0, 0);
+
+    /// <summary>Marks the session browser as just used (resets the idle clock).</summary>
+    private void TouchSession() => Interlocked.Exchange(ref _lastSessionUseTicks, Environment.TickCount64);
+
+    /// <summary>
+    /// Holds the session browser busy for a whole operation, across
+    /// non-browser stages included; dispose the returned hold when done.
+    /// </summary>
+    public SessionUseHold HoldSessionUse()
+    {
+        Interlocked.Increment(ref _useHolds);
+        TouchSession();
+        return new SessionUseHold(() => Interlocked.Decrement(ref _useHolds));
+    }
 
     public FirefoxBrowserService(IProxyService proxy, StorageService storage, ILogger log)
     {
@@ -445,6 +507,7 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
             };
             Directory.CreateDirectory(_profileDir);
             _sessionContext = await _playwright.Firefox.LaunchPersistentContextAsync(_profileDir, options);
+            TouchSession();
             _log.Information("Firefox session browser started ({Profile})", _profileDir);
         }
         finally
@@ -461,6 +524,7 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
     public async Task SeedCookiesAsync(IReadOnlyList<CookieItem> cookies)
     {
         var context = _sessionContext ?? throw new InvalidOperationException("Session browser is not running");
+        TouchSession();
         var args = cookies.Select(ToPlaywrightCookie).ToArray();
         if (args.Length == 0)
         {
@@ -478,6 +542,7 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
     public async Task<IReadOnlyList<CookieItem>> ReadJarAsync()
     {
         var context = _sessionContext ?? throw new InvalidOperationException("Session browser is not running");
+        TouchSession();
         var cookies = await context.CookiesAsync(SessionJarUrls).WaitAsync(JarReadTimeout);
         return cookies.Select(ToCookieItem).ToList();
     }
@@ -486,6 +551,7 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
     public async Task<IPage> NewSessionPageAsync()
     {
         var context = _sessionContext ?? throw new InvalidOperationException("Session browser is not running");
+        TouchSession();
         return await context.NewPageAsync();
     }
 
@@ -497,33 +563,52 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
     /// </summary>
     public async Task<EphemeralBrowserPage> OpenEphemeralPageAsync(string targetUrl)
     {
-        _playwright ??= await Playwright.CreateAsync();
-        var launchOptions = new BrowserTypeLaunchOptions
-        {
-            Headless = true,
-            Timeout = (float)LaunchTimeout.TotalMilliseconds,
-        };
-        var uri = new Uri(targetUrl);
-        var proxyUri = _proxy.GetProxyUri(uri);
-        if (!string.IsNullOrWhiteSpace(proxyUri) && _proxy.ShouldProxyFast(uri))
-        {
-            launchOptions.Proxy = new Proxy { Server = proxyUri };
-        }
-
-        var browser = await _playwright.Firefox.LaunchAsync(launchOptions).WaitAsync(LaunchTimeout);
+        // Serialized with launch/close: this method may create the shared
+        // Playwright driver handle that CloseSessionAsync (the idle sweeper
+        // among its callers) disposes.
+        await _lock.WaitAsync();
+        var hold = HoldSessionUse();
+        var heldByCaller = false;
         try
         {
-            var context = await browser.NewContextAsync(new BrowserNewContextOptions
+            _playwright ??= await Playwright.CreateAsync();
+            var launchOptions = new BrowserTypeLaunchOptions
             {
-                ViewportSize = new ViewportSize { Width = 1366, Height = 768 },
-            }).WaitAsync(ContextCloseTimeout);
-            var page = await context.NewPageAsync().WaitAsync(PageReadTimeout);
-            return new EphemeralBrowserPage(page, context, browser);
+                Headless = true,
+                Timeout = (float)LaunchTimeout.TotalMilliseconds,
+            };
+            var uri = new Uri(targetUrl);
+            var proxyUri = _proxy.GetProxyUri(uri);
+            if (!string.IsNullOrWhiteSpace(proxyUri) && _proxy.ShouldProxyFast(uri))
+            {
+                launchOptions.Proxy = new Proxy { Server = proxyUri };
+            }
+
+            var browser = await _playwright.Firefox.LaunchAsync(launchOptions).WaitAsync(LaunchTimeout);
+            try
+            {
+                var context = await browser.NewContextAsync(new BrowserNewContextOptions
+                {
+                    ViewportSize = new ViewportSize { Width = 1366, Height = 768 },
+                }).WaitAsync(ContextCloseTimeout);
+                var page = await context.NewPageAsync().WaitAsync(PageReadTimeout);
+                heldByCaller = true;
+                return new EphemeralBrowserPage(page, context, browser, hold);
+            }
+            catch
+            {
+                await browser.DisposeAsync();
+                throw;
+            }
         }
-        catch
+        finally
         {
-            await browser.DisposeAsync();
-            throw;
+            if (!heldByCaller)
+            {
+                hold.Dispose();
+            }
+
+            _lock.Release();
         }
     }
 
@@ -531,6 +616,19 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
     public async Task CloseSessionAsync()
     {
         await _lock.WaitAsync();
+        try
+        {
+            await CloseSessionCoreAsync();
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    /// <summary>Core of the session close; the caller holds <see cref="_lock"/>.</summary>
+    private async Task CloseSessionCoreAsync()
+    {
         try
         {
             if (_sessionContext is not null)
@@ -551,11 +649,52 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
             _playwright = null;
             _log.Warning("Firefox session context close timed out; state discarded");
         }
+    }
+
+    /// <summary>
+    /// Idle sweep: closes the session browser when nothing has used it for
+    /// <see cref="IdleCloseTimeout"/> and no hold is active (export stages,
+    /// ephemeral browsers). A no-op when the browser is not running or a
+    /// launch/close is already in progress - the non-blocking lock means a
+    /// mid-flight launch (the browser is not idle anyway) is never waited on.
+    /// Periodic caller: SessionBrowserIdleHostedService.
+    /// </summary>
+    public async Task CloseIfIdleAsync()
+    {
+        if (_sessionContext is null)
+        {
+            return;
+        }
+
+        if (!await _lock.WaitAsync(0))
+        {
+            return;
+        }
+
+        try
+        {
+            var lastUse = Interlocked.Read(ref _lastSessionUseTicks);
+            if (_sessionContext is null
+                || !IsIdleCloseDue(lastUse, Environment.TickCount64, ActiveUseHolds))
+            {
+                return;
+            }
+
+            var idle = TimeSpan.FromMilliseconds(Environment.TickCount64 - lastUse);
+            await CloseSessionCoreAsync();
+            _log.Information("Idle session browser closed (idle for {Idle})", idle.ToString(@"hh\:mm\:ss"));
+        }
         finally
         {
             _lock.Release();
         }
     }
+
+    /// <summary>True when an idle sweep must close the browser: no hold active
+    /// and the last use older than <see cref="IdleCloseTimeout"/>. Public for
+    /// unit tests; <see cref="CloseIfIdleAsync"/> applies it under the lock.</summary>
+    public static bool IsIdleCloseDue(long lastUseTicks, long nowTicks, int activeHolds) =>
+        activeHolds == 0 && nowTicks - lastUseTicks >= IdleCloseTimeout.TotalMilliseconds;
 
     public async ValueTask DisposeAsync() => await CloseSessionAsync();
 

@@ -78,6 +78,7 @@ public static class ServiceRegistration
         services.AddHostedService<DependencyUpgradeHostedService>();
         services.AddHostedService<PotSupervisorHostedService>();
         services.AddHostedService<CleanupHostedService>();
+        services.AddHostedService<SessionBrowserIdleHostedService>();
 
         // The auth cookie is protected by the Data Protection key ring; keep it in
         // the data dir (volume-backed) so cookies survive container recreation -

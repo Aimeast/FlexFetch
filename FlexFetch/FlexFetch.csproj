@@ -4,6 +4,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
     <Version>1.0.0</Version>
     <!-- Injected into the assembly as AssemblyMetadata; BuildInfo reads them at runtime. -->
     <GitLog Condition="'$(GitLog)' == ''">unknown</GitLog>

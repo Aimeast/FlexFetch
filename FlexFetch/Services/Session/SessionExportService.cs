@@ -133,6 +133,11 @@ public sealed class SessionExportService
             throw new InvalidOperationException("No session snapshot exists; import a session first");
         }
 
+        // Hold the browser busy across the whole pipeline: stages between
+        // browser operations (the InnerTube probe runs yt-dlp for minutes)
+        // must not let the idle sweeper close the browser mid-export.
+        using var browserHold = _browser.HoldSessionUse();
+
         var seed = _snapshot.ReadCookies();
         var meta = _snapshot.ReadMeta() ?? new SessionMeta();
         var health = SessionHealth.Ok;

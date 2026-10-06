@@ -12,6 +12,13 @@ if (args.Length > 0 && args[0] == "--install-browser")
     BrowserInstallChild.Run(args);
 }
 
+// OS-operator command: reset an account password from the server shell and
+// exit without starting the web application.
+if (args.Length > 0 && args[0] == "--reset-password")
+{
+    return PasswordResetChild.Run(args);
+}
+
 var builder = WebApplication.CreateBuilder(args);
 var dataDir = builder.AddFlexFetchRuntime();
 builder.AddFlexFetchLogging(dataDir);
@@ -20,6 +27,7 @@ builder.Services.AddFlexFetchServices(dataDir, builder.Configuration);
 var app = builder.Build();
 app.UseFlexFetchPipeline();
 app.Run();
+return 0;
 
 // Expose the generated Program class for integration tests (WebApplicationFactory).
 public partial class Program

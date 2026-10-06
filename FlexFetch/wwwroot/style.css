@@ -37,6 +37,8 @@ header {
 
 header h1 { font-size: 1.1rem; margin: 0; flex: 1; }
 
+header h1 a { color: inherit; text-decoration: none; }
+
 header nav a {
     color: var(--muted);
     text-decoration: none;
@@ -263,13 +265,26 @@ dialog.card p { word-break: break-all; }
 /* Mobile / narrow window: switch the table to stacked card rows below
    800px so the columns never get squeezed. */
 @media (max-width: 800px) {
-    header { flex-wrap: wrap; padding: 0.6rem 0.75rem; }
-    header nav { display: flex; flex-wrap: wrap; gap: 0.25rem; }
-    header nav a { margin-left: 0; margin-right: 0.75rem; }
+    /* Compact header: title plus nav share one line down to ~360px
+       phones. A vertical scrollbar eats ~16px of width, and the desktop
+       link margins push the nav onto a second line on long pages only -
+       drop the margins and space the links with small gaps instead. */
+    header { flex-wrap: wrap; padding: 0.6rem 0.5rem; gap: 0.75rem; }
+    header nav { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+    header nav a { margin: 0; font-size: 0.95rem; }
 
-    main { margin: 0.75rem auto; padding: 0 0.75rem; }
+    /* Phones: the task list loses width to three stacked gutters (page,
+       card, row). Shrink each layer to a few pixels and let the table
+       bleed into the card padding so the rows use nearly the full
+       window width. */
+    main { margin: 0.5rem auto; padding: 0 0.25rem; }
+    .card { padding: 0.75rem 0.4rem; }
 
-    .table-wrap { overflow-x: visible; }
+    /* width/max-width must be lifted here: the base width:100% and
+       max-width:100% pin the box to the card content width, so the
+       negative right margin would leave a gap on the right instead of
+       stretching the rows full-bleed. */
+    .table-wrap { overflow-x: visible; width: auto; max-width: none; margin: 0 -0.4rem; }
 
     table, thead, tbody, tr, td { display: block; }
 
@@ -279,7 +294,7 @@ dialog.card p { word-break: break-all; }
         border: 1px solid var(--border);
         border-radius: 8px;
         margin-bottom: 0.75rem;
-        padding: 0.5rem 0.75rem;
+        padding: 0.5rem 0.4rem;
     }
 
     /* Override the desktop fixed column widths (which use
@@ -308,5 +323,27 @@ dialog.card p { word-break: break-all; }
 
     .error-inline { display: inline; margin-left: 0.25rem; }
 
-    dialog.card { min-width: 0; width: 92vw; }
+    dialog.card { min-width: 0; width: 92vw; padding: 0.75rem 0.4rem; }
+}
+
+/* Phones: key-value rows stack - label on its own line, value below at
+   full width - so the fixed 10rem right-aligned label column stops
+   squeezing the value into a few characters per line. */
+@media (max-width: 640px) {
+    .kv div { display: block; }
+    .kv b {
+        display: block;
+        flex: none;
+        text-align: left;
+        white-space: normal;
+        margin-bottom: 0.1rem;
+    }
+    /* Quote-style value block: a left bar sets the value off from the
+       label above it. Child selector only - a plain descendant selector
+       would also hit badge spans inside the value and blockify them. */
+    .kv > div > span {
+        display: block;
+        border-left: 3px solid var(--border);
+        padding-left: 0.5rem;
+    }
 }
