@@ -4,11 +4,12 @@ using ILogger = Serilog.ILogger;
 namespace FlexFetch.HostedServices;
 
 /// <summary>
-/// Idle sweeper for the session browser: periodically asks the browser
-/// service to close itself once nothing has used it for a while (see
-/// FirefoxBrowserService.IdleCloseTimeout). The export pipeline launches
-/// the browser on demand from the persistent profile, so a closed browser
-/// costs nothing but the next export's launch time.
+/// Idle sweeper for the browser stack: periodically asks the browser
+/// service to release what idle time left - the session browser and the
+/// Playwright driver (see FirefoxBrowserService.IdleCloseTimeout). The
+/// export pipeline launches the browser on demand from the persistent
+/// profile, so a released stack costs nothing but the next export's
+/// launch time.
 /// </summary>
 public sealed class SessionBrowserIdleHostedService : IntervalHostedService
 {

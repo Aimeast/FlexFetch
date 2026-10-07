@@ -161,12 +161,29 @@ public sealed class FirefoxBrowserServiceTests
         var idle = (long)FirefoxBrowserService.IdleCloseTimeout.TotalMilliseconds;
 
         // Just inside the window the browser stays up; at the boundary it is due.
-        Assert.IsFalse(FirefoxBrowserService.IsIdleCloseDue(1000, 1000 + idle - 1, 0));
-        Assert.IsTrue(FirefoxBrowserService.IsIdleCloseDue(1000, 1000 + idle, 0));
+        Assert.IsFalse(FirefoxBrowserService.IsIdleCloseDue(true, true, 1000, 1000 + idle - 1, 0));
+        Assert.IsTrue(FirefoxBrowserService.IsIdleCloseDue(true, true, 1000, 1000 + idle, 0));
 
         // Any active hold (export stage, open ephemeral browser) defers the
-        // close no matter how long the browser has sat unused.
-        Assert.IsFalse(FirefoxBrowserService.IsIdleCloseDue(1000, 1000 + idle * 10, 1));
+        // release no matter how long the stack has sat unused.
+        Assert.IsFalse(FirefoxBrowserService.IsIdleCloseDue(true, true, 1000, 1000 + idle * 10, 1));
+    }
+
+    [TestMethod]
+    public void IsIdleCloseDue_DriverOnlyStack_DueOnSameTermsAsSession()
+    {
+        // Regression: a driver left behind by a closed ephemeral browser
+        // (no session running) used to be skipped by the sweep and stayed
+        // resident until shutdown. It is released on the same idle terms.
+        var idle = (long)FirefoxBrowserService.IdleCloseTimeout.TotalMilliseconds;
+
+        Assert.IsFalse(FirefoxBrowserService.IsIdleCloseDue(false, true, 1000, 1000 + idle - 1, 0));
+        Assert.IsTrue(FirefoxBrowserService.IsIdleCloseDue(false, true, 1000, 1000 + idle, 0));
+        Assert.IsFalse(FirefoxBrowserService.IsIdleCloseDue(false, true, 1000, 1000 + idle, 1));
+
+        // Nothing running: never due (the sweeper's early return makes it
+        // a no-op anyway).
+        Assert.IsFalse(FirefoxBrowserService.IsIdleCloseDue(false, false, 1000, 1000 + idle * 10, 0));
     }
 
     [TestMethod]

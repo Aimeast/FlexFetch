@@ -88,8 +88,9 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
     public static readonly TimeSpan ContextCloseTimeout = TimeSpan.FromSeconds(10);
 
     /// <summary>Idle time after which the sweeper (SessionBrowserIdleHostedService)
-    /// closes the session browser: the next export relaunches it from the
-    /// persistent profile on demand, so idle time costs no memory.</summary>
+    /// releases the browser stack - the session browser and the Playwright
+    /// driver alike: the next export relaunches them on demand, so idle
+    /// time costs no memory.</summary>
     public static readonly TimeSpan IdleCloseTimeout = TimeSpan.FromMinutes(5);
 
     /// <summary>Domains the session browser reads cookies for (identity
@@ -626,7 +627,9 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
         }
     }
 
-    /// <summary>Core of the session close; the caller holds <see cref="_lock"/>.</summary>
+    /// <summary>Core of the release path (idle sweep and shutdown): closes
+    /// the session context if running, then disposes the Playwright driver;
+    /// the caller holds <see cref="_lock"/>.</summary>
     private async Task CloseSessionCoreAsync()
     {
         try
@@ -652,16 +655,19 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
     }
 
     /// <summary>
-    /// Idle sweep: closes the session browser when nothing has used it for
+    /// Idle sweep: releases the browser stack when nothing has used it for
     /// <see cref="IdleCloseTimeout"/> and no hold is active (export stages,
-    /// ephemeral browsers). A no-op when the browser is not running or a
-    /// launch/close is already in progress - the non-blocking lock means a
-    /// mid-flight launch (the browser is not idle anyway) is never waited on.
-    /// Periodic caller: SessionBrowserIdleHostedService.
+    /// ephemeral browsers). The stack is the session browser plus the
+    /// Playwright driver - a driver left behind by a closed ephemeral
+    /// browser (no session running) is released on the same terms, so idle
+    /// time leaves no browser processes behind. A no-op when nothing is
+    /// running or a launch/close is already in progress - the non-blocking
+    /// lock means a mid-flight launch (the browser is not idle anyway) is
+    /// never waited on. Periodic caller: SessionBrowserIdleHostedService.
     /// </summary>
     public async Task CloseIfIdleAsync()
     {
-        if (_sessionContext is null)
+        if (_sessionContext is null && _playwright is null)
         {
             return;
         }
@@ -674,15 +680,25 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
         try
         {
             var lastUse = Interlocked.Read(ref _lastSessionUseTicks);
-            if (_sessionContext is null
-                || !IsIdleCloseDue(lastUse, Environment.TickCount64, ActiveUseHolds))
+            var now = Environment.TickCount64;
+            if (!IsIdleCloseDue(
+                    _sessionContext is not null, _playwright is not null,
+                    lastUse, now, ActiveUseHolds))
             {
                 return;
             }
 
-            var idle = TimeSpan.FromMilliseconds(Environment.TickCount64 - lastUse);
+            var idle = TimeSpan.FromMilliseconds(now - lastUse);
+            var hadSession = _sessionContext is not null;
             await CloseSessionCoreAsync();
-            _log.Information("Idle session browser closed (idle for {Idle})", idle.ToString(@"hh\:mm\:ss"));
+            if (hadSession)
+            {
+                _log.Information("Idle session browser closed (idle for {Idle})", idle.ToString(@"hh\:mm\:ss"));
+            }
+            else
+            {
+                _log.Information("Idle Playwright driver released (idle for {Idle})", idle.ToString(@"hh\:mm\:ss"));
+            }
         }
         finally
         {
@@ -690,11 +706,20 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
         }
     }
 
-    /// <summary>True when an idle sweep must close the browser: no hold active
-    /// and the last use older than <see cref="IdleCloseTimeout"/>. Public for
-    /// unit tests; <see cref="CloseIfIdleAsync"/> applies it under the lock.</summary>
-    public static bool IsIdleCloseDue(long lastUseTicks, long nowTicks, int activeHolds) =>
-        activeHolds == 0 && nowTicks - lastUseTicks >= IdleCloseTimeout.TotalMilliseconds;
+    /// <summary>True when an idle sweep must release the browser stack: a
+    /// session context or a bare Playwright driver exists, no hold active,
+    /// and the last use older than <see cref="IdleCloseTimeout"/>. Public
+    /// for unit tests; <see cref="CloseIfIdleAsync"/> applies it under the
+    /// lock.</summary>
+    public static bool IsIdleCloseDue(
+        bool hasSession,
+        bool hasDriver,
+        long lastUseTicks,
+        long nowTicks,
+        int activeHolds) =>
+        (hasSession || hasDriver)
+        && activeHolds == 0
+        && nowTicks - lastUseTicks >= IdleCloseTimeout.TotalMilliseconds;
 
     public async ValueTask DisposeAsync() => await CloseSessionAsync();
 
