@@ -20,6 +20,7 @@ public sealed class TaskService : IDisposable
 {
     private readonly ITaskRepository _tasks;
     private readonly IShareRepository _shares;
+    private readonly LiteDbStore _store;
     private readonly IConfiguration _config;
     private readonly ITaskExecutor _executor;
     private readonly StorageService _storage;
@@ -41,6 +42,7 @@ public sealed class TaskService : IDisposable
     public TaskService(
         ITaskRepository tasks,
         IShareRepository shares,
+        LiteDbStore store,
         IConfiguration config,
         ITaskExecutor executor,
         StorageService storage,
@@ -48,6 +50,7 @@ public sealed class TaskService : IDisposable
     {
         _tasks = tasks;
         _shares = shares;
+        _store = store;
         _config = config;
         _executor = executor;
         _storage = storage;
@@ -167,7 +170,13 @@ public sealed class TaskService : IDisposable
         return true;
     }
 
-    /// <summary>Deletes a task: cancels it, cleans up files and share links.</summary>
+    /// <summary>
+    /// Deletes a task: removes its records in one fast transaction and
+    /// answers immediately. The slow parts - cancelling runs (each Cancel
+    /// synchronously executes the yt-dlp kill registered on the token; a
+    /// process-tree kill can block for minutes) and removing files - run in
+    /// a background cleanup so the API never waits on them.
+    /// </summary>
     public bool Delete(string id)
     {
         var task = _tasks.GetById(id);
@@ -176,32 +185,113 @@ public sealed class TaskService : IDisposable
             return false;
         }
 
-        if (_running.TryGetValue(id, out var cts))
+        var children = _tasks.GetChildren(id);
+
+        // All records commit as one database transaction (one journal flush):
+        // a large playlist's per-child deletes used to cost one flush each.
+        _store.Database.BeginTrans();
+        try
         {
-            cts.Cancel();
+            foreach (var child in children)
+            {
+                _shares.DeleteByTaskId(child.Id);
+                _tasks.Delete(child.Id);
+            }
+
+            _shares.DeleteByTaskId(id);
+            _tasks.Delete(id);
+            _store.Database.Commit();
+        }
+        catch
+        {
+            _store.Database.Rollback();
+            throw;
         }
 
-        foreach (var child in _tasks.GetChildren(id))
+        CleanupInBackground(id, children.Select(c => c.Id).ToList());
+        _log.Information("Task {TaskId} deleted ({ChildCount} children)", id, children.Count);
+        return true;
+    }
+
+    private readonly ConcurrentDictionary<string, byte> _cleanupsInFlight = new();
+
+    /// <summary>
+    /// Cancels the deleted task's runs and removes its files off the request
+    /// thread. Duplicate calls for the same task (double click) clean only
+    /// once; a directory left behind when the app exits mid-cleanup is
+    /// removed by the periodic orphan-directory sweep.
+    /// </summary>
+    private void CleanupInBackground(string id, IReadOnlyList<string> childIds)
+    {
+        if (!_cleanupsInFlight.TryAdd(id, 0))
         {
-            if (_running.TryGetValue(child.Id, out var childCts))
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
             {
-                childCts.Cancel();
+                CancelRun(id);
+                foreach (var childId in childIds)
+                {
+                    CancelRun(childId);
+                }
+
+                await DeleteDirBestEffortAsync(_storage.GetTaskDir(id));
+                foreach (var childId in childIds)
+                {
+                    await DeleteDirBestEffortAsync(_storage.GetTaskDir(childId));
+                }
+            }
+            finally
+            {
+                _cleanupsInFlight.TryRemove(id, out _);
+            }
+        });
+    }
+
+    private void CancelRun(string taskId)
+    {
+        if (_running.TryGetValue(taskId, out var cts))
+        {
+            try
+            {
+                cts.Cancel();
+            }
+            catch (Exception ex)
+            {
+                _log.Warning(ex, "Task {TaskId}: cancellation callback failed during delete", taskId);
             }
         }
+    }
 
-        // Remove children (and their files/shares) first, then the task itself.
-        foreach (var child in _tasks.GetChildren(id))
+    private static async Task DeleteDirBestEffortAsync(string dir)
+    {
+        for (var attempt = 0; ; attempt++)
         {
-            _shares.DeleteByTaskId(child.Id);
-            _storage.DeleteTaskFiles(child.Id);
-            _tasks.Delete(child.Id);
-        }
+            try
+            {
+                if (Directory.Exists(dir))
+                {
+                    Directory.Delete(dir, recursive: true);
+                }
 
-        _shares.DeleteByTaskId(id);
-        _storage.DeleteTaskFiles(id);
-        _tasks.Delete(id);
-        _log.Information("Task {TaskId} deleted", id);
-        return true;
+                return;
+            }
+            catch (Exception)
+            {
+                // A still-dying download may hold a file; the cancel above
+                // finishes within moments - retry once, then leave the rest
+                // to the periodic orphan-directory sweep.
+                if (attempt >= 1)
+                {
+                    return;
+                }
+
+                await Task.Delay(2000);
+            }
+        }
     }
 
     /// <summary>
@@ -221,6 +311,15 @@ public sealed class TaskService : IDisposable
 
         foreach (var task in orphans)
         {
+            // "Ytdlp" is the generic fallback a previous attempt happened to
+            // pick, not an intentional pin (playlist expansion never pins
+            // it): clear it so recovery re-selects by URL instead of walking
+            // straight into the same fallback again.
+            if (task.DownloaderType == "Ytdlp")
+            {
+                task.DownloaderType = null;
+            }
+
             task.Status = TaskStatus.Queued;
             task.Attempts = 0;
             task.ErrorMessage = null;
@@ -234,6 +333,42 @@ public sealed class TaskService : IDisposable
         }
 
         return orphans.Count;
+    }
+
+    /// <summary>
+    /// Adopts the on-disk file name for completed tasks whose recorded name
+    /// does not match it. A console-encoding mismatch in the download report
+    /// (yt-dlp piped stdout in the system code page, decoded as UTF-8) used
+    /// to persist garbled names while the disk file itself is correctly
+    /// named from the -o template; the recorded size suffered the same
+    /// mismatch. Runs at startup, before the queue resumes.
+    /// </summary>
+    public int ReconcileFileNames()
+    {
+        var fixedCount = 0;
+        foreach (var task in _tasks.GetByStatus(TaskStatus.Completed))
+        {
+            var dir = _storage.GetTaskDir(task.Id);
+            if (!Directory.Exists(dir))
+            {
+                continue;
+            }
+
+            var file = new DirectoryInfo(dir).GetFiles("*", SearchOption.TopDirectoryOnly)
+                .OrderByDescending(f => f.LastWriteTimeUtc)
+                .FirstOrDefault();
+            if (file is null || (task.FileName == file.Name && task.FileSize == file.Length))
+            {
+                continue;
+            }
+
+            task.FileName = file.Name;
+            task.FileSize = file.Length;
+            _tasks.Update(task);
+            fixedCount++;
+        }
+
+        return fixedCount;
     }
 
     /// <summary>
@@ -354,6 +489,15 @@ public sealed class TaskService : IDisposable
         while (true)
         {
             attempt++;
+            // A task deleted while queued stays in the in-memory channel (a
+            // channel cannot drop individual items). Its record is gone -
+            // skip it instead of re-downloading an invisible zombie.
+            if (_tasks.GetById(task.Id) is null)
+            {
+                _log.Information("Task {TaskId} was deleted while queued; skipping", task.Id);
+                return;
+            }
+
             task.Attempts = attempt;
             task.Status = TaskStatus.Running;
             task.ErrorMessage = null;

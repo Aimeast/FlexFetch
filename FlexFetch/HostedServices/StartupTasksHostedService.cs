@@ -165,6 +165,12 @@ public sealed class StartupTasksHostedService : BackgroundService
         // 3. Recover tasks after a restart (Running/Queued -> Queued, re-queued).
         var recovered = _taskService.RecoverPending();
         _log.Information("Recovered {Count} pending tasks after restart", recovered);
+
+        // 4. Adopt on-disk file names for completed tasks whose recorded
+        // name/size mismatch (e.g. garbled by a download-report encoding
+        // mismatch) - the disk file is the source of truth.
+        var reconciled = _taskService.ReconcileFileNames();
+        _log.Information("Reconciled {Count} completed task file names from disk", reconciled);
     }
 
     private string Get(string key) => ConfigRegistry.From(_config, key);

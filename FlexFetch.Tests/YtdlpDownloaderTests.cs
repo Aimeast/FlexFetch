@@ -377,4 +377,37 @@ public sealed class YtdlpDownloaderTests
             Directory.Delete(dir, recursive: true);
         }
     }
+
+    [TestMethod]
+    public async Task DownloadAsync_FallsBackToTemplateWhenReportMissing()
+    {
+        // A mis-decoded download report points nowhere; the file lives at
+        // the -o template path, which is then the source of truth for the
+        // recorded name and size.
+        var dir = TestApp.CreateTempDataDir();
+        try
+        {
+            var storage = new StorageService(dir);
+            var proxy = new DirectProxyService();
+            var ytdlp = new YtdlpService(proxy, Log, dir);
+            var task = new TaskItem { Id = "t-fallback", Url = "https://vimeo.com/123" };
+            var analysis = new AnalysisResult { Title = "Clip", SuggestedFileName = "Clip.mp4" };
+            var downloader = new YtdlpDownloader(ytdlp, proxy, storage, Log,
+                download: (_, _, _, _) =>
+                {
+                    Directory.CreateDirectory(storage.GetTaskDir(task.Id));
+                    File.WriteAllText(Path.Combine(storage.GetTaskDir(task.Id), "Clip.mp4"), "abc");
+                    return Task.FromResult(new RunResult<string>(true, Array.Empty<string>(), "C:\\nowhere\\garbled.mp4"));
+                });
+
+            await downloader.DownloadAsync(task, analysis, _ => { }, CancellationToken.None);
+
+            Assert.AreEqual("Clip.mp4", task.FileName);
+            Assert.AreEqual(3L, task.FileSize);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
 }

@@ -32,7 +32,7 @@ public sealed class TaskServiceTests
         _config = new TestConfig();
         _storage = new StorageService(_dir);
         _executor = new FakeExecutor();
-        _service = new TaskService(_tasks, shares, _config, _executor, _storage, Log);
+        _service = new TaskService(_tasks, shares, _store, _config, _executor, _storage, Log);
     }
 
     [TestCleanup]
@@ -212,6 +212,179 @@ public sealed class TaskServiceTests
     }
 
     [TestMethod]
+    public async Task RecoverPending_ClearsGenericYtdlpPin()
+    {
+        // "Ytdlp" is the generic fallback a previous attempt happened to
+        // pick, never an intentional pin: recovery must clear it so the URL
+        // is re-selected (a newer downloader may claim it now), while real
+        // pins survive.
+        var fallback = new TaskItem
+        {
+            OwnerUserId = "user-1",
+            Url = "https://example.com/media/md28229591",
+            DownloaderType = "Ytdlp",
+            Status = TaskStatus.Running,
+        };
+        var pinned = new TaskItem
+        {
+            OwnerUserId = "user-1",
+            Url = "https://cdn.example.com/a.mp4",
+            DownloaderType = "Generic",
+            Status = TaskStatus.Running,
+        };
+        _tasks!.Insert(fallback);
+        _tasks.Insert(pinned);
+        _executor!.Handler = (_, _, _) => Task.CompletedTask;
+
+        _service!.RecoverPending();
+
+        await WaitForStatusAsync(fallback.Id, TaskStatus.Completed);
+        await WaitForStatusAsync(pinned.Id, TaskStatus.Completed);
+
+        Assert.IsNull(_tasks.GetById(fallback.Id)!.DownloaderType);
+        Assert.AreEqual("Generic", _tasks.GetById(pinned.Id)!.DownloaderType);
+    }
+
+    [TestMethod]
+    public async Task Execute_SkipsTaskDeletedWhileQueued()
+    {
+        // Deleting a parent leaves its queued children in the in-memory
+        // channel (a channel cannot drop individual items). A dequeued child
+        // whose record is gone must be skipped, not re-downloaded as an
+        // invisible zombie.
+        _service!.Dispose();
+        _config!.Set(ConfigKeys.MaxConcurrency, "1");
+        var shares = new ShareRepository(_store!);
+        _service = new TaskService(_tasks!, shares, _store!, _config, _executor!, _storage!, Log);
+
+        var started = new TaskCompletionSource();
+        var release = new TaskCompletionSource();
+        var zombieRan = false;
+        _executor!.Handler = (task, _, _) =>
+        {
+            if (task.Url.Contains("first", StringComparison.Ordinal))
+            {
+                started.TrySetResult();
+                return release.Task;
+            }
+
+            zombieRan = true;
+            return Task.CompletedTask;
+        };
+
+        _ = _service.Submit("user-1", "https://example.com/first.bin");
+        await started.Task; // the first task runs, holding the single slot
+        var zombieId = _service.Submit("user-1", "https://example.com/zombie.bin");
+
+        // The record is gone while the item still sits in the channel.
+        Assert.IsTrue(_service.Delete(zombieId));
+        Assert.IsNull(_tasks!.GetById(zombieId));
+
+        release.TrySetResult();
+        foreach (var _ in Enumerable.Range(0, 100))
+        {
+            if (_service.RunningCount == 0 && _service.QueuedCount == 0)
+            {
+                break;
+            }
+
+            await Task.Delay(50);
+        }
+
+        Assert.IsFalse(zombieRan, "a deleted queued task must not be re-downloaded");
+        Assert.IsFalse(Directory.Exists(_storage!.GetTaskDir(zombieId)));
+    }
+
+    [TestMethod]
+    public void Delete_ParentCascadeRemovesChildrenAndShares()
+    {
+        var parent = new TaskItem { OwnerUserId = "user-1", Url = "https://example.com/list", Status = TaskStatus.Running, IsVirtual = true };
+        var childA = new TaskItem { OwnerUserId = "user-1", Url = "https://example.com/a.mp4", ParentId = parent.Id, Status = TaskStatus.Completed };
+        var childB = new TaskItem { OwnerUserId = "user-1", Url = "https://example.com/b.mp4", ParentId = parent.Id, Status = TaskStatus.Queued };
+        _tasks!.Insert(parent);
+        _tasks.Insert(childA);
+        _tasks.Insert(childB);
+        var shares = new ShareRepository(_store!);
+        shares.Insert(new ShareToken { TaskId = childA.Id });
+
+        Assert.IsTrue(_service!.Delete(parent.Id));
+
+        Assert.IsNull(_tasks.GetById(parent.Id));
+        Assert.IsNull(_tasks.GetById(childA.Id));
+        Assert.IsNull(_tasks.GetById(childB.Id));
+        Assert.IsEmpty(shares.GetByTaskId(childA.Id));
+    }
+
+    [TestMethod]
+    public async Task Delete_CleansUpFilesInBackground()
+    {
+        // The API answers after the record commit; file removal follows in
+        // the background (process kills and Defender-slow deletes must never
+        // block the request).
+        var task = new TaskItem { OwnerUserId = "user-1", Url = "https://example.com/v.mp4", Status = TaskStatus.Completed };
+        _tasks!.Insert(task);
+        var dir = _storage!.GetTaskDir(task.Id);
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "clip.mp4"), "abc");
+
+        Assert.IsTrue(_service!.Delete(task.Id));
+        Assert.IsNull(_tasks.GetById(task.Id));
+
+        foreach (var _ in Enumerable.Range(0, 50))
+        {
+            if (!Directory.Exists(dir))
+            {
+                break;
+            }
+
+            await Task.Delay(100);
+        }
+
+        Assert.IsFalse(Directory.Exists(dir), "the background cleanup must remove the task directory");
+    }
+
+    [TestMethod]
+    public void ReconcileFileNames_AdoptsDiskNameForCompletedTask()
+    {
+        // A garbled download-report encoding used to persist a wrong name
+        // (and no size) while the disk file is correctly named: the startup
+        // reconcile adopts the disk file as the source of truth.
+        var garbled = new TaskItem
+        {
+            OwnerUserId = "user-1",
+            Url = "https://example.com/v.mp4",
+            Status = TaskStatus.Completed,
+            FileName = "??????.mp4",
+            FileSize = null,
+        };
+        var correct = new TaskItem
+        {
+            OwnerUserId = "user-1",
+            Url = "https://example.com/w.mp4",
+            Status = TaskStatus.Completed,
+            FileName = "clip.mp4",
+            FileSize = 3,
+        };
+        _tasks!.Insert(garbled);
+        _tasks.Insert(correct);
+        var garbledDir = _storage!.GetTaskDir(garbled.Id);
+        Directory.CreateDirectory(garbledDir);
+        File.WriteAllText(Path.Combine(garbledDir, "\u963F\u6EF4\u82F1\u6587.mp4"), "abc");
+        var correctDir = _storage.GetTaskDir(correct.Id);
+        Directory.CreateDirectory(correctDir);
+        File.WriteAllText(Path.Combine(correctDir, "clip.mp4"), "abc");
+
+        var fixedCount = _service!.ReconcileFileNames();
+
+        Assert.AreEqual(1, fixedCount);
+        var loaded = _tasks.GetById(garbled.Id)!;
+        Assert.AreEqual("\u963F\u6EF4\u82F1\u6587.mp4", loaded.FileName);
+        Assert.AreEqual(3L, loaded.FileSize);
+        // A matching record is left untouched.
+        Assert.AreEqual("clip.mp4", _tasks.GetById(correct.Id)!.FileName);
+    }
+
+    [TestMethod]
     public void AggregateParent_SummarizesChildren()
     {
         var parent = new TaskItem
@@ -329,6 +502,18 @@ public sealed class TaskServiceTests
         Assert.IsTrue(File.Exists(_storage!.GetTaskFilePath(id, "file.bin")));
         Assert.IsTrue(_service.Delete(id));
         Assert.IsNull(_service.GetById(id));
+
+        // File removal runs in the background cleanup; give it a moment.
+        foreach (var _ in Enumerable.Range(0, 50))
+        {
+            if (!Directory.Exists(_storage.GetTaskDir(id)))
+            {
+                break;
+            }
+
+            await Task.Delay(100);
+        }
+
         Assert.IsFalse(Directory.Exists(_storage.GetTaskDir(id)));
 
         // Deleting a missing task is a no-op.

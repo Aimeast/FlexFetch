@@ -41,7 +41,7 @@ public sealed class StartupTasksHostedServiceTests
                 config,
                 new FakeEnvironment(),
                 new TaskService(
-                    new TaskRepository(store), new ShareRepository(store), config,
+                    new TaskRepository(store), new ShareRepository(store), store, config,
                     new NoopExecutor(), storage, log),
                 new YtdlpService(proxy, log, dir),
                 new FirefoxBrowserService(proxy, storage, log),

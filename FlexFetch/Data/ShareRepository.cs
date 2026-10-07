@@ -22,7 +22,10 @@ public sealed class ShareRepository : IShareRepository
     public ShareRepository(LiteDbStore store)
     {
         _store = store;
-        _store.GetCollection<ShareToken>(CollectionName).EnsureIndex(s => s.Token, unique: true);
+        var shares = _store.GetCollection<ShareToken>(CollectionName);
+        shares.EnsureIndex(s => s.Token, unique: true);
+        // TaskId lookups (GetByTaskId, cascade delete by task) must not scan.
+        shares.EnsureIndex(s => s.TaskId);
     }
 
     private ILiteCollection<ShareToken> Collection => _store.GetCollection<ShareToken>(CollectionName);

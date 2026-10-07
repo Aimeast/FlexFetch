@@ -50,7 +50,7 @@ public sealed class CleanupHostedServiceTests
 
     private CleanupHostedService CreateService(TaskService? taskService = null, UserService? userService = null)
     {
-        var tasks = taskService ?? new TaskService(_tasks!, _shares!, _config!, new NoopExecutor(), _storage!, Log);
+        var tasks = taskService ?? new TaskService(_tasks!, _shares!, _store!, _config!, new NoopExecutor(), _storage!, Log);
         var users = userService ?? new UserService(_users!, _config!);
         return new CleanupHostedService(
             _shares!, _tasks!, _config!, _users!, _guests!, tasks, users, _storage!, Lifetime, Log);
@@ -63,7 +63,7 @@ public sealed class CleanupHostedServiceTests
         _shares.Insert(new ShareToken { TaskId = "t2", ExpiresAt = DateTime.UtcNow.AddHours(1) });
         _shares.Insert(new ShareToken { TaskId = "t3" });
 
-        using var taskService = new TaskService(_tasks!, _shares!, _config!, new NoopExecutor(), _storage!, Log);
+        using var taskService = new TaskService(_tasks!, _shares!, _store!, _config!, new NoopExecutor(), _storage!, Log);
         var service = CreateService(taskService);
         await service.ExecuteOnceForTestAsync(CancellationToken.None);
 
@@ -86,7 +86,7 @@ public sealed class CleanupHostedServiceTests
         _storage.EnsureTaskDir(orphanId);
         File.WriteAllText(_storage.GetTaskFilePath(orphanId, "b.bin"), "y");
 
-        using var taskService = new TaskService(_tasks!, _shares!, _config!, new NoopExecutor(), _storage!, Log);
+        using var taskService = new TaskService(_tasks!, _shares!, _store!, _config!, new NoopExecutor(), _storage!, Log);
         var service = CreateService(taskService);
         await service.ExecuteOnceForTestAsync(CancellationToken.None);
 
@@ -103,7 +103,7 @@ public sealed class CleanupHostedServiceTests
         _users!.Insert(active);
         _users.Insert(inactive);
 
-        using var taskService = new TaskService(_tasks!, _shares!, _config, new NoopExecutor(), _storage!, Log);
+        using var taskService = new TaskService(_tasks!, _shares!, _store!, _config, new NoopExecutor(), _storage!, Log);
         var activeTaskId = taskService.Submit(active.Id, "https://example.com/a.bin");
         var inactiveTaskId = taskService.Submit(inactive.Id, "https://example.com/b.bin");
 
@@ -125,7 +125,7 @@ public sealed class CleanupHostedServiceTests
         var old = new User { UserName = "old", CreatedAt = DateTime.UtcNow.AddDays(-365) };
         _users!.Insert(old);
 
-        using var taskService = new TaskService(_tasks!, _shares!, _config, new NoopExecutor(), _storage!, Log);
+        using var taskService = new TaskService(_tasks!, _shares!, _store!, _config, new NoopExecutor(), _storage!, Log);
         var taskId = taskService.Submit(old.Id, "https://example.com/a.bin");
 
         var service = CreateService(taskService);
@@ -176,7 +176,7 @@ public sealed class CleanupHostedServiceTests
         var guestId = "guest-testactive";
         _guests!.Insert(new GuestSession { Id = guestId, LastActiveAt = DateTime.UtcNow });
 
-        using var taskService = new TaskService(_tasks!, _shares!, _config, new NoopExecutor(), _storage!, Log);
+        using var taskService = new TaskService(_tasks!, _shares!, _store!, _config, new NoopExecutor(), _storage!, Log);
         var taskId = taskService.Submit(guestId, "https://example.com/a.bin");
         _storage!.EnsureTaskDir(taskId);
         File.WriteAllText(_storage.GetTaskFilePath(taskId, "a.bin"), "content");
@@ -230,7 +230,7 @@ public sealed class CleanupHostedServiceTests
             LastActiveAt = DateTime.UtcNow.AddDays(-30),
         });
 
-        using var taskService = new TaskService(_tasks!, _shares!, _config, new NoopExecutor(), _storage!, Log);
+        using var taskService = new TaskService(_tasks!, _shares!, _store!, _config, new NoopExecutor(), _storage!, Log);
         var taskId = taskService.Submit(guestId, "https://example.com/a.bin");
 
         var service = CreateService(taskService);

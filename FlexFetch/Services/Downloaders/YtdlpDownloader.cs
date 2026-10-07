@@ -230,8 +230,15 @@ public class YtdlpDownloader : IDownloader
             ExamineSuccessOutput(result.ErrorOutput, task.Id);
             // Prefer the path yt-dlp reports after its move/merge step
             // ("outfile:"): a merged container can differ from the -o
-            // template (e.g. webm fragments merged into mp4).
+            // template (e.g. webm fragments merged into mp4). The report
+            // must still point at a real file - when it does not (a
+            // mis-decoded report), the template path is where yt-dlp wrote
+            // the download.
             var finalPath = string.IsNullOrWhiteSpace(result.Data) ? outputPath : result.Data;
+            if (!File.Exists(finalPath) && File.Exists(outputPath))
+            {
+                finalPath = outputPath;
+            }
             task.FileName = Path.GetFileName(finalPath);
             task.FileSize = File.Exists(finalPath) ? new FileInfo(finalPath).Length : null;
         }
