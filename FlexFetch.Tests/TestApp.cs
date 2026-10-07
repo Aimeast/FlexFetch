@@ -19,7 +19,8 @@ public static class TestApp
         return dir;
     }
 
-    public static WebApplicationFactory<Program> CreateFactory(string dataDir, bool allowAnonymous = false)
+    public static WebApplicationFactory<Program> CreateFactory(
+        string dataDir, bool allowAnonymous = false, IReadOnlyDictionary<string, string>? settings = null)
     {
         return new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
@@ -32,6 +33,13 @@ public static class TestApp
             // Development environment and would otherwise inherit whatever
             // appsettings.Development.json happens to set for it.
             builder.UseSetting("account:allowAnonymous", allowAnonymous ? "true" : "false");
+            if (settings is not null)
+            {
+                foreach (var (key, value) in settings)
+                {
+                    builder.UseSetting(key, value);
+                }
+            }
         });
     }
 }

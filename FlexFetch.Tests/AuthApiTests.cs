@@ -1,4 +1,5 @@
-﻿using System.Net;
+﻿using System.Globalization;
+using System.Net;
 using System.Net.Http.Json;
 
 namespace FlexFetch.Tests;
@@ -193,6 +194,74 @@ public sealed class AuthApiTests
             "/api/auth/change-password", new { currentPassword = "x", newPassword = "yyyyyy" });
 
         Assert.AreEqual(HttpStatusCode.Unauthorized, anon.StatusCode);
+    }
+
+    [TestMethod]
+    public async Task Login_IssuesPersistentCookie_ForDefaultSessionHours()
+    {
+        using var factory = TestApp.CreateFactory(_dataDir!);
+        using var client = factory.CreateClient();
+
+        await client.PostAsJsonAsync("/api/auth/register", new { userName = "alice", password = "password1" });
+        var login = await client.PostAsJsonAsync("/api/auth/login", new { userName = "alice", password = "password1" });
+
+        Assert.AreEqual(HttpStatusCode.OK, login.StatusCode);
+        var expires = GetAuthCookieExpires(login);
+        Assert.IsNotNull(expires, "the auth cookie must carry an explicit expiry (persistent, survives browser restart)");
+        AssertNear(expires.Value, DateTimeOffset.UtcNow.AddHours(168));
+    }
+
+    [TestMethod]
+    public async Task Login_CookieLifetime_FollowsSessionHoursConfig()
+    {
+        using var factory = TestApp.CreateFactory(_dataDir!, settings: new Dictionary<string, string>
+        {
+            ["account:sessionHours"] = "720",
+        });
+        using var client = factory.CreateClient();
+
+        await client.PostAsJsonAsync("/api/auth/register", new { userName = "bob", password = "password1" });
+        var login = await client.PostAsJsonAsync("/api/auth/login", new { userName = "bob", password = "password1" });
+
+        Assert.AreEqual(HttpStatusCode.OK, login.StatusCode);
+        var expires = GetAuthCookieExpires(login);
+        Assert.IsNotNull(expires, "the auth cookie must carry an explicit expiry (persistent, survives browser restart)");
+        AssertNear(expires.Value, DateTimeOffset.UtcNow.AddHours(720));
+    }
+
+    private static void AssertNear(DateTimeOffset actual, DateTimeOffset expected)
+    {
+        Assert.IsTrue(Math.Abs((actual - expected).TotalMinutes) < 5,
+            $"Cookie expiry {actual:O} is not near the expected {expected:O}");
+    }
+
+    private static DateTimeOffset? GetAuthCookieExpires(HttpResponseMessage response)
+    {
+        if (!response.Headers.TryGetValues("Set-Cookie", out var cookies))
+        {
+            return null;
+        }
+
+        foreach (var cookie in cookies)
+        {
+            if (!cookie.StartsWith("FlexFetch.Auth=", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            foreach (var part in cookie.Split(';'))
+            {
+                var attribute = part.Trim();
+                if (attribute.StartsWith("expires=", StringComparison.OrdinalIgnoreCase))
+                {
+                    var raw = attribute["expires=".Length..];
+                    return DateTimeOffset.TryParse(raw, CultureInfo.InvariantCulture,
+                        DateTimeStyles.AssumeUniversal, out var parsed) ? parsed : null;
+                }
+            }
+        }
+
+        return null;
     }
 
     [TestMethod]

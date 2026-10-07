@@ -33,7 +33,7 @@ public static class AuthApi
             };
         });
 
-        group.MapPost("/login", async (LoginRequest req, UserService users, HttpContext ctx) =>
+        group.MapPost("/login", async (LoginRequest req, UserService users, IConfiguration config, HttpContext ctx) =>
         {
             var outcome = users.Login(req.UserName, req.Password);
             switch (outcome.Status)
@@ -52,9 +52,20 @@ public static class AuthApi
                 new Claim(ClaimTypes.Role, user.Role.ToString()),
             };
             var identity = new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme);
+            // Persistent cookie: without it the browser keeps a session cookie
+            // that dies with the browser (hours on mobile), regardless of the
+            // server-side ticket lifetime. ExpireTimeSpan in ServiceRegistration
+            // still drives sliding renewal between logins.
+            var props = new AuthenticationProperties
+            {
+                IsPersistent = true,
+                ExpiresUtc = DateTimeOffset.UtcNow.AddHours(
+                    int.Parse(ConfigRegistry.From(config, ConfigKeys.SessionHours))),
+            };
             await ctx.SignInAsync(
                 CookieAuthenticationDefaults.AuthenticationScheme,
-                new ClaimsPrincipal(identity));
+                new ClaimsPrincipal(identity),
+                props);
 
             return Results.Ok(new { id = user.Id, userName = user.UserName, role = user.Role.ToString() });
         });
