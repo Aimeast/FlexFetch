@@ -58,12 +58,14 @@ public static class ServiceRegistration
         services.AddSingleton<ITaskExecutor>(sp => new DownloaderTaskExecutor(
             sp.GetRequiredService<DownloaderFactory>(),
             sp.GetRequiredService<IProxyService>(),
+            sp.GetRequiredService<ITaskRepository>(),
+            sp.GetRequiredService<StorageService>(),
             sp.GetRequiredService<ILogger>(),
             (parent, child, referrer) =>
             {
                 var taskService = sp.GetRequiredService<TaskService>();
                 return taskService.Submit(parent.OwnerUserId, child.Url, downloaderType: child.DownloaderType,
-                    parentId: parent.Id, title: child.Title, referrer: referrer);
+                    parentId: parent.Id, title: child.Title, referrer: referrer, storageFolder: parent.StorageFolder);
             }));
         services.AddSingleton<TaskService>();
 

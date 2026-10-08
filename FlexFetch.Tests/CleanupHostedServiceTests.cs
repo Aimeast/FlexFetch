@@ -165,7 +165,18 @@ public sealed class CleanupHostedServiceTests
         await service.ExecuteOnceForTestAsync(CancellationToken.None);
 
         Assert.IsNull(_tasks.GetById(taskId));
-        Assert.IsFalse(Directory.Exists(_storage.GetTaskDir(taskId)));
+        // File removal runs in the background cleanup; give it a moment.
+        foreach (var _ in Enumerable.Range(0, 50))
+        {
+            if (!Directory.Exists(_storage!.GetTaskDir(taskId)))
+            {
+                break;
+            }
+
+            await Task.Delay(100);
+        }
+
+        Assert.IsFalse(Directory.Exists(_storage!.GetTaskDir(taskId)));
         Assert.IsNull(_guests.GetById(guestId));
     }
 

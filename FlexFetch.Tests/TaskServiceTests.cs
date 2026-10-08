@@ -344,44 +344,41 @@ public sealed class TaskServiceTests
     }
 
     [TestMethod]
-    public void ReconcileFileNames_AdoptsDiskNameForCompletedTask()
+    public void ReconcileFileNames_FixesFileSizeFromDisk()
     {
-        // A garbled download-report encoding used to persist a wrong name
-        // (and no size) while the disk file is correctly named: the startup
-        // reconcile adopts the disk file as the source of truth.
-        var garbled = new TaskItem
+        // In the group layout the recorded name IS the disk name inside the
+        // group folder; reconciliation only adopts the on-disk size when the
+        // record lost it (a download-report encoding mismatch), and leaves
+        // records without a file untouched.
+        var sized = new TaskItem
         {
             OwnerUserId = "user-1",
-            Url = "https://example.com/v.mp4",
+            Url = "https://example.com/v.bin",
+            StorageFolder = "sized",
+            FileName = "clip.bin",
+            FileSize = 999,
             Status = TaskStatus.Completed,
-            FileName = "??????.mp4",
-            FileSize = null,
         };
-        var correct = new TaskItem
+        var noFile = new TaskItem
         {
             OwnerUserId = "user-1",
-            Url = "https://example.com/w.mp4",
+            Url = "https://example.com/w.bin",
+            StorageFolder = "nofile",
+            FileName = "gone.bin",
             Status = TaskStatus.Completed,
-            FileName = "clip.mp4",
-            FileSize = 3,
         };
-        _tasks!.Insert(garbled);
-        _tasks.Insert(correct);
-        var garbledDir = _storage!.GetTaskDir(garbled.Id);
-        Directory.CreateDirectory(garbledDir);
-        File.WriteAllText(Path.Combine(garbledDir, "\u963F\u6EF4\u82F1\u6587.mp4"), "abc");
-        var correctDir = _storage.GetTaskDir(correct.Id);
-        Directory.CreateDirectory(correctDir);
-        File.WriteAllText(Path.Combine(correctDir, "clip.mp4"), "abc");
+        _tasks!.Insert(sized);
+        _tasks.Insert(noFile);
+        var dir = _storage!.GetTaskDir(sized);
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "clip.bin"), "abc");
 
         var fixedCount = _service!.ReconcileFileNames();
 
         Assert.AreEqual(1, fixedCount);
-        var loaded = _tasks.GetById(garbled.Id)!;
-        Assert.AreEqual("\u963F\u6EF4\u82F1\u6587.mp4", loaded.FileName);
-        Assert.AreEqual(3L, loaded.FileSize);
-        // A matching record is left untouched.
-        Assert.AreEqual("clip.mp4", _tasks.GetById(correct.Id)!.FileName);
+        Assert.AreEqual(3, _tasks.GetById(sized.Id)!.FileSize);
+        // A record without a matching file is left untouched.
+        Assert.IsNull(_tasks.GetById(noFile.Id)!.FileSize);
     }
 
     [TestMethod]
@@ -518,6 +515,158 @@ public sealed class TaskServiceTests
 
         // Deleting a missing task is a no-op.
         Assert.IsFalse(_service.Delete("missing"));
+    }
+
+    [TestMethod]
+    public async Task RecoverPending_SkipsTasksStillQueuedInChannel()
+    {
+        // Recovery can run long after startup (component installs delay it):
+        // tasks submitted in the meantime already wait in the channel, and a
+        // task holding the slot is executing. They are not orphans - the old
+        // behavior re-queued them and every download ran twice.
+        _service!.Dispose();
+        _config!.Set(ConfigKeys.MaxConcurrency, "1");
+        var shares = new ShareRepository(_store!);
+        _service = new TaskService(_tasks!, shares, _store!, _config, _executor!, _storage!, Log);
+
+        var started = new TaskCompletionSource();
+        var release = new TaskCompletionSource();
+        var secondDone = new TaskCompletionSource();
+        var runs = new List<string>();
+        var gate = new object();
+        _executor!.Handler = (task, _, _) =>
+        {
+            lock (gate)
+            {
+                runs.Add(task.Url);
+            }
+
+            if (task.Url.Contains("first", StringComparison.Ordinal))
+            {
+                started.TrySetResult();
+                return release.Task;
+            }
+
+            secondDone.TrySetResult();
+            return Task.CompletedTask;
+        };
+
+        _ = _service.Submit("user-1", "https://example.com/first.bin");
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5)); // holds the single slot
+        _ = _service.Submit("user-1", "https://example.com/second.bin");
+
+        // Late recovery sees both records (first Running, second Queued).
+        Assert.AreEqual(0, _service.RecoverPending());
+
+        release.TrySetResult();
+        await secondDone.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await DrainAsync();
+
+        Assert.AreEqual(2, runs.Count, "each task must run exactly once");
+    }
+
+    [TestMethod]
+    public async Task Execute_SkipsDuplicateEntryOfCompletedTask()
+    {
+        // A duplicate channel entry for a task that already finished must not
+        // re-download: its stale in-memory copy would rewrite the record over
+        // the fresh Completed state (the stuck-Running symptom).
+        _service!.Dispose();
+        _config!.Set(ConfigKeys.MaxConcurrency, "1");
+        var shares = new ShareRepository(_store!);
+        _service = new TaskService(_tasks!, shares, _store!, _config, _executor!, _storage!, Log);
+
+        var started = new TaskCompletionSource();
+        var release = new TaskCompletionSource();
+        var duplicateRan = false;
+        _executor!.Handler = (task, _, _) =>
+        {
+            if (task.Url.Contains("first", StringComparison.Ordinal))
+            {
+                started.TrySetResult();
+                return release.Task;
+            }
+
+            duplicateRan = true;
+            return Task.CompletedTask;
+        };
+
+        _ = _service.Submit("user-1", "https://example.com/first.bin");
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var duplicateId = _service.Submit("user-1", "https://example.com/duplicate.bin");
+
+        // Simulate an earlier duplicate entry having already finished it.
+        var record = _tasks!.GetById(duplicateId)!;
+        record.Status = TaskStatus.Completed;
+        record.Progress = 100;
+        _tasks.Update(record);
+
+        release.TrySetResult();
+        await DrainAsync();
+
+        Assert.IsFalse(duplicateRan, "a queue entry of a completed task must be skipped");
+        Assert.AreEqual(TaskStatus.Completed, _service.GetById(duplicateId)!.Status);
+        Assert.AreEqual(100, _service.GetById(duplicateId)!.Progress);
+    }
+
+    [TestMethod]
+    public async Task Retry_TaskStillQueuedInChannel_DoesNotRunTwice()
+    {
+        // Retrying a task that still sits queued in the channel must accept
+        // the request without creating a second queue entry (the stale-copy
+        // duplication behind the "stuck running/queued" symptom).
+        _service!.Dispose();
+        _config!.Set(ConfigKeys.MaxConcurrency, "1");
+        var shares = new ShareRepository(_store!);
+        _service = new TaskService(_tasks!, shares, _store!, _config, _executor!, _storage!, Log);
+
+        var started = new TaskCompletionSource();
+        var release = new TaskCompletionSource();
+        var secondDone = new TaskCompletionSource();
+        var runs = new List<string>();
+        var gate = new object();
+        _executor!.Handler = (task, _, _) =>
+        {
+            lock (gate)
+            {
+                runs.Add(task.Url);
+            }
+
+            if (task.Url.Contains("first", StringComparison.Ordinal))
+            {
+                started.TrySetResult();
+                return release.Task;
+            }
+
+            secondDone.TrySetResult();
+            return Task.CompletedTask;
+        };
+
+        _ = _service.Submit("user-1", "https://example.com/first.bin");
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var secondId = _service.Submit("user-1", "https://example.com/second.bin");
+
+        Assert.IsTrue(_service.Retry(secondId));
+
+        release.TrySetResult();
+        await secondDone.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await DrainAsync();
+
+        Assert.AreEqual(1, runs.Count(url => url.Contains("second", StringComparison.Ordinal)),
+            "a queued task must not gain a second queue entry through retry");
+    }
+
+    private async Task DrainAsync()
+    {
+        foreach (var _ in Enumerable.Range(0, 100))
+        {
+            if (_service!.RunningCount == 0 && _service.QueuedCount == 0)
+            {
+                break;
+            }
+
+            await Task.Delay(50);
+        }
     }
 
     private async Task WaitForStatusAsync(string id, TaskStatus status)

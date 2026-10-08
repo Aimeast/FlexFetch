@@ -17,6 +17,17 @@ public sealed class TaskItem
     /// <summary>Source page to send as Referrer during download, if any.</summary>
     public string? Referrer { get; set; }
 
+    /// <summary>Page/list title from analysis. Names the storage folder
+    /// (files/{id} {title prefix}) so downloads are findable on disk.</summary>
+    public string? Title { get; set; }
+
+    /// <summary>
+    /// Name of the directory under files/ holding this task's file: the
+    /// parent task's folder for children, its own for roots. Null on legacy
+    /// records, where the task id doubles as the folder name.
+    /// </summary>
+    public string? StorageFolder { get; set; }
+
     public string? DownloaderType { get; set; }
 
     /// <summary>Extracted page/tweet text, shown under the URL (e.g. tweet content).</summary>

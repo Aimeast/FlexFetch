@@ -166,11 +166,11 @@ public sealed class StartupTasksHostedService : BackgroundService
         var recovered = _taskService.RecoverPending();
         _log.Information("Recovered {Count} pending tasks after restart", recovered);
 
-        // 4. Adopt on-disk file names for completed tasks whose recorded
-        // name/size mismatch (e.g. garbled by a download-report encoding
-        // mismatch) - the disk file is the source of truth.
+        // 4. Adopt on-disk file sizes for completed tasks whose recorded
+        //    size mismatches (e.g. lost in a download-report encoding
+        //    mismatch) - the disk file is the source of truth.
         var reconciled = _taskService.ReconcileFileNames();
-        _log.Information("Reconciled {Count} completed task file names from disk", reconciled);
+        _log.Information("Reconciled {Count} completed task file sizes from disk", reconciled);
     }
 
     private string Get(string key) => ConfigRegistry.From(_config, key);

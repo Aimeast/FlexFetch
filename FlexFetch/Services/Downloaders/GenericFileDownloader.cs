@@ -62,8 +62,8 @@ public sealed class GenericFileDownloader : IDownloader
             client.DefaultRequestHeaders.Referrer = new Uri(referrer);
         }
 
-        _storage.EnsureTaskDir(task.Id);
-        var partPath = _storage.GetTaskFilePath(task.Id, $"{task.Id}.part");
+        _storage.EnsureTaskDir(task);
+        var partPath = _storage.GetTaskFilePath(task, $"{task.Id}.part");
         var resumeFrom = File.Exists(partPath) ? new FileInfo(partPath).Length : 0;
 
         HttpResponseMessage response;
@@ -129,7 +129,7 @@ public sealed class GenericFileDownloader : IDownloader
             }
 
             // Move the finished part file to its final name.
-            var finalPath = _storage.GetTaskFilePath(task.Id, fileName);
+            var finalPath = _storage.GetTaskFilePath(task, fileName);
             if (File.Exists(finalPath))
             {
                 File.Delete(finalPath);

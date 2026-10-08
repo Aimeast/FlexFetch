@@ -94,7 +94,7 @@ public static class ShareApi
                 return Results.NotFound();
             }
 
-            var path = storage.GetTaskFilePath(task.Id, task.FileName);
+            var path = storage.GetTaskFilePath(task, task.FileName);
             if (!File.Exists(path))
             {
                 return Results.NotFound();

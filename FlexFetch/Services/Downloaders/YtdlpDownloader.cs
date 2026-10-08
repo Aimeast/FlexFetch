@@ -190,7 +190,7 @@ public class YtdlpDownloader : IDownloader
         // Prefer the analyzed file name (title + extension) so downloads keep
         // their extension; the stored name is only a fallback for cases where
         // analysis produced no suggestion.
-        var outputPath = Storage.GetTaskDir(task.Id) + Path.DirectorySeparatorChar
+        var outputPath = Storage.GetTaskDir(task) + Path.DirectorySeparatorChar
             + (analysis.SuggestedFileName ?? task.FileName ?? "video.mp4");
         var options = BuildOptions(new Uri(task.Url), outputPath);
 

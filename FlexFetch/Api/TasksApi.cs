@@ -98,7 +98,7 @@ public static class TasksApi
                 return Results.Conflict(new { error = "Task is not completed yet" });
             }
 
-            var path = storage.GetTaskFilePath(task.Id, task.FileName);
+            var path = storage.GetTaskFilePath(task, task.FileName);
             if (!File.Exists(path))
             {
                 return Results.NotFound();

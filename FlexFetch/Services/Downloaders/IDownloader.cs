@@ -33,8 +33,9 @@ public sealed class AnalysisResult
     /// <summary>Referrer page to send with the download request.</summary>
     public string? Referrer { get; init; }
 
-    /// <summary>Filename suggested by the analysis (title-based).</summary>
-    public string? SuggestedFileName { get; init; }
+    /// <summary>Filename suggested by the analysis (title-based). The
+    /// executor may replace it (group-unique name) before the download.</summary>
+    public string? SuggestedFileName { get; set; }
 
     /// <summary>Expanded children (e.g. playlist videos), empty for plain files.</summary>
     public IReadOnlyList<MediaChild> Children { get; init; } = Array.Empty<MediaChild>();

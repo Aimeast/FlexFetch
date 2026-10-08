@@ -1,4 +1,5 @@
-﻿using FlexFetch.Config;
+﻿using System.Text.RegularExpressions;
+using FlexFetch.Config;
 using FlexFetch.Data;
 using FlexFetch.Services;
 using FlexFetch.Services.Tasks;
@@ -9,15 +10,16 @@ namespace FlexFetch.HostedServices;
 
 /// <summary>
 /// Periodically performs all data cleanup:
-/// 1. removes expired share tokens and orphaned task files (files/{taskId}
-///    directories whose task no longer exists);
+/// 1. removes expired share tokens and orphaned group folders (directories
+///    under files/ whose root task no longer exists) plus stale download
+///    leftovers inside live folders;
 /// 2. removes download resources (tasks and files) of accounts inactive
 ///    beyond the configured threshold - accounts themselves are kept, and a
 ///    re-login starts from an empty state (disabled when the threshold is 0);
 /// 3. removes expired anonymous guest sessions with all their tasks and
 ///    files (disabled when the threshold is 0).
 /// </summary>
-public sealed class CleanupHostedService : IntervalHostedService
+public sealed partial class CleanupHostedService : IntervalHostedService
 {
     private readonly IShareRepository _shares;
     private readonly ITaskRepository _tasks;
@@ -63,7 +65,9 @@ public sealed class CleanupHostedService : IntervalHostedService
             _shares.Delete(share.Token);
         }
 
-        // Orphaned task directories: files/{taskId} with no matching task.
+        // Orphaned group folders: "{taskId} {title prefix}" directories whose
+        // root task no longer exists (the task id is the leading token; ids
+        // never contain spaces).
         var taskDirs = Directory.Exists(_storage.FilesRoot)
             ? Directory.EnumerateDirectories(_storage.FilesRoot).ToList()
             : new List<string>();
@@ -74,10 +78,27 @@ public sealed class CleanupHostedService : IntervalHostedService
                 return;
             }
 
-            var taskId = Path.GetFileName(dir);
+            var folderName = Path.GetFileName(dir);
+            var taskId = folderName.Split(' ')[0];
             if (_tasks.GetById(taskId) is null)
             {
-                _storage.DeleteTaskFiles(taskId);
+                _storage.DeleteTaskFiles(folderName);
+                continue;
+            }
+
+            // Stale download leftovers inside a live group folder (yt-dlp
+            // fragments/part files from a crashed run). A conservative age
+            // guard keeps them away from any download in progress.
+            foreach (var file in Directory.EnumerateFiles(dir))
+            {
+                var name = Path.GetFileName(file);
+                if (!IsDownloadLeftover(name)
+                    || File.GetLastWriteTimeUtc(file) >= now.AddHours(-24))
+                {
+                    continue;
+                }
+
+                TryDeleteFile(file);
             }
         }
 
@@ -138,4 +159,24 @@ public sealed class CleanupHostedService : IntervalHostedService
     }
 
     private string Get(string key) => ConfigRegistry.From(_config, key);
+
+    private static bool IsDownloadLeftover(string fileName) =>
+        fileName.EndsWith(".part", StringComparison.OrdinalIgnoreCase)
+        || fileName.EndsWith(".ytdl", StringComparison.OrdinalIgnoreCase)
+        || FragmentRegex().IsMatch(fileName);
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch
+        {
+            // Best effort: the next sweep round retries.
+        }
+    }
+
+    [GeneratedRegex(@"\.f\d+\.")]
+    private static partial Regex FragmentRegex();
 }

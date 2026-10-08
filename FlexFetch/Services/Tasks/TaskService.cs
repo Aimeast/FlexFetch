@@ -35,6 +35,17 @@ public sealed class TaskService : IDisposable
 
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _running = new();
     private readonly ConcurrentDictionary<string, Task> _activeProcesses = new();
+
+    // Ids of tasks that currently sit in the queue or are being executed.
+    // Every enqueue path (submit, retry, startup recovery) must pass through
+    // TryEnqueue: recovery can run long after startup (component installs),
+    // by which time newly submitted tasks already wait in the channel, and a
+    // parent retry re-queues children that may still be queued there. Without
+    // the marker each of those paths creates a second channel entry for the
+    // same task - the duplicate downloads again hours later and its stale
+    // in-memory copy rewrites the record over the fresh Completed state.
+    private readonly ConcurrentDictionary<string, byte> _enqueued = new();
+
     private readonly SemaphoreSlim _concurrency;
     private readonly CancellationTokenSource _shutdown = new();
     private readonly Task _workerLoop;
@@ -65,6 +76,29 @@ public sealed class TaskService : IDisposable
 
     public int QueuedCount => Volatile.Read(ref _queuedCount);
 
+    /// <summary>
+    /// Puts a task into the queue unless an entry for it is already pending
+    /// or running. The marker is released when its process finishes, so a
+    /// later retry can queue it again.
+    /// </summary>
+    private bool TryEnqueue(TaskItem task)
+    {
+        if (!_enqueued.TryAdd(task.Id, 0))
+        {
+            _log.Information("Task {TaskId} is already queued or running; not enqueued again", task.Id);
+            return false;
+        }
+
+        if (_queue.Writer.TryWrite(task))
+        {
+            Interlocked.Increment(ref _queuedCount);
+            return true;
+        }
+
+        _enqueued.TryRemove(task.Id, out _);
+        return false;
+    }
+
     /// <summary>Submits a new task: queues it and returns its id.</summary>
     public string Submit(
         string ownerUserId,
@@ -72,7 +106,8 @@ public sealed class TaskService : IDisposable
         string? downloaderType = null,
         string? parentId = null,
         string? title = null,
-        string? referrer = null)
+        string? referrer = null,
+        string? storageFolder = null)
     {
         var task = new TaskItem
         {
@@ -81,6 +116,7 @@ public sealed class TaskService : IDisposable
             DownloaderType = downloaderType,
             ParentId = parentId,
             Referrer = referrer,
+            StorageFolder = storageFolder,
             Status = TaskStatus.Queued,
         };
         if (!string.IsNullOrWhiteSpace(title))
@@ -89,10 +125,7 @@ public sealed class TaskService : IDisposable
         }
 
         _tasks.Insert(task);
-        if (_queue.Writer.TryWrite(task))
-        {
-            Interlocked.Increment(ref _queuedCount);
-        }
+        TryEnqueue(task);
 
         _log.Information("Task {TaskId} queued for {Url}", task.Id, url);
         return task.Id;
@@ -129,11 +162,7 @@ public sealed class TaskService : IDisposable
                 child.Attempts = 0;
                 child.ErrorMessage = null;
                 _tasks.Update(child);
-                if (_queue.Writer.TryWrite(child))
-                {
-                    Interlocked.Increment(ref _queuedCount);
-                }
-
+                TryEnqueue(child);
                 retried++;
             }
 
@@ -161,10 +190,7 @@ public sealed class TaskService : IDisposable
         task.Attempts = 0;
         task.ErrorMessage = null;
         _tasks.Update(task);
-        if (_queue.Writer.TryWrite(task))
-        {
-            Interlocked.Increment(ref _queuedCount);
-        }
+        TryEnqueue(task);
 
         _log.Information("Task {TaskId} re-queued for retry", id);
         return true;
@@ -208,7 +234,17 @@ public sealed class TaskService : IDisposable
             throw;
         }
 
-        CleanupInBackground(id, children.Select(c => c.Id).ToList());
+        // Capture the file locations and run ids before the records are
+        // gone: the cleanup needs the group folder and children's names.
+        var folder = task.StorageFolder ?? task.Id;
+        var deletesWholeFolder = task.ParentId is null;
+        var childFileNames = children
+            .Where(c => !string.IsNullOrEmpty(c.FileName))
+            .Select(c => c.FileName!)
+            .ToList();
+        var runIds = children.Select(c => c.Id).Append(id).ToList();
+
+        CleanupInBackground(task.Id, folder, deletesWholeFolder, runIds, childFileNames);
         _log.Information("Task {TaskId} deleted ({ChildCount} children)", id, children.Count);
         return true;
     }
@@ -221,7 +257,12 @@ public sealed class TaskService : IDisposable
     /// once; a directory left behind when the app exits mid-cleanup is
     /// removed by the periodic orphan-directory sweep.
     /// </summary>
-    private void CleanupInBackground(string id, IReadOnlyList<string> childIds)
+    private void CleanupInBackground(
+        string id,
+        string folder,
+        bool deletesWholeFolder,
+        IReadOnlyList<string> runIds,
+        IReadOnlyList<string> childFileNames)
     {
         if (!_cleanupsInFlight.TryAdd(id, 0))
         {
@@ -232,16 +273,26 @@ public sealed class TaskService : IDisposable
         {
             try
             {
-                CancelRun(id);
-                foreach (var childId in childIds)
+                foreach (var runId in runIds)
                 {
-                    CancelRun(childId);
+                    CancelRun(runId);
                 }
 
-                await DeleteDirBestEffortAsync(_storage.GetTaskDir(id));
-                foreach (var childId in childIds)
+                if (deletesWholeFolder)
                 {
-                    await DeleteDirBestEffortAsync(_storage.GetTaskDir(childId));
+                    // A root task owns the group folder with all its files.
+                    await DeleteDirBestEffortAsync(_storage.GetTaskDir(folder));
+                    return;
+                }
+
+                // A deleted child takes only its own file out of the group
+                // folder; the folder itself stays.
+                await DeleteFileBestEffortAsync(_storage.GetTaskFilePath(folder, id + ".part"));
+                foreach (var fileName in childFileNames)
+                {
+                    await DeleteFileBestEffortAsync(_storage.GetTaskFilePath(folder, fileName));
+                    await DeleteFileBestEffortAsync(
+                        _storage.GetTaskFilePath(folder, Path.GetFileNameWithoutExtension(fileName) + ".part"));
                 }
             }
             finally
@@ -249,6 +300,33 @@ public sealed class TaskService : IDisposable
                 _cleanupsInFlight.TryRemove(id, out _);
             }
         });
+    }
+
+    private static async Task DeleteFileBestEffortAsync(string path)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+
+                return;
+            }
+            catch (Exception)
+            {
+                // A still-dying download may hold the file; retry once, then
+                // leave the rest to the periodic sweep.
+                if (attempt >= 1)
+                {
+                    return;
+                }
+
+                await Task.Delay(2000);
+            }
+        }
     }
 
     private void CancelRun(string taskId)
@@ -299,7 +377,11 @@ public sealed class TaskService : IDisposable
     /// reset to Queued and re-queued. Failed is reserved for real download
     /// failures and is not re-queued. The merged set is re-enqueued oldest
     /// first, so playlist children keep their front-to-back order across a
-    /// restart (the in-memory queue alone does not survive it).
+    /// restart (the in-memory queue alone does not survive it). Recovery can
+    /// run long after startup (component installs delay it) - tasks that were
+    /// submitted in the meantime and already wait in the channel, or execute
+    /// right now, are not orphans and must be left alone: re-queueing them
+    /// runs every download twice.
     /// </summary>
     public int RecoverPending()
     {
@@ -309,8 +391,15 @@ public sealed class TaskService : IDisposable
             .OrderBy(t => t.CreatedAt)
             .ToList();
 
+        var recoveredCount = 0;
         foreach (var task in orphans)
         {
+            if (_enqueued.ContainsKey(task.Id))
+            {
+                _log.Information("Task {TaskId} is already queued or running; not recovered again", task.Id);
+                continue;
+            }
+
             // "Ytdlp" is the generic fallback a previous attempt happened to
             // pick, not an intentional pin (playlist expansion never pins
             // it): clear it so recovery re-selects by URL instead of walking
@@ -324,46 +413,44 @@ public sealed class TaskService : IDisposable
             task.Attempts = 0;
             task.ErrorMessage = null;
             _tasks.Update(task);
-            if (_queue.Writer.TryWrite(task))
-            {
-                Interlocked.Increment(ref _queuedCount);
-            }
-
+            TryEnqueue(task);
             _log.Information("Task {TaskId} recovered after restart", task.Id);
+            recoveredCount++;
         }
 
-        return orphans.Count;
+        return recoveredCount;
     }
 
     /// <summary>
-    /// Adopts the on-disk file name for completed tasks whose recorded name
-    /// does not match it. A console-encoding mismatch in the download report
-    /// (yt-dlp piped stdout in the system code page, decoded as UTF-8) used
-    /// to persist garbled names while the disk file itself is correctly
-    /// named from the -o template; the recorded size suffered the same
-    /// mismatch. Runs at startup, before the queue resumes.
+    /// Adopts the on-disk file size for completed tasks whose recorded size
+    /// does not match it (e.g. the size was lost in a download-report
+    /// encoding mismatch). The file name needs no reconciliation in the
+    /// group layout: the recorded name IS the disk name inside the group
+    /// folder. Runs at startup, before the queue resumes.
     /// </summary>
     public int ReconcileFileNames()
     {
         var fixedCount = 0;
         foreach (var task in _tasks.GetByStatus(TaskStatus.Completed))
         {
-            var dir = _storage.GetTaskDir(task.Id);
-            if (!Directory.Exists(dir))
+            if (string.IsNullOrEmpty(task.FileName))
             {
                 continue;
             }
 
-            var file = new DirectoryInfo(dir).GetFiles("*", SearchOption.TopDirectoryOnly)
-                .OrderByDescending(f => f.LastWriteTimeUtc)
-                .FirstOrDefault();
-            if (file is null || (task.FileName == file.Name && task.FileSize == file.Length))
+            var path = _storage.GetTaskFilePath(task, task.FileName);
+            if (!File.Exists(path))
             {
                 continue;
             }
 
-            task.FileName = file.Name;
-            task.FileSize = file.Length;
+            var size = new FileInfo(path).Length;
+            if (task.FileSize == size)
+            {
+                continue;
+            }
+
+            task.FileSize = size;
             _tasks.Update(task);
             fixedCount++;
         }
@@ -478,6 +565,9 @@ public sealed class TaskService : IDisposable
         {
             _activeProcesses.TryRemove(task.Id, out _);
             _concurrency.Release();
+            // The run is over (completed, failed or skipped): the id may be
+            // queued again by a later retry.
+            _enqueued.TryRemove(task.Id, out _);
         }
     }
 
@@ -491,10 +581,21 @@ public sealed class TaskService : IDisposable
             attempt++;
             // A task deleted while queued stays in the in-memory channel (a
             // channel cannot drop individual items). Its record is gone -
-            // skip it instead of re-downloading an invisible zombie.
-            if (_tasks.GetById(task.Id) is null)
+            // skip it instead of re-downloading an invisible zombie. A record
+            // already completed means this entry is a duplicate (a leftover
+            // from before enqueue dedup, or written by an older build):
+            // running it would download again and its stale in-memory copy
+            // would rewrite the record over the fresh Completed state.
+            var current = _tasks.GetById(task.Id);
+            if (current is null)
             {
                 _log.Information("Task {TaskId} was deleted while queued; skipping", task.Id);
+                return;
+            }
+
+            if (current.Status == TaskStatus.Completed)
+            {
+                _log.Information("Task {TaskId} is already completed; skipping duplicate queue entry", task.Id);
                 return;
             }
 
