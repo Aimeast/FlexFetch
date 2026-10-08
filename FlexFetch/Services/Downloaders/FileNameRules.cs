@@ -10,7 +10,15 @@ public static class FileNameRules
 {
     private const int MaxNameBytes = 180;
 
-    private static readonly char[] IllegalChars = Path.GetInvalidFileNameChars();
+    // Windows-invalid characters enforced on EVERY platform: files land on
+    // volumes users browse through SMB, where ':', '?', '|' and friends are
+    // illegal even though the Linux host accepts them - Path.GetInvalidFileNameChars
+    // is platform-dependent (Linux: only '/' and NUL) and would let them
+    // through, leaving Windows clients with mangled 8.3 short-name aliases.
+    private static readonly char[] IllegalChars = Path.GetInvalidFileNameChars()
+        .Concat(new[] { '<', '>', ':', '"', '|', '?', '*' })
+        .Distinct()
+        .ToArray();
 
     /// <summary>Replaces illegal characters and trims, preserving the extension.</summary>
     public static string Sanitize(string name)
@@ -70,5 +78,28 @@ public static class FileNameRules
 
         var segment = Uri.UnescapeDataString(uri.LocalPath.TrimEnd('/').Split('/').LastOrDefault() ?? string.Empty);
         return string.IsNullOrWhiteSpace(segment) ? uri.Host : segment;
+    }
+
+    /// <summary>
+    /// Trims a title to a short, filename-safe prefix (byte-capped, never
+    /// splitting a character): the readable part of a storage folder name.
+    /// </summary>
+    public static string Shorten(string name, int maxBytes)
+    {
+        var cleaned = Sanitize(name);
+        while (cleaned.Length > 1 && Encoding.UTF8.GetByteCount(cleaned) > maxBytes)
+        {
+            cleaned = cleaned[..^1].TrimEnd();
+        }
+
+        return cleaned;
+    }
+
+    /// <summary>Appends a task id before the extension: "name [id].ext" -
+    /// the group-layout marker for files that clashed on the same name.</summary>
+    public static string SuffixWithId(string name, string taskId)
+    {
+        var extension = Path.GetExtension(name);
+        return $"{name[..^extension.Length]} [{taskId}]{extension}";
     }
 }
