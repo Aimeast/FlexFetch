@@ -256,11 +256,6 @@
             // own file (direct download) or its children.
             const expected = [];
             for (const t of parents) {
-                expected.push({ key: 'url:' + t.id, html: urlRowHtml(t) });
-                if (t.contentText) {
-                    expected.push({ key: 'content:' + t.id, html: contentRowHtml(t) });
-                }
-
                 // Playlist order is creation order: the API returns tasks
                 // newest first, so children must be re-sorted ascending to
                 // display (and number) the playlist front to back - leaving
@@ -269,6 +264,13 @@
                 const kids = (children.get(t.id) || [])
                     .slice()
                     .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+                expected.push({ key: 'url:' + t.id, html: urlRowHtml(t, kids.length) });
+                if (t.contentText) {
+                    expected.push({ key: 'content:' + t.id, html: contentRowHtml(t) });
+                } else if (t.title && titleRowNeeded(t, kids)) {
+                    expected.push({ key: 'content:' + t.id, html: titleRowHtml(t) });
+                }
+
                 const fileCount = (t.fileName ? 1 : 0) + kids.length;
                 const showIndex = fileCount > 1;
                 let n = 1;
@@ -335,7 +337,7 @@
             }
         }
 
-        function urlRowHtml(t) {
+        function urlRowHtml(t, kidCount) {
             // Retry for failed or stuck-queued tasks (e.g. after an unexpected
             // service stop the status may be left queued without an error).
             let actionsHtml = '';
@@ -344,16 +346,57 @@
             }
             // Share/Delete act on the whole task group, on the parent's URL row.
             if (!t.parentId) {
+                // List downloads expand into child tasks: one click copies
+                // every finished file's on-site download link (playlist order).
+                if (kidCount > 0) {
+                    actionsHtml += '<button class="secondary" onclick="copyTaskLinks(\'' + t.id + '\')">Copy links</button>';
+                }
                 actionsHtml += '<button class="secondary" onclick="shareTask(\'' + t.id + '\')">Share</button>';
                 actionsHtml += '<button class="danger" onclick="askDelete(\'' + t.id + '\')">Delete</button>';
             }
             const actions = actionsHtml ? '<span class="url-actions">' + actionsHtml + '</span>' : '';
-            return '<td colspan="4" class="group-url-cell"><span class="url-row"><a class="url-text" href="' +
-                esc(t.url) + '" target="_blank" rel="noopener noreferrer">' + esc(t.url) + '</a>' + actions + '</span></td>';
+            return '<td colspan="4" class="group-url-cell"><span class="url-row"><span class="url-text"><a class="url-link" href="' +
+                esc(t.url) + '" target="_blank" rel="noopener noreferrer">' + esc(t.url) + '</a></span>' + actions + '</span></td>';
         }
 
         function contentRowHtml(t) {
             return '<td colspan="4" class="content-cell">' + esc(t.contentText) + '</td>';
+        }
+
+        // A list download's series title, shown in the content row position
+        // (where extracted page/tweet text goes) when the task has none.
+        function titleRowHtml(t) {
+            return '<td colspan="4" class="content-cell">' + esc(t.title) + '</td>';
+        }
+
+        // Whether a title row adds information beyond what the file rows
+        // already say: multi-file groups get the group name (episode files
+        // are named per episode, not per group); a single file only gets it
+        // when that file's name does not already reflect the title.
+        function titleRowNeeded(t, kids) {
+            if (kids.length === 0) {
+                return !fileReflectsTitle(t.title, t.fileName);
+            }
+            if (kids.length === 1) {
+                return !fileReflectsTitle(t.title, kids[0].fileName)
+                    && !fileReflectsTitle(t.title, t.fileName);
+            }
+            return true;
+        }
+
+        // True when the downloaded file name already reflects the title
+        // (e.g. a single video named after it): showing the title row would
+        // duplicate what the file row says. Compared without punctuation,
+        // extension and case, in both directions so a truncated file name
+        // still counts as reflecting the title.
+        function fileReflectsTitle(title, fileName) {
+            if (!fileName) return false;
+            var norm = function (s) {
+                return s.replace(/\.[^.]+$/, '').replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
+            };
+            var a = norm(title);
+            var b = norm(fileName);
+            return a.length > 0 && (a === b || b.indexOf(a) !== -1 || a.indexOf(b) !== -1);
         }
 
         // One file row: name (numbered in multi-file groups), size, status,
@@ -414,21 +457,39 @@
             try {
                 const body = await api('/api/tasks/' + id + '/share', { method: 'POST' });
                 const link = location.origin + '/share.html?token=' + body.token;
-                try {
-                    await navigator.clipboard.writeText(link);
-                } catch (e) {
-                    // Clipboard API unavailable (insecure context): fall back
-                    // to a temporary input + execCommand.
-                    const tmp = document.createElement('textarea');
-                    tmp.value = link;
-                    tmp.style.position = 'fixed';
-                    tmp.style.opacity = '0';
-                    document.body.appendChild(tmp);
-                    tmp.select();
-                    document.execCommand('copy');
-                    tmp.remove();
-                }
+                await copyTextToClipboard(link);
                 alert('Share link copied to clipboard:\n' + link);
+            } catch (e) { alert(e.message); }
+        }
+
+        // Copies the on-site download link of every finished file in a task
+        // group, one per line, group order (parent's own file first, then the
+        // children in playlist order) - the same /api/tasks/{id}/file links
+        // the file rows use. They carry the browser session, so they open in
+        // this browser; files still downloading have no link yet and are
+        // skipped. Refetches for freshness: a list expanded moments ago may
+        // not be complete in the polling cache yet.
+        async function copyTaskLinks(id) {
+            try {
+                const tasks = (await api('/api/tasks')) || [];
+                const group = tasks
+                    .filter(x => x.id === id || x.parentId === id)
+                    .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+                const ready = group.filter(x => x.status === 2 && x.fileName);
+                if (ready.length === 0) {
+                    alert('No finished files yet - download links appear as files complete.');
+                    return;
+                }
+                const links = ready.map(x => location.origin + '/api/tasks/' + encodeURIComponent(x.id) + '/file');
+                const copied = await copyTextToClipboard(links.join('\n'));
+                if (!copied) {
+                    alert('Copying to the clipboard failed in this browser.');
+                    return;
+                }
+                const pending = group.filter(x =>
+                    x.parentId === id && !(x.status === 2 && x.fileName)).length;
+                alert('Copied ' + ready.length + ' download link' + (ready.length === 1 ? '' : 's') + ' to clipboard.' +
+                    (pending > 0 ? ' (' + pending + ' not finished yet, skipped)' : ''));
             } catch (e) { alert(e.message); }
         }
 

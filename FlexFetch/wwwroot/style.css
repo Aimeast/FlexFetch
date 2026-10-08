@@ -191,6 +191,16 @@ td.group-url-cell .url-text {
     word-break: break-all;
 }
 
+/* The anchor wraps only the URL text itself (an inline element inside the
+   flexing span); a flexing anchor stretches its clickable area across the
+   whole row. */
+td.group-url-cell .url-link {
+    color: var(--accent);
+    text-decoration: none;
+}
+
+td.group-url-cell .url-link:hover { text-decoration: underline; }
+
 td.group-url-cell .url-actions {
     flex: 0 0 auto;
     white-space: nowrap;
