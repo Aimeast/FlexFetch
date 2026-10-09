@@ -16,7 +16,7 @@ public sealed class YouTubeDownloaderTests
 
     private static (YouTubeDownloader Downloader, SessionSnapshotService Snapshot, string Dir) CreateDownloader(
         Func<string, OptionSet, CancellationToken, Task<RunResult<VideoData>>>? fetch = null,
-        Func<string, OptionSet, Action<double>, CancellationToken, Task<RunResult<string>>>? download = null)
+        Func<string, OptionSet, Action<double>, Action<long>, CancellationToken, Task<RunResult<string>>>? download = null)
     {
         var dir = TestApp.CreateTempDataDir();
         var proxy = new DirectProxyService();
@@ -302,7 +302,7 @@ public sealed class YouTubeDownloaderTests
         var calls = 0;
         string? cookieFileSeen = null;
         var (downloader, snapshot, _) = CreateDownloader(
-            download: async (_, options, _, _) =>
+            download: async (_, options, _, _, _) =>
             {
                 calls++;
                 if (calls == 1)
@@ -333,7 +333,7 @@ public sealed class YouTubeDownloaderTests
     {
         var calls = 0;
         var downloader = CreateDownloader(
-            download: (_, _, _, _) =>
+            download: (_, _, _, _, _) =>
             {
                 calls++;
                 return Task.FromResult(new RunResult<string>(

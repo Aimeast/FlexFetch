@@ -1,4 +1,5 @@
-﻿using FlexFetch.Entities;
+﻿using System.Globalization;
+using FlexFetch.Entities;
 using FlexFetch.Services.Routing;
 using FlexFetch.Services.Session;
 using Serilog;
@@ -25,7 +26,7 @@ public class YtdlpDownloader : IDownloader
     protected readonly ILogger Log;
 
     private readonly Func<string, OptionSet, CancellationToken, Task<RunResult<VideoData>>> _fetchData;
-    private readonly Func<string, OptionSet, Action<double>, CancellationToken, Task<RunResult<string>>> _downloadVideo;
+    private readonly Func<string, OptionSet, Action<double>, Action<long>, CancellationToken, Task<RunResult<string>>> _downloadVideo;
 
     public YtdlpDownloader(
         YtdlpService ytdlp,
@@ -33,7 +34,7 @@ public class YtdlpDownloader : IDownloader
         StorageService storage,
         ILogger log,
         Func<string, OptionSet, CancellationToken, Task<RunResult<VideoData>>>? fetchData = null,
-        Func<string, OptionSet, Action<double>, CancellationToken, Task<RunResult<string>>>? download = null)
+        Func<string, OptionSet, Action<double>, Action<long>, CancellationToken, Task<RunResult<string>>>? download = null)
     {
         Ytdlp = ytdlp;
         Proxy = proxy;
@@ -88,6 +89,114 @@ public class YtdlpDownloader : IDownloader
         proxyUri.StartsWith("socks5://", StringComparison.OrdinalIgnoreCase)
             ? "socks5h://" + proxyUri["socks5://".Length..]
             : proxyUri;
+
+    /// <summary>Maps YoutubeDLSharp's download progress onto the callback
+    /// contract. YoutubeDLSharp reports a 0..1 fraction; the clamp guards
+    /// against fragment/legacy paths reporting values outside the range.</summary>
+    public static double NormalizeProgress(double progress) => Math.Clamp(progress, 0d, 1d);
+
+    /// <summary>Parses yt-dlp's reported total size ("190.60MiB",
+    /// "~31.86MiB", "1.02GiB") into bytes; null when absent or unparseable.
+    /// yt-dlp prints binary units (KiB/MiB/GiB).</summary>
+    public static long? ParseTotalSizeBytes(string? total)
+    {
+        if (string.IsNullOrWhiteSpace(total))
+        {
+            return null;
+        }
+
+        var text = total.Trim();
+        var start = 0;
+        while (start < text.Length && text[start] != '.' && !char.IsDigit(text[start]))
+        {
+            start++;
+        }
+
+        var end = start;
+        while (end < text.Length && (char.IsDigit(text[end]) || text[end] == '.'))
+        {
+            end++;
+        }
+
+        if (start == end
+            || !double.TryParse(text[start..end], NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
+        {
+            return null;
+        }
+
+        var factor = text[end..].Trim().ToUpperInvariant() switch
+        {
+            "B" => 1d,
+            "KIB" or "KB" => 1024d,
+            "MIB" or "MB" => 1024d * 1024d,
+            "GIB" or "GB" => 1024d * 1024d * 1024d,
+            "TIB" or "TB" => 1024d * 1024d * 1024d * 1024d,
+            _ => 0d,
+        };
+        if (factor == 0d)
+        {
+            return null;
+        }
+
+        return (long)Math.Round(value * factor);
+    }
+
+    /// <summary>Adopts the download's reported total so the Size column can
+    /// show "done / total" while the task runs. Monotonic: a DASH download
+    /// reports each stream's total in turn, and the largest seen is the best
+    /// estimate. The exact size recorded at completion supersedes it.</summary>
+    private static void UpdateFileSize(TaskItem task, long size)
+    {
+        if (size > (task.FileSize ?? 0))
+        {
+            task.FileSize = size;
+        }
+    }
+
+    /// <summary>Folds the per-stream progress of one download run into a
+    /// single overall fraction. A DASH download fetches one stream after
+    /// another, each restarting at 0; this keeps finished streams' bytes in
+    /// an accumulator so the reported progress never jumps backwards. A new
+    /// stream is signalled by its total changing. Events without a
+    /// parseable total are noise from yt-dlp's fragment handling (periodic
+    /// 0% lines mid-download): they move nothing - before the first known
+    /// total the raw fraction passes through, afterwards the value holds.</summary>
+    public sealed class MultiStreamProgress
+    {
+        private long _completedBytes;
+        private long? _streamTotal;
+        private double _lastFraction;
+
+        /// <summary>Best known grand total of the download so far (finished
+        /// streams plus the current one); null until a total is seen.</summary>
+        public long? TotalBytes => _streamTotal is null ? null : _completedBytes + _streamTotal;
+
+        public double Fold(double streamFraction, long? streamTotal)
+        {
+            var fraction = Math.Clamp(streamFraction, 0d, 1d);
+
+            if (streamTotal is null)
+            {
+                return _streamTotal is null
+                    ? fraction
+                    : Math.Clamp((_completedBytes + _lastFraction * _streamTotal.Value) /
+                        (_completedBytes + _streamTotal.Value), 0d, 1d);
+            }
+
+            // A changed total means the previous stream ended and the next
+            // one started: bank the previous stream's bytes actually done
+            // (its last fraction), not its full total.
+            if (streamTotal != _streamTotal)
+            {
+                _completedBytes += (long)Math.Round(_lastFraction * (_streamTotal ?? 0));
+                _streamTotal = streamTotal;
+            }
+
+            _lastFraction = fraction;
+            var grandTotal = _completedBytes + (_streamTotal ?? 0);
+            return Math.Clamp((_completedBytes + fraction * (_streamTotal ?? 0)) / grandTotal, 0d, 1d);
+        }
+    }
 
     /// <summary>
     /// Placeholder titles yt-dlp reports for playlist entries the site hides
@@ -206,7 +315,7 @@ public class YtdlpDownloader : IDownloader
         // with the first progress update), not only after completion.
         task.FileName = Path.GetFileName(outputPath);
 
-        var result = await _downloadVideo(task.Url, options, progress, cancellationToken);
+        var result = await _downloadVideo(task.Url, options, progress, size => UpdateFileSize(task, size), cancellationToken);
         string? cookieFile = null;
         try
         {
@@ -218,7 +327,7 @@ public class YtdlpDownloader : IDownloader
                     ApplySessionPosture(options, cookieFile);
                     Log.Information("Task {TaskId}: retrying download with session cookies ({CookieFile})",
                         task.Id, Path.GetFileName(cookieFile));
-                    result = await _downloadVideo(task.Url, options, progress, cancellationToken);
+                    result = await _downloadVideo(task.Url, options, progress, size => UpdateFileSize(task, size), cancellationToken);
                 }
             }
 
@@ -339,6 +448,7 @@ public class YtdlpDownloader : IDownloader
         string url,
         OptionSet options,
         Action<double> progress,
+        Action<long> reportTotalSize,
         CancellationToken cancellationToken)
     {
         // Ensure yt-dlp is available before invoking the real binary
@@ -353,10 +463,20 @@ public class YtdlpDownloader : IDownloader
             ytdlp.FFmpegPath = Ytdlp.FfmpegPath;
         }
 
+        // Folds the per-stream fractions of a multi-stream download (DASH:
+        // video then audio, each restarting at 0) into one overall fraction.
+        var streams = new MultiStreamProgress();
         var dlProgress = new Progress<DownloadProgress>(p =>
         {
-            // Progress is a percentage (0-100); normalize to 0..1.
-            progress(Math.Clamp(p.Progress / 100f, 0f, 1f));
+            // The task funnel treats the callback as 0..1 and multiplies by
+            // 100 when persisting. YoutubeDLSharp already reports a 0..1
+            // fraction; folding keeps the UI from showing the progress
+            // jumping backwards when the next stream starts.
+            progress(streams.Fold(p.Progress, ParseTotalSizeBytes(p.TotalDownloadSize)));
+            if (streams.TotalBytes is { } bytes)
+            {
+                reportTotalSize(bytes);
+            }
         });
 
         return await ytdlp.RunVideoDownload(

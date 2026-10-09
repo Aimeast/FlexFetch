@@ -218,6 +218,10 @@ td.content-cell {
     padding: 0.3rem 0.6rem;
 }
 
+/* Group separator rows exist only in the phone layout (style.css media
+   query turns them into the whitespace between group cards). */
+tr.group-gap { display: none; }
+
 /* Child tasks (multiple files of one parent) are indented. */
 td.actions { white-space: nowrap; text-align: right; }
 
@@ -300,12 +304,47 @@ dialog.card p { word-break: break-all; }
 
     thead { display: none; }
 
+    /* One task group renders as a single card: the first row (grey url
+       bar) carries the top border and rounded top corners, the last row
+       the bottom border and rounded bottom corners, rows in between only
+       the side borders - inside, elements sit flush with just a hairline
+       between them. Cards are separated by empty spacer rows (index.html
+       inserts tr.group-gap): margins on collapsed-table rows are ignored
+       by WebKit, content height is not. Separate borders additionally
+       stop WebKit from applying collapsed-table quirks to the blockified
+       rows (borders, radii, padding all render as plain blocks). */
+    table { border-collapse: separate; border-spacing: 0; }
+
     tr {
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        margin-bottom: 0.75rem;
-        padding: 0.5rem 0.4rem;
+        border: none;
+        border-left: 1px solid var(--border);
+        border-right: 1px solid var(--border);
+        border-radius: 0;
+        margin-bottom: 0;
+        padding: 0 0.4rem;
+        overflow: hidden;
     }
+
+    td:nth-child(n) {
+        border: none;
+        padding: 0.3rem 0;
+        text-align: left;
+        width: 100%;
+        min-width: 0;
+    }
+
+    tr.group-first {
+        border-top: 1px solid var(--border);
+        border-radius: 8px 8px 0 0;
+    }
+
+    tr.group-last {
+        border-bottom: 1px solid var(--border);
+        border-radius: 0 0 8px 8px;
+    }
+
+    tr.group-gap { display: block; height: 0.75rem; padding: 0; background: transparent; }
+    td.group-gap-cell { border: none; padding: 0; }
 
     /* Override the desktop fixed column widths (which use
        td:nth-child(n) selectors): as block cells each td must fill the
@@ -322,8 +361,11 @@ dialog.card p { word-break: break-all; }
 
     /* On phones each file-row cell shows its column header (data-label)
        before the value: label floats left, value aligns right. Cells
-       without a data-label (URL/content rows) are unaffected. */
-    td[data-label] { text-align: right; }
+       without a data-label (URL/content rows) are unaffected. flow-root
+       keeps the float inside its own cell - an empty cell (placeholder
+       file row before the name is known) would otherwise collapse and let
+       its floated label land on the next cell's line. */
+    td[data-label] { display: flow-root; text-align: right; }
     td[data-label]::before {
         content: attr(data-label);
         float: left;
