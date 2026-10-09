@@ -253,8 +253,29 @@
             // Expected ordered row descriptors, uniform for every task type:
             // URL row (with actions) → optional content row (tweet/page text)
             // → file rows (no actions). A group's file rows are the parent's
-            // own file (direct download) or its children.
+            // own file (direct download) or its children. On phones the
+            // group renders as one card (see style.css), so each row knows
+            // whether it is the group's first/last row, and consecutive
+            // groups are separated by an empty spacer row - a margin would
+            // not render on WebKit's collapsed-table rows.
             const expected = [];
+            let groupRows = [];
+            const flushGroup = function () {
+                if (groupRows.length === 0) return;
+                if (expected.length > 0) {
+                    expected.push({
+                        key: 'gap:' + groupRows[0].key.slice(4),
+                        className: 'group-gap',
+                        html: '<td colspan="4" class="group-gap-cell"></td>',
+                    });
+                }
+                for (let i = 0; i < groupRows.length; i++) {
+                    const cls = ((i === 0 ? 'group-first ' : '')
+                        + (i === groupRows.length - 1 ? 'group-last' : '')).trim();
+                    expected.push({ key: groupRows[i].key, className: cls, html: groupRows[i].html });
+                }
+                groupRows = [];
+            };
             for (const t of parents) {
                 // Playlist order is creation order: the API returns tasks
                 // newest first, so children must be re-sorted ascending to
@@ -264,27 +285,29 @@
                 const kids = (children.get(t.id) || [])
                     .slice()
                     .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
-                expected.push({ key: 'url:' + t.id, html: urlRowHtml(t, kids.length) });
+                flushGroup();
+                groupRows.push({ key: 'url:' + t.id, html: urlRowHtml(t, kids.length) });
                 if (t.contentText) {
-                    expected.push({ key: 'content:' + t.id, html: contentRowHtml(t) });
+                    groupRows.push({ key: 'content:' + t.id, html: contentRowHtml(t) });
                 } else if (t.title && titleRowNeeded(t, kids)) {
-                    expected.push({ key: 'content:' + t.id, html: titleRowHtml(t) });
+                    groupRows.push({ key: 'content:' + t.id, html: titleRowHtml(t) });
                 }
 
                 const fileCount = (t.fileName ? 1 : 0) + kids.length;
                 const showIndex = fileCount > 1;
                 let n = 1;
                 if (t.fileName) {
-                    expected.push({ key: 'file:' + t.id, html: fileRowHtml(t, showIndex ? n++ : 0) });
+                    groupRows.push({ key: 'file:' + t.id, html: fileRowHtml(t, showIndex ? n++ : 0) });
                 } else if (kids.length === 0) {
                     // Placeholder row: no file list yet (queued / downloading)
                     // — show the task status; file name and size stay empty.
-                    expected.push({ key: 'file:' + t.id, html: fileRowHtml(t, 0) });
+                    groupRows.push({ key: 'file:' + t.id, html: fileRowHtml(t, 0) });
                 }
                 for (let i = 0; i < kids.length; i++) {
-                    expected.push({ key: 'file:' + kids[i].id, html: fileRowHtml(kids[i], showIndex ? n++ : 0) });
+                    groupRows.push({ key: 'file:' + kids[i].id, html: fileRowHtml(kids[i], showIndex ? n++ : 0) });
                 }
             }
+            flushGroup();
 
             // Index existing rows by key, then reconcile: reuse unchanged rows
             // (so page text selection is not disturbed), update only rows whose
@@ -298,6 +321,12 @@
             for (const item of expected) {
                 const tr = existing.get(item.key);
                 if (tr) {
+                    // The group position classes follow the current structure
+                    // (a group gaining its first file moves "group-last"), so
+                    // re-apply them on every refresh.
+                    if (tr.className !== item.className) {
+                        tr.className = item.className;
+                    }
                     // Update cell by cell: leave unchanged cells untouched so
                     // selected page text is not cleared by the refresh.
                     const tmp = document.createElement('tr');
@@ -316,6 +345,7 @@
                 } else {
                     const newTr = document.createElement('tr');
                     newTr.dataset.taskKey = item.key;
+                    newTr.className = item.className;
                     newTr.innerHTML = item.html;
                     ordered.push(newTr);
                 }
@@ -347,11 +377,13 @@
             // Share/Delete act on the whole task group, on the parent's URL row.
             if (!t.parentId) {
                 // List downloads expand into child tasks: one click copies
-                // every finished file's on-site download link (playlist order).
-                if (kidCount > 0) {
-                    actionsHtml += '<button class="secondary" onclick="copyTaskLinks(\'' + t.id + '\')">Copy links</button>';
+                // every finished file's on-site download link (playlist
+                // order). Several files make it worthwhile - a single file
+                // has its own link on its row already.
+                if (kidCount > 1) {
+                    actionsHtml += '<button class="secondary" onclick="copyTaskLinks(this, \'' + t.id + '\')">Copy links</button>';
                 }
-                actionsHtml += '<button class="secondary" onclick="shareTask(\'' + t.id + '\')">Share</button>';
+                actionsHtml += '<button class="secondary" onclick="shareTask(this, \'' + t.id + '\')">Share</button>';
                 actionsHtml += '<button class="danger" onclick="askDelete(\'' + t.id + '\')">Delete</button>';
             }
             const actions = actionsHtml ? '<span class="url-actions">' + actionsHtml + '</span>' : '';
@@ -453,12 +485,28 @@
             catch (e) { alert(e.message); }
         }
 
-        async function shareTask(id) {
+        // Clipboard-action feedback without a dialog: the clicked button
+        // reads "Copied!" in grey for a moment, then restores itself.
+        function flashCopied(btn) {
+            if (!btn || btn.dataset.copiedTimer) return;
+            const original = btn.textContent;
+            btn.textContent = 'Copied!';
+            btn.classList.add('copied');
+            btn.disabled = true;
+            btn.dataset.copiedTimer = String(setTimeout(function () {
+                btn.textContent = original;
+                btn.classList.remove('copied');
+                btn.disabled = false;
+                delete btn.dataset.copiedTimer;
+            }, 2000));
+        }
+
+        async function shareTask(btn, id) {
             try {
                 const body = await api('/api/tasks/' + id + '/share', { method: 'POST' });
                 const link = location.origin + '/share.html?token=' + body.token;
                 await copyTextToClipboard(link);
-                alert('Share link copied to clipboard:\n' + link);
+                flashCopied(btn);
             } catch (e) { alert(e.message); }
         }
 
@@ -469,7 +517,7 @@
         // this browser; files still downloading have no link yet and are
         // skipped. Refetches for freshness: a list expanded moments ago may
         // not be complete in the polling cache yet.
-        async function copyTaskLinks(id) {
+        async function copyTaskLinks(btn, id) {
             try {
                 const tasks = (await api('/api/tasks')) || [];
                 const group = tasks
@@ -486,10 +534,7 @@
                     alert('Copying to the clipboard failed in this browser.');
                     return;
                 }
-                const pending = group.filter(x =>
-                    x.parentId === id && !(x.status === 2 && x.fileName)).length;
-                alert('Copied ' + ready.length + ' download link' + (ready.length === 1 ? '' : 's') + ' to clipboard.' +
-                    (pending > 0 ? ' (' + pending + ' not finished yet, skipped)' : ''));
+                flashCopied(btn);
             } catch (e) { alert(e.message); }
         }
 

@@ -323,7 +323,7 @@ public sealed class YtdlpDownloaderTests
             OptionSet? captured = null;
             string? nameDuringDownload = null;
             var downloader = new YtdlpDownloader(ytdlp, proxy, storage, Log,
-                download: (_, options, _, _) =>
+                download: (_, options, _, _, _) =>
                 {
                     captured = options;
                     nameDuringDownload = task.FileName;
@@ -359,7 +359,7 @@ public sealed class YtdlpDownloaderTests
             var task = new TaskItem { Id = "t-merge", Url = "https://vimeo.com/123" };
             var analysis = new AnalysisResult { Title = "Clip", SuggestedFileName = "Clip.webm" };
             var downloader = new YtdlpDownloader(ytdlp, proxy, storage, Log,
-                download: (_, _, _, _) =>
+                download: (_, _, _, _, _) =>
                 {
                     var merged = Path.Combine(storage.GetTaskDir(task.Id), "Clip.mp4");
                     Directory.CreateDirectory(storage.GetTaskDir(task.Id));
@@ -393,7 +393,7 @@ public sealed class YtdlpDownloaderTests
             var task = new TaskItem { Id = "t-fallback", Url = "https://vimeo.com/123" };
             var analysis = new AnalysisResult { Title = "Clip", SuggestedFileName = "Clip.mp4" };
             var downloader = new YtdlpDownloader(ytdlp, proxy, storage, Log,
-                download: (_, _, _, _) =>
+                download: (_, _, _, _, _) =>
                 {
                     Directory.CreateDirectory(storage.GetTaskDir(task.Id));
                     File.WriteAllText(Path.Combine(storage.GetTaskDir(task.Id), "Clip.mp4"), "abc");
@@ -403,6 +403,130 @@ public sealed class YtdlpDownloaderTests
             await downloader.DownloadAsync(task, analysis, _ => { }, CancellationToken.None);
 
             Assert.AreEqual("Clip.mp4", task.FileName);
+            Assert.AreEqual(3L, task.FileSize);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public void NormalizeProgress_ClampsToUnitRange()
+    {
+        // YoutubeDLSharp reports a 0..1 fraction; the funnel downstream
+        // multiplies by 100, so outliers must not survive normalization.
+        Assert.AreEqual(0.0, YtdlpDownloader.NormalizeProgress(0.0));
+        Assert.AreEqual(0.42, YtdlpDownloader.NormalizeProgress(0.42), 1e-9);
+        Assert.AreEqual(1.0, YtdlpDownloader.NormalizeProgress(1.0));
+        Assert.AreEqual(1.0, YtdlpDownloader.NormalizeProgress(42.0));
+        Assert.AreEqual(0.0, YtdlpDownloader.NormalizeProgress(-0.01));
+    }
+
+    [TestMethod]
+    public void ParseTotalSizeBytes_ReadsYtdlpSizes()
+    {
+        Assert.AreEqual(2097152L, YtdlpDownloader.ParseTotalSizeBytes("2.00MiB"));
+        Assert.AreEqual(524288L, YtdlpDownloader.ParseTotalSizeBytes("512.00KiB"));
+        Assert.AreEqual(1073741824L, YtdlpDownloader.ParseTotalSizeBytes("1.00GiB"));
+        Assert.AreEqual(1024L, YtdlpDownloader.ParseTotalSizeBytes("1024B"));
+        Assert.AreEqual(1572864L, YtdlpDownloader.ParseTotalSizeBytes("~1.50MiB"));
+        Assert.IsNull(YtdlpDownloader.ParseTotalSizeBytes("Unknown"));
+        Assert.IsNull(YtdlpDownloader.ParseTotalSizeBytes("n/a"));
+        Assert.IsNull(YtdlpDownloader.ParseTotalSizeBytes(""));
+        Assert.IsNull(YtdlpDownloader.ParseTotalSizeBytes(null));
+    }
+
+    [TestMethod]
+    public void MultiStreamProgress_FoldsStreamsIntoOverallFraction()
+    {
+        var video = 200_000_000L;
+        var audio = 11_000_000L;
+        var folder = new YtdlpDownloader.MultiStreamProgress();
+
+        // The video stream runs to completion...
+        Assert.AreEqual(0.0, folder.Fold(0.0, video), 1e-9);
+        Assert.AreEqual(0.5, folder.Fold(0.5, video), 0.01);
+        Assert.AreEqual(1.0, folder.Fold(1.0, video), 1e-9);
+
+        // ...then the audio stream restarts at 0 without dragging the
+        // overall progress backwards: it continues from the ~95% mark.
+        var audioStart = folder.Fold(0.0, audio);
+        Assert.IsTrue(audioStart > 0.9, $"expected continuation, got {audioStart}");
+        Assert.AreEqual(video + audio, folder.TotalBytes);
+        Assert.AreEqual(1.0, folder.Fold(1.0, audio), 1e-9);
+    }
+
+    [TestMethod]
+    public void MultiStreamProgress_IgnoresSpuriousZeroTotalEvents()
+    {
+        // yt-dlp's fragment download emits periodic 0% events without a
+        // total mid-stream (observed in pairs every ~10s); each one used to
+        // be mistaken for a finished stream, inflating the totals to
+        // several times the real size (585.1/601.3 MiB shown for a
+        // 167 MiB file).
+        var folder = new YtdlpDownloader.MultiStreamProgress();
+        var video = 157_621_944L;
+
+        Assert.AreEqual(0.0, folder.Fold(0.0, video), 1e-9);
+        Assert.AreEqual(0.192, folder.Fold(0.192, video), 1e-9);
+        Assert.AreEqual(0.192, folder.Fold(0.0, null), 1e-9);
+        Assert.AreEqual(0.192, folder.Fold(0.0, null), 1e-9);
+        Assert.AreEqual(0.193, folder.Fold(0.193, video), 1e-9);
+        Assert.AreEqual(video, folder.TotalBytes);
+    }
+
+    [TestMethod]
+    public void MultiStreamProgress_BanksEachStreamOnce()
+    {
+        // The full observed sequence: video stream with spurious zero
+        // events, real transition to the audio stream - the video total is
+        // banked exactly once and the grand total is video + audio.
+        var folder = new YtdlpDownloader.MultiStreamProgress();
+        long video = 157_621_944L;
+        long audio = 17_448_305L;
+
+        folder.Fold(0.0, video);
+        folder.Fold(0.774, video);
+        folder.Fold(0.0, null);
+        folder.Fold(0.0, null);
+        folder.Fold(1.0, video);
+        folder.Fold(0.0, audio);
+
+        Assert.AreEqual(video + audio, folder.TotalBytes);
+        Assert.AreEqual(1.0, folder.Fold(1.0, audio), 1e-9);
+    }
+
+    [TestMethod]
+    public async Task DownloadAsync_ReportsTotalSizeDuringDownload()
+    {
+        // The Size column shows "done / total" while running: the reported
+        // total must land on the task (monotonically) before completion, and
+        // the exact post-download size supersedes it at the end.
+        var dir = TestApp.CreateTempDataDir();
+        try
+        {
+            var storage = new StorageService(dir);
+            var proxy = new DirectProxyService();
+            var ytdlp = new YtdlpService(proxy, Log, dir);
+            var task = new TaskItem { Id = "t-total", Url = "https://vimeo.com/123" };
+            var analysis = new AnalysisResult { Title = "Clip", SuggestedFileName = "Clip.mp4" };
+            long? totalDuringDownload = null;
+            var downloader = new YtdlpDownloader(ytdlp, proxy, storage, Log,
+                download: (_, _, _, reportTotalSize, _) =>
+                {
+                    reportTotalSize(5_000_000);
+                    reportTotalSize(9_000_000);
+                    reportTotalSize(7_000_000); // smaller: must not lower the record
+                    totalDuringDownload = task.FileSize;
+                    Directory.CreateDirectory(storage.GetTaskDir(task.Id));
+                    File.WriteAllText(Path.Combine(storage.GetTaskDir(task.Id), "Clip.mp4"), "abc");
+                    return Task.FromResult(new RunResult<string>(true, Array.Empty<string>(), "C:\\nowhere\\garbled.mp4"));
+                });
+
+            await downloader.DownloadAsync(task, analysis, _ => { }, CancellationToken.None);
+
+            Assert.AreEqual(9_000_000L, totalDuringDownload);
             Assert.AreEqual(3L, task.FileSize);
         }
         finally

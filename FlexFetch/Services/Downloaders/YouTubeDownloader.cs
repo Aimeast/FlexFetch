@@ -32,7 +32,7 @@ public sealed class YouTubeDownloader : YtdlpDownloader
         SessionExportService? export = null,
         PotProviderService? pot = null,
         Func<string, OptionSet, CancellationToken, Task<RunResult<VideoData>>>? fetchData = null,
-        Func<string, OptionSet, Action<double>, CancellationToken, Task<RunResult<string>>>? download = null)
+        Func<string, OptionSet, Action<double>, Action<long>, CancellationToken, Task<RunResult<string>>>? download = null)
         : base(ytdlp, proxy, storage, log, fetchData, download)
     {
         _snapshot = snapshot;

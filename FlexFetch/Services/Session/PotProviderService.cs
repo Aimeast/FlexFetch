@@ -61,8 +61,17 @@ public sealed class PotProviderService
     /// each plugin lives in a wrapper directory of any name.</summary>
     public string PluginsDir => Path.Combine(ComponentsDir, "yt-dlp-plugins");
 
-    /// <summary>True when the source tree with the script is present.</summary>
-    public bool IsServerInstalled => File.Exists(ScriptPath);
+    /// <summary>The script's npm manifest. Deno refuses the script's bare
+    /// npm imports (e.g. "commander") without it, so a tree missing this
+    /// file can never run the script even with node_modules in place.</summary>
+    private string PackageJsonPath => Path.Combine(ServerRoot, "server", "package.json");
+
+    /// <summary>True when the source tree is complete enough to run: the
+    /// script AND its package.json. Requiring the manifest makes a damaged
+    /// tree (script present, manifest lost) count as not installed, so the
+    /// supervisor re-downloads the source instead of silently never
+    /// generating a token.</summary>
+    public bool IsServerInstalled => File.Exists(ScriptPath) && File.Exists(PackageJsonPath);
 
     public bool IsDenoInstalled => File.Exists(DenoPath);
 
