@@ -373,25 +373,30 @@ public sealed class TaskService : IDisposable
     }
 
     /// <summary>
-    /// Recovers tasks after a restart: tasks left in Running or Queued are
-    /// reset to Queued and re-queued. Failed is reserved for real download
-    /// failures and is not re-queued. The merged set is re-enqueued oldest
-    /// first, so playlist children keep their front-to-back order across a
-    /// restart (the in-memory queue alone does not survive it). Recovery can
-    /// run long after startup (component installs delay it) - tasks that were
-    /// submitted in the meantime and already wait in the channel, or execute
-    /// right now, are not orphans and must be left alone: re-queueing them
-    /// runs every download twice.
+    /// Recovers tasks after a restart: tasks left in Running, Queued or
+    /// Waiting are marked Waiting - recovered and visible, but NOT enqueued.
+    /// They start only when the startup sequence calls
+    /// <see cref="ReleaseWaitingTasks"/> after the component installs, so a
+    /// recovered download never runs against a missing yt-dlp or browser.
+    /// Failed is reserved for real download failures and is not re-queued.
+    /// The merged set is handled oldest first, so playlist children keep
+    /// their front-to-back order across a restart (the in-memory queue alone
+    /// does not survive it). Recovery can run long after startup (component
+    /// installs delay it) - tasks that were submitted in the meantime and
+    /// already wait in the channel, or execute right now, are not orphans
+    /// and must be left alone: re-queueing them runs every download twice.
     /// </summary>
     public int RecoverPending()
     {
         var orphans = _tasks.GetByStatus(TaskStatus.Running)
             .Concat(_tasks.GetByStatus(TaskStatus.Queued))
+            .Concat(_tasks.GetByStatus(TaskStatus.Waiting))
             .Where(t => !t.IsVirtual)
             .OrderBy(t => t.CreatedAt)
             .ToList();
 
         var recoveredCount = 0;
+        var parents = new HashSet<string>();
         foreach (var task in orphans)
         {
             if (_enqueued.ContainsKey(task.Id))
@@ -409,16 +414,65 @@ public sealed class TaskService : IDisposable
                 task.DownloaderType = null;
             }
 
-            task.Status = TaskStatus.Queued;
+            task.Status = TaskStatus.Waiting;
             task.Attempts = 0;
             task.ErrorMessage = null;
             _tasks.Update(task);
-            TryEnqueue(task);
-            _log.Information("Task {TaskId} recovered after restart", task.Id);
+            if (task.ParentId is not null)
+            {
+                parents.Add(task.ParentId);
+            }
+
+            _log.Information("Task {TaskId} recovered after restart, waiting for components", task.Id);
             recoveredCount++;
         }
 
+        foreach (var parentId in parents)
+        {
+            AggregateParent(parentId);
+        }
+
         return recoveredCount;
+    }
+
+    /// <summary>
+    /// Releases the tasks <see cref="RecoverPending"/> held in Waiting: they
+    /// become Queued and enter the queue, oldest first so playlist children
+    /// keep their order. Called on every startup path once the component
+    /// installs are done - including installs skipped (all ready), disabled
+    /// and failed - so held tasks can never strand.
+    /// </summary>
+    public int ReleaseWaitingTasks()
+    {
+        var waiting = _tasks.GetByStatus(TaskStatus.Waiting)
+            .Where(t => !t.IsVirtual)
+            .OrderBy(t => t.CreatedAt)
+            .ToList();
+
+        var parents = new HashSet<string>();
+        foreach (var task in waiting)
+        {
+            task.Status = TaskStatus.Queued;
+            _tasks.Update(task);
+            if (task.ParentId is not null)
+            {
+                parents.Add(task.ParentId);
+            }
+
+            TryEnqueue(task);
+        }
+
+        foreach (var parentId in parents)
+        {
+            AggregateParent(parentId);
+        }
+
+        if (waiting.Count > 0)
+        {
+            _log.Information("Released {Count} waiting tasks into the queue", waiting.Count);
+        }
+
+        return waiting.Count;
     }
 
     /// <summary>
@@ -494,6 +548,11 @@ public sealed class TaskService : IDisposable
         else if (children.Any(c => c.Status is TaskStatus.Queued or TaskStatus.Running))
         {
             parent.Status = TaskStatus.Running;
+            parent.ErrorMessage = null;
+        }
+        else if (children.Any(c => c.Status is TaskStatus.Waiting))
+        {
+            parent.Status = TaskStatus.Waiting;
             parent.ErrorMessage = null;
         }
 

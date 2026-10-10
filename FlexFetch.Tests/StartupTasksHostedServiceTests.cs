@@ -76,6 +76,153 @@ public sealed class StartupTasksHostedServiceTests
         }
     }
 
+    [TestMethod]
+    public async Task Recovery_RunsBeforeSlowInstall()
+    {
+        // The regression this pins: a hung component install (a Firefox
+        // download once stalled for the whole container lifetime behind a
+        // broken proxy) must never leave the interrupted tasks invisible in
+        // Running - recovery marks them Waiting up front, and the queue
+        // opens only after the install finished.
+        var steps = new List<string>();
+        var installEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var run = StartupTasksHostedService.RunStartupSequenceAsync(
+            TestLog.Instance,
+            CancellationToken.None,
+            recoverPending: () => { steps.Add("recover"); return 1; },
+            reconcileFileNames: () => { steps.Add("reconcile"); return 0; },
+            releaseWaitingTasks: () => { steps.Add("release"); return 0; },
+            readyComponents: new[] { "yt-dlp", "deno", "ffmpeg" },
+            missingComponents: new[] { "firefox" },
+            autoInstallEnabled: true,
+            installMissingComponents: async () =>
+            {
+                steps.Add("install-start");
+                installEntered.TrySetResult();
+                await release.Task;
+                steps.Add("install-done");
+            },
+            signalComponentPlanLogged: () => steps.Add("signal"));
+
+        await installEntered.Task;
+        Assert.AreEqual("recover", steps[0], "recovery must run while the install is still going");
+        Assert.IsTrue(steps.IndexOf("recover") < steps.IndexOf("install-start"));
+        CollectionAssert.DoesNotContain(steps, "release");
+
+        release.TrySetResult();
+        await run;
+        CollectionAssert.AreEqual(
+            new[] { "recover", "reconcile", "install-start", "install-done", "release" },
+            steps.Where(s => s is "recover" or "reconcile" or "install-start" or "install-done" or "release").ToList());
+    }
+
+    [TestMethod]
+    public async Task Recovery_RunsEvenWhenAutoInstallDisabled()
+    {
+        var steps = new List<string>();
+        var installRan = false;
+
+        await StartupTasksHostedService.RunStartupSequenceAsync(
+            TestLog.Instance,
+            CancellationToken.None,
+            recoverPending: () => { steps.Add("recover"); return 1; },
+            reconcileFileNames: () => { steps.Add("reconcile"); return 0; },
+            releaseWaitingTasks: () => { steps.Add("release"); return 0; },
+            readyComponents: new[] { "yt-dlp", "deno", "ffmpeg" },
+            missingComponents: new[] { "firefox" },
+            autoInstallEnabled: false,
+            installMissingComponents: () =>
+            {
+                installRan = true;
+                return Task.CompletedTask;
+            },
+            signalComponentPlanLogged: () => steps.Add("signal"));
+
+        Assert.IsTrue(steps.Contains("recover"), "a disabled install must not skip recovery");
+        Assert.IsFalse(installRan);
+        Assert.IsTrue(steps.Contains("release"), "held tasks would strand forever with no install coming");
+        Assert.IsTrue(steps.Contains("signal"), "waiters on the component plan must be released");
+    }
+
+    [TestMethod]
+    public async Task InstallFailure_DoesNotEscape_AndReleasesWaitingTasks()
+    {
+        var steps = new List<string>();
+
+        await StartupTasksHostedService.RunStartupSequenceAsync(
+            TestLog.Instance,
+            CancellationToken.None,
+            recoverPending: () => { steps.Add("recover"); return 1; },
+            reconcileFileNames: () => { steps.Add("reconcile"); return 0; },
+            releaseWaitingTasks: () => { steps.Add("release"); return 0; },
+            readyComponents: Array.Empty<string>(),
+            missingComponents: new[] { "yt-dlp" },
+            autoInstallEnabled: true,
+            installMissingComponents: () =>
+            {
+                steps.Add("install");
+                throw new InvalidOperationException("boom");
+            },
+            signalComponentPlanLogged: () => steps.Add("signal"));
+
+        Assert.AreEqual("recover", steps[0]);
+        Assert.IsTrue(steps.Contains("install"));
+        Assert.IsTrue(steps.Contains("release"), "a failed install must not strand the held tasks");
+    }
+
+    [TestMethod]
+    public async Task InstallCancelled_TasksStayWaiting()
+    {
+        // A shutdown during the install leaves the held tasks in Waiting;
+        // the next boot's recovery picks them up again.
+        var steps = new List<string>();
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await StartupTasksHostedService.RunStartupSequenceAsync(
+            TestLog.Instance,
+            cts.Token,
+            recoverPending: () => { steps.Add("recover"); return 1; },
+            reconcileFileNames: () => { steps.Add("reconcile"); return 0; },
+            releaseWaitingTasks: () => { steps.Add("release"); return 0; },
+            readyComponents: Array.Empty<string>(),
+            missingComponents: new[] { "yt-dlp" },
+            autoInstallEnabled: true,
+            installMissingComponents: () => throw new OperationCanceledException(cts.Token),
+            signalComponentPlanLogged: () => steps.Add("signal"));
+
+        Assert.AreEqual("recover", steps[0]);
+        CollectionAssert.DoesNotContain(steps, "release");
+    }
+
+    [TestMethod]
+    public async Task AllComponentsReady_ReleasesImmediately()
+    {
+        var steps = new List<string>();
+
+        await StartupTasksHostedService.RunStartupSequenceAsync(
+            TestLog.Instance,
+            CancellationToken.None,
+            recoverPending: () => { steps.Add("recover"); return 1; },
+            reconcileFileNames: () => { steps.Add("reconcile"); return 0; },
+            releaseWaitingTasks: () => { steps.Add("release"); return 0; },
+            readyComponents: new[] { "yt-dlp", "deno", "ffmpeg", "firefox" },
+            missingComponents: Array.Empty<string>(),
+            autoInstallEnabled: true,
+            installMissingComponents: () =>
+            {
+                steps.Add("install");
+                return Task.CompletedTask;
+            },
+            signalComponentPlanLogged: () => steps.Add("signal"));
+
+        Assert.AreEqual("recover", steps[0]);
+        Assert.IsFalse(steps.Contains("install"));
+        Assert.IsTrue(steps.Contains("release"));
+    }
+
     private sealed class FireableLifetime : IHostApplicationLifetime
     {
         private readonly CancellationTokenSource _started = new();

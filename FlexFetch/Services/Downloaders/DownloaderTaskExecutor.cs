@@ -181,7 +181,11 @@ public sealed class DownloaderTaskExecutor : ITaskExecutor
     /// <summary>
     /// When the URL has no media extension but the server serves a media
     /// Content-Type (direct video without a suffix), promote the generic
-    /// downloader to the front so the file is downloaded directly.
+    /// downloader to the front so the file is downloaded directly. The probe
+    /// falls back from HEAD to a one-byte Range GET, so it answers anywhere
+    /// the download itself would - a failed HEAD used to leave yt-dlp in
+    /// front, and its generic extractor then renamed the file after the URL
+    /// ("file" + mime extension) instead of the served Content-Disposition.
     /// </summary>
     private async Task<IReadOnlyList<IDownloader>> PromoteDirectLinkAsync(
         IReadOnlyList<IDownloader> candidates,
@@ -200,9 +204,10 @@ public sealed class DownloaderTaskExecutor : ITaskExecutor
             return candidates;
         }
 
-        var contentType = await DirectLinkDetector.ProbeContentTypeAsync(url, _proxy, cancellationToken);
-        if (!DirectLinkDetector.IsMediaContentType(contentType)
-            || DirectLinkDetector.IsManifestContentType(contentType))
+        var probe = await DirectLinkDetector.ProbeAsync(url, _proxy, cancellationToken);
+        if (probe is null
+            || !DirectLinkDetector.IsMediaContentType(probe.ContentType)
+            || DirectLinkDetector.IsManifestContentType(probe.ContentType))
         {
             return candidates;
         }
@@ -213,7 +218,7 @@ public sealed class DownloaderTaskExecutor : ITaskExecutor
             return candidates;
         }
 
-        _log.Information("Direct media link detected by Content-Type {ContentType}", contentType);
+        _log.Information("Direct media link detected by Content-Type {ContentType}", probe.ContentType);
         return new[] { generic }.Concat(candidates.Where(d => d != generic)).ToList();
     }
 }

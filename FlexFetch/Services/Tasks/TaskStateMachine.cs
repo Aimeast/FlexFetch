@@ -14,6 +14,12 @@ public static class TaskStateMachine
         (TaskStatus.Running, TaskStatus.Failed),
         // Retry: only failed tasks can go back to queued.
         (TaskStatus.Failed, TaskStatus.Queued),
+        // Startup recovery: interrupted tasks are held until the component
+        // installs finish, then released back into the queue.
+        (TaskStatus.Running, TaskStatus.Waiting),
+        (TaskStatus.Queued, TaskStatus.Waiting),
+        (TaskStatus.Waiting, TaskStatus.Waiting),
+        (TaskStatus.Waiting, TaskStatus.Queued),
     };
 
     public static bool CanTransition(TaskStatus from, TaskStatus to) =>

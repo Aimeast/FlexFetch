@@ -20,7 +20,8 @@ public static class SystemApi
         info.MapGet("/info", async (
             TaskService tasks,
             IConfiguration config,
-            YtdlpService ytdlp) =>
+            YtdlpService ytdlp,
+            FirefoxBrowserService browser) =>
         {
             var dataDir = ConfigRegistry.From(config, ConfigKeys.DataDir);
             var disk = GetDiskInfo(dataDir);
@@ -31,6 +32,21 @@ public static class SystemApi
             var denoVersion = ytdlp.GetDenoVersionAsync();
             var ffmpegVersion = ytdlp.GetFfmpegVersionAsync();
             await Task.WhenAll(ytdlpVersion, denoVersion, ffmpegVersion);
+
+            // Readiness is what "all components installed" means for the
+            // download paths (fast file/marker checks, no processes): the
+            // versions above say WHAT is there, this says whether it all
+            // works - notably the Firefox OS libraries, whose marker lives
+            // in the container filesystem and is lost on every container
+            // recreation (the browser binary on the data volume survives).
+            var ytdlpReady = ytdlp.IsYtDlpInstalled();
+            var denoReady = ytdlp.IsDenoInstalled();
+            var ffmpegReady = ytdlp.IsFfmpegInstalled();
+            var firefoxInstalled = browser.IsFirefoxInstalled();
+            var firefoxOsDeps = browser.IsOsDepsInstalled();
+            var firefoxBuildCurrent = FirefoxBrowserService.IsFirefoxBuildCurrent();
+            var firefoxReady = firefoxInstalled && firefoxOsDeps && firefoxBuildCurrent;
+
             return Results.Ok(new
             {
                 version = BuildInfo.Version,
@@ -48,6 +64,17 @@ public static class SystemApi
                 ffmpegVersion = await ffmpegVersion,
                 playwrightVersion = typeof(Playwright).Assembly.GetName().Version?.ToString() ?? "unknown",
                 firefox = FirefoxBrowserService.FindFirefoxExecutable() ?? "not-detected",
+                components = new
+                {
+                    ytdlp = ytdlpReady,
+                    deno = denoReady,
+                    ffmpeg = ffmpegReady,
+                    firefoxInstalled,
+                    firefoxOsDeps,
+                    firefoxBuildCurrent,
+                    firefoxReady,
+                },
+                componentsReady = ytdlpReady && denoReady && ffmpegReady && firefoxReady,
             });
         });
 

@@ -38,6 +38,24 @@ public sealed class FileMimeTests
     }
 
     [TestMethod]
+    public void ExtensionFor_MediaMimes_ReturnsCanonicalExtension()
+    {
+        Assert.AreEqual(".mp4", FileMime.ExtensionFor("video/mp4"));
+        Assert.AreEqual(".webm", FileMime.ExtensionFor("video/webm"));
+        Assert.AreEqual(".mp3", FileMime.ExtensionFor("audio/mpeg"));
+        Assert.AreEqual(".m4a", FileMime.ExtensionFor("audio/mp4"));
+    }
+
+    [TestMethod]
+    public void ExtensionFor_UnmappedMimes_ReturnsNull()
+    {
+        Assert.IsNull(FileMime.ExtensionFor("application/octet-stream"));
+        Assert.IsNull(FileMime.ExtensionFor("text/html"));
+        Assert.IsNull(FileMime.ExtensionFor(null));
+        Assert.IsNull(FileMime.ExtensionFor(""));
+    }
+
+    [TestMethod]
     public void InlineDispositionFor_AsciiName_InlineWithFilename()
     {
         var header = FileMime.InlineDispositionFor("clip.mp4");

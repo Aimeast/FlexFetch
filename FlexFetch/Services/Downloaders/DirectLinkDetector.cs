@@ -1,4 +1,6 @@
-﻿using FlexFetch.Services.Routing;
+﻿using System.Net;
+using System.Net.Http.Headers;
+using FlexFetch.Services.Routing;
 
 namespace FlexFetch.Services.Downloaders;
 
@@ -49,11 +51,19 @@ public static class DirectLinkDetector
         return MediaExtensions.Contains(Path.GetExtension(uri.AbsolutePath));
     }
 
+    /// <summary>What the probe learned about a direct link: the served media
+    /// type and, when the server advertises one, the real file name
+    /// (Content-Disposition).</summary>
+    public sealed record DirectLinkProbe(string? ContentType, string? FileName);
+
     /// <summary>
-    /// Probes the URL with a HEAD request and returns the response
-    /// Content-Type, or null when the probe fails or the URL is a web page.
+    /// Probes the URL for its media type and real file name. HEAD goes first
+    /// (the cheap form static file servers answer); a server that rejects or
+    /// mishandles HEAD falls back to a one-byte Range GET, which succeeds
+    /// wherever the actual download would. Returns null only when the URL is
+    /// unreachable - the download itself would then fail the same way.
     /// </summary>
-    public static async Task<string?> ProbeContentTypeAsync(
+    public static async Task<DirectLinkProbe?> ProbeAsync(
         string url,
         IProxyService proxy,
         CancellationToken cancellationToken)
@@ -63,23 +73,49 @@ public static class DirectLinkDetector
             return null;
         }
 
+        var (contentType, fileName) = await ProbeWithAsync(uri, proxy, HttpMethod.Head, cancellationToken);
+        if (contentType is null)
+        {
+            (contentType, fileName) = await ProbeWithAsync(uri, proxy, HttpMethod.Get, cancellationToken);
+        }
+
+        return contentType is null ? null : new DirectLinkProbe(contentType, fileName);
+    }
+
+    private static async Task<(string? ContentType, string? FileName)> ProbeWithAsync(
+        Uri uri,
+        IProxyService proxy,
+        HttpMethod method,
+        CancellationToken cancellationToken)
+    {
         var handler = proxy.CreateHandler(uri);
         using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(8) };
-        using var request = new HttpRequestMessage(HttpMethod.Head, uri);
+        using var request = new HttpRequestMessage(method, uri);
+        if (method == HttpMethod.Get)
+        {
+            // A one-byte range: enough for the headers, harmless on servers
+            // that ignore Range (they return 200 and the body is never read).
+            request.Headers.Range = new RangeHeaderValue(0, 0);
+        }
+
         try
         {
             using var response = await client.SendAsync(
                 request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                return null;
+                return (null, null);
             }
 
-            return response.Content.Headers.ContentType?.MediaType;
+            var disposition = response.Content.Headers.ContentDisposition;
+            var name = (disposition?.FileNameStar ?? disposition?.FileName)?.Trim('"');
+            return (
+                response.Content.Headers.ContentType?.MediaType,
+                string.IsNullOrWhiteSpace(name) ? null : name);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or OperationCanceledException)
         {
-            return null;
+            return (null, null);
         }
     }
 

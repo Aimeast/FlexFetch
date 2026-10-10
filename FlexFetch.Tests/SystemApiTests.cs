@@ -60,6 +60,24 @@ public sealed class SystemApiTests
         Assert.IsFalse(string.IsNullOrEmpty(body.BuildDateTime));
         Assert.AreNotEqual("unknown", body.BuildConfiguration);
         Assert.IsFalse(string.IsNullOrEmpty(body.PlaywrightVersion));
+
+        // Readiness matrix (what "all components installed" means). A fresh
+        // data dir has no yt-dlp/deno components; the firefox layers depend
+        // on the machine (a dev box has a global Playwright cache), so the
+        // firefox and overall flags are asserted as derivations, not values.
+        Assert.IsNotNull(body.Components);
+        Assert.IsFalse(body.Components.Ytdlp);
+        Assert.IsFalse(body.Components.Deno);
+        Assert.AreEqual(OperatingSystem.IsWindows(), body.Components.FirefoxOsDeps,
+            "Windows has no apt layer - the OS-dependency check is inherently satisfied");
+        Assert.AreEqual(
+            body.Components.FirefoxInstalled && body.Components.FirefoxOsDeps && body.Components.FirefoxBuildCurrent,
+            body.Components.FirefoxReady,
+            "firefox readiness must be the AND of its three layers");
+        Assert.AreEqual(
+            body.Components.Ytdlp && body.Components.Deno && body.Components.Ffmpeg && body.Components.FirefoxReady,
+            body.ComponentsReady,
+            "overall readiness must be the AND of all components");
     }
 
     private sealed record SystemInfoResponse(
@@ -70,5 +88,16 @@ public sealed class SystemApiTests
         string GitLog,
         string BuildDateTime,
         string BuildConfiguration,
-        string PlaywrightVersion);
+        string PlaywrightVersion,
+        ComponentsInfo Components,
+        bool ComponentsReady);
+
+    private sealed record ComponentsInfo(
+        bool Ytdlp,
+        bool Deno,
+        bool Ffmpeg,
+        bool FirefoxInstalled,
+        bool FirefoxOsDeps,
+        bool FirefoxBuildCurrent,
+        bool FirefoxReady);
 }
