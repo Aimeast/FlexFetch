@@ -128,7 +128,7 @@ public sealed partial class CleanupHostedService : IntervalHostedService
         // Expired anonymous guest sessions: delete the session together with
         // all its tasks and files. Not time-critical - a session idle beyond
         // the threshold is removed by this sweep as soon as it runs, except
-        // while it still has tasks queued or running.
+        // while it still has tasks queued, running or waiting for components.
         var guestHours = int.TryParse(Get(ConfigKeys.AnonymousSessionHours), out var hours) ? hours : 360;
         if (guestHours > 0)
         {
@@ -141,7 +141,7 @@ public sealed partial class CleanupHostedService : IntervalHostedService
                 }
 
                 var guestTasks = _taskService.GetByOwner(guest.Id);
-                if (guestTasks.Any(t => t.Status is TaskStatus.Queued or TaskStatus.Running))
+                if (guestTasks.Any(t => t.Status is TaskStatus.Queued or TaskStatus.Running or TaskStatus.Waiting))
                 {
                     continue;
                 }

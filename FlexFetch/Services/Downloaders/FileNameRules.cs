@@ -1,4 +1,5 @@
 ﻿using System.Text;
+using FlexFetch.Services;
 
 namespace FlexFetch.Services.Downloaders;
 
@@ -78,6 +79,31 @@ public static class FileNameRules
 
         var segment = Uri.UnescapeDataString(uri.LocalPath.TrimEnd('/').Split('/').LastOrDefault() ?? string.Empty);
         return string.IsNullOrWhiteSpace(segment) ? uri.Host : segment;
+    }
+
+    /// <summary>
+    /// Picks the display name for a direct link: the server-advertised name
+    /// (Content-Disposition) when the probe saw one, else the URL path
+    /// segment - extended from the probed Content-Type when the segment has
+    /// no extension (share-style endpoints like "/file?taskId=..." would
+    /// otherwise name every download after their literal last segment).
+    /// </summary>
+    public static string FromUrlAndProbe(string url, string? contentType, string? dispositionName)
+    {
+        if (!string.IsNullOrWhiteSpace(dispositionName))
+        {
+            return Sanitize(dispositionName);
+        }
+
+        var inferred = Sanitize(InferFromUrl(url));
+        if (!string.IsNullOrWhiteSpace(contentType)
+            && string.IsNullOrEmpty(Path.GetExtension(inferred))
+            && FileMime.ExtensionFor(contentType) is { } extension)
+        {
+            inferred += extension;
+        }
+
+        return inferred;
     }
 
     /// <summary>

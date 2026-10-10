@@ -111,6 +111,29 @@ public static class FileMime
     }
 
     /// <summary>
+    /// Default extension for a served media MIME type (".mp4" for video/mp4),
+    /// or null for unmapped and generic byte-stream types. Used to complete
+    /// URL-inferred file names whose path carries no extension.
+    /// </summary>
+    public static string? ExtensionFor(string? mime)
+    {
+        if (string.IsNullOrEmpty(mime) || mime == "application/octet-stream")
+        {
+            return null;
+        }
+
+        foreach (var (candidate, extensions) in MediaMappings)
+        {
+            if (candidate.Equals(mime, StringComparison.OrdinalIgnoreCase))
+            {
+                return "." + extensions.Split(',')[0];
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// True when the file is mapped to a playable video/audio type (the
     /// browser can play it inline); everything else downloads.
     /// </summary>

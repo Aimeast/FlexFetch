@@ -179,6 +179,60 @@ public sealed class GenericFileDownloaderTests
         Assert.AreEqual(server.BaseUrl + "/guarded.bin", referer);
     }
 
+    [TestMethod]
+    public async Task Analyze_PrefersContentDispositionName()
+    {
+        // Share-style endpoints advertise the real name in the disposition
+        // (inline, RFC 5987 for non-ASCII) even though the URL path names no
+        // file - the analysis must pick it up, not the literal path segment.
+        using var server = new TestHttpServer(_ => new TestHttpServer.HttpResponse(
+            200,
+            Array.Empty<byte>(),
+            new Dictionary<string, string>
+            {
+                ["Content-Type"] = "video/mp4",
+                ["Content-Disposition"] = "inline; filename*=utf-8''%E5%8D%81%E6%9C%88%E5%85%AD%E6%97%A5.mp4",
+            }));
+
+        var analysis = await _downloader!.AnalyzeAsync(
+            server.BaseUrl + "/api/share/ScQlfS50/file?taskId=0t3XtUSF", "t1", CancellationToken.None);
+
+        // The disposition name arrives percent-encoded (filename*) and the
+        // probe decodes it: the real title, not the literal path segment.
+        Assert.AreEqual("\u5341\u6708\u516d\u65e5.mp4", analysis.Title);
+        Assert.AreEqual("\u5341\u6708\u516d\u65e5.mp4", analysis.SuggestedFileName);
+    }
+
+    [TestMethod]
+    public async Task Analyze_AppendsExtensionFromContentType()
+    {
+        // No advertised name: the URL segment ("file") gains the extension
+        // the served Content-Type maps to, instead of a bare "file".
+        using var server = new TestHttpServer(_ => new TestHttpServer.HttpResponse(
+            200,
+            Array.Empty<byte>(),
+            new Dictionary<string, string> { ["Content-Type"] = "video/mp4" }));
+
+        var analysis = await _downloader!.AnalyzeAsync(
+            server.BaseUrl + "/api/share/abc/file?taskId=xyz", "t1", CancellationToken.None);
+
+        Assert.AreEqual("file.mp4", analysis.SuggestedFileName);
+    }
+
+    [TestMethod]
+    public async Task Analyze_KeepsUrlNameWhenProbeFails()
+    {
+        // A failed probe never fails the analysis: the plain URL-inferred
+        // name is kept (the download still re-resolves from the response).
+        using var server = new TestHttpServer(_ => new TestHttpServer.HttpResponse(
+            500, Array.Empty<byte>()));
+
+        var analysis = await _downloader!.AnalyzeAsync(
+            server.BaseUrl + "/api/share/abc/file?taskId=xyz", "t1", CancellationToken.None);
+
+        Assert.AreEqual("file", analysis.SuggestedFileName);
+    }
+
     private sealed class DirectProxyService : IProxyService
     {
         public bool ShouldProxy(Uri url) => false;

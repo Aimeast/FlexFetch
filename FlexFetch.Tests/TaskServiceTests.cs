@@ -183,10 +183,12 @@ public sealed class TaskServiceTests
     }
 
     [TestMethod]
-    public async Task RecoverPending_RequeuesRunningAndQueued()
+    public async Task RecoverPending_HoldsInterruptedTasksAsWaiting()
     {
-        // Simulate a restart: tasks stuck in Running and Queued must be
-        // re-queued; Failed (a real download failure) is not re-queued.
+        // Simulate a restart: tasks stuck in Running and Queued are recovered
+        // into Waiting - visible, but not executed until the startup
+        // component installs finish and ReleaseWaitingTasks opens the queue.
+        // Failed (a real download failure) is not recovered.
         var running = new TaskItem { OwnerUserId = "user-1", Url = "https://example.com/r.bin", Status = TaskStatus.Running };
         var queued = new TaskItem { OwnerUserId = "user-1", Url = "https://example.com/q.bin", Status = TaskStatus.Queued };
         var failed = new TaskItem { OwnerUserId = "user-1", Url = "https://example.com/f.bin", Status = TaskStatus.Failed };
@@ -194,21 +196,64 @@ public sealed class TaskServiceTests
         _tasks.Insert(queued);
         _tasks.Insert(failed);
 
+        var runs = 0;
         _executor!.Handler = (task, progress, ct) =>
         {
+            Interlocked.Increment(ref runs);
             task.FileName = "recovered.bin";
             return Task.CompletedTask;
         };
 
-        _service!.RecoverPending();
+        Assert.AreEqual(2, _service!.RecoverPending());
+        Assert.AreEqual(TaskStatus.Waiting, _service.GetById(running.Id)!.Status);
+        Assert.AreEqual(TaskStatus.Waiting, _service.GetById(queued.Id)!.Status);
+        Assert.AreEqual(TaskStatus.Failed, _service.GetById(failed.Id)!.Status);
+        Assert.AreEqual(0, Volatile.Read(ref runs));
 
+        Assert.AreEqual(2, _service.ReleaseWaitingTasks());
         await WaitForStatusAsync(running.Id, TaskStatus.Completed);
         await WaitForStatusAsync(queued.Id, TaskStatus.Completed);
-        Assert.AreEqual("recovered.bin", _service!.GetById(running.Id)!.FileName);
-        Assert.AreEqual("recovered.bin", _service!.GetById(queued.Id)!.FileName);
+        Assert.AreEqual("recovered.bin", _service.GetById(running.Id)!.FileName);
+        Assert.AreEqual(2, Volatile.Read(ref runs));
+    }
 
-        // Failed stays failed - it was a real download failure.
-        Assert.AreEqual(TaskStatus.Failed, _service.GetById(failed.Id)!.Status);
+    [TestMethod]
+    public async Task RecoverPending_KeepsPreviouslyWaitingTasksWaiting()
+    {
+        // A previous boot died while tasks sat in Waiting (the install
+        // window): the next recovery keeps them held instead of enqueuing
+        // them directly past the installs.
+        var waiting = new TaskItem { OwnerUserId = "user-1", Url = "https://example.com/w.bin", Status = TaskStatus.Waiting };
+        _tasks!.Insert(waiting);
+        _executor!.Handler = (task, progress, ct) => Task.CompletedTask;
+
+        Assert.AreEqual(1, _service!.RecoverPending());
+        Assert.AreEqual(TaskStatus.Waiting, _service.GetById(waiting.Id)!.Status);
+
+        _service.ReleaseWaitingTasks();
+        await WaitForStatusAsync(waiting.Id, TaskStatus.Completed);
+    }
+
+    [TestMethod]
+    public void RecoverPending_MarksParentWaitingForRecoveredChildren()
+    {
+        // A virtual parent aggregates its recovered children: with every
+        // child Waiting and none failed, the parent shows Waiting too
+        // instead of a phantom Running.
+        var parent = new TaskItem
+        {
+            OwnerUserId = "user-1",
+            Url = "https://example.com/list",
+            Status = TaskStatus.Running,
+            IsVirtual = true,
+        };
+        _tasks!.Insert(parent);
+        _tasks.Insert(new TaskItem { OwnerUserId = "user-1", Url = "https://example.com/a", ParentId = parent.Id, Status = TaskStatus.Running });
+        _tasks.Insert(new TaskItem { OwnerUserId = "user-1", Url = "https://example.com/b", ParentId = parent.Id, Status = TaskStatus.Queued });
+
+        _service!.RecoverPending();
+
+        Assert.AreEqual(TaskStatus.Waiting, _service.GetById(parent.Id)!.Status);
     }
 
     [TestMethod]
@@ -238,11 +283,14 @@ public sealed class TaskServiceTests
 
         _service!.RecoverPending();
 
-        await WaitForStatusAsync(fallback.Id, TaskStatus.Completed);
-        await WaitForStatusAsync(pinned.Id, TaskStatus.Completed);
-
+        // Recovery clears the fallback pin and holds the tasks in Waiting.
         Assert.IsNull(_tasks.GetById(fallback.Id)!.DownloaderType);
         Assert.AreEqual("Generic", _tasks.GetById(pinned.Id)!.DownloaderType);
+        Assert.AreEqual(TaskStatus.Waiting, _tasks.GetById(fallback.Id)!.Status);
+
+        _service.ReleaseWaitingTasks();
+        await WaitForStatusAsync(fallback.Id, TaskStatus.Completed);
+        await WaitForStatusAsync(pinned.Id, TaskStatus.Completed);
     }
 
     [TestMethod]
@@ -717,10 +765,11 @@ public sealed class TaskServiceTests
     }
 
     [TestMethod]
-    public async Task RecoverPending_RequeuesInSubmissionOrder()
+    public async Task RecoverPending_ReleasesInSubmissionOrder()
     {
         // A restart must not shuffle the order: merged Running+Queued orphans
-        // are re-enqueued oldest first, even when stored in shuffled order.
+        // are held oldest first and released back into the queue in that
+        // order, even when stored in shuffled order.
         var now = DateTime.UtcNow;
         var tasks = Enumerable.Range(0, 5)
             .Select(i => new TaskItem
@@ -748,6 +797,7 @@ public sealed class TaskServiceTests
         };
 
         _service!.RecoverPending();
+        _service.ReleaseWaitingTasks();
 
         await Task.WhenAll(tasks.Select(t => WaitForStatusAsync(t.Id, TaskStatus.Completed)));
 

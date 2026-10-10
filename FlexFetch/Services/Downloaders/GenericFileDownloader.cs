@@ -38,15 +38,22 @@ public sealed class GenericFileDownloader : IDownloader
         url.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
         || url.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
 
-    public Task<AnalysisResult> AnalyzeAsync(string url, string taskId, CancellationToken cancellationToken)
+    public async Task<AnalysisResult> AnalyzeAsync(string url, string taskId, CancellationToken cancellationToken)
     {
-        var fileName = FileNameRules.Sanitize(FileNameRules.InferFromUrl(url));
-        return Task.FromResult(new AnalysisResult
+        // Resolve the name from the server when it advertises one, so
+        // share-style URLs whose path names no file ("/file?taskId=...")
+        // still land under their real name from the first progress update.
+        // The download re-resolves from the live response (ResolveFileName);
+        // a failed probe keeps the URL-inferred name and never fails the
+        // analysis.
+        var probe = await DirectLinkDetector.ProbeAsync(url, _proxy, cancellationToken);
+        var fileName = FileNameRules.FromUrlAndProbe(url, probe?.ContentType, probe?.FileName);
+        return new AnalysisResult
         {
             Title = fileName,
             DirectUrl = url,
             SuggestedFileName = fileName,
-        });
+        };
     }
 
     public async Task DownloadAsync(TaskItem task, AnalysisResult analysis, Action<double> progress, CancellationToken cancellationToken)

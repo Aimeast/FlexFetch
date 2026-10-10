@@ -6,7 +6,8 @@ namespace FlexFetch.Services;
 /// <summary>
 /// File storage layout: every root task (a direct download or a list
 /// download with all its children) owns one directory under files/, named
-/// "{taskId} {title prefix}" so downloads are findable on the NAS. Children
+/// "{taskId} {title prefix}" so downloads are easy to find when browsing
+/// the storage volume. Children
 /// store their files inside the parent's directory. Tasks carry the resolved
 /// folder name in StorageFolder; legacy records (and anything unstamped)
 /// fall back to the bare task id.

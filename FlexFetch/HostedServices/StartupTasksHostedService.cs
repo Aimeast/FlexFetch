@@ -16,6 +16,101 @@ namespace FlexFetch.HostedServices;
 /// </summary>
 public sealed class StartupTasksHostedService : BackgroundService
 {
+    /// <summary>Runs the whole startup sequence with the pieces injected, so
+    /// tests can pin the ordering that matters: interrupted downloads are
+    /// recovered (marked Waiting) up front - a restart must leave no phantom
+    /// Running tasks behind - but only released into the queue AFTER the
+    /// component installs, so a download never starts against a missing
+    /// yt-dlp or browser. Installs can take minutes (or hang on a broken
+    /// proxy - a stuck Firefox download once kept recovered tasks invisible
+    /// in Running for the whole container lifetime); the Waiting state makes
+    /// that window honest in the UI instead.</summary>
+    public static async Task RunStartupSequenceAsync(
+        Serilog.ILogger log,
+        CancellationToken stoppingToken,
+        Func<int> recoverPending,
+        Func<int> reconcileFileNames,
+        Func<int> releaseWaitingTasks,
+        IReadOnlyList<string> readyComponents,
+        IReadOnlyList<string> missingComponents,
+        bool autoInstallEnabled,
+        Func<Task> installMissingComponents,
+        Action signalComponentPlanLogged)
+    {
+        // 1. Recovery marks orphans Waiting: visible immediately, executed
+        //    only by the release at the end of the sequence.
+        var recovered = recoverPending();
+        log.Information("Recovered {Count} pending tasks after restart", recovered);
+
+        // 2. Adopt on-disk file sizes for completed tasks whose recorded
+        //    size mismatches (e.g. lost in a download-report encoding
+        //    mismatch) - the disk file is the source of truth.
+        var reconciled = reconcileFileNames();
+        log.Information("Reconciled {Count} completed task file sizes from disk", reconciled);
+
+        // 3. Component plan: one line for ready components (skipped), one
+        //    for components that need installing.
+        if (readyComponents.Count > 0)
+        {
+            log.Information("Components ready, skipping install: {Components}",
+                string.Join(", ", readyComponents));
+        }
+
+        if (missingComponents.Count > 0 && !autoInstallEnabled)
+        {
+            log.Information("Components missing and auto-install disabled: {Components}",
+                string.Join(", ", missingComponents));
+            signalComponentPlanLogged();
+            // Nothing will ever install, so holding the tasks would strand
+            // them in Waiting forever; release them to surface the real
+            // download failures instead.
+            releaseWaitingTasks();
+            return;
+        }
+
+        if (missingComponents.Count > 0)
+        {
+            log.Information("Installing missing components: {Components}",
+                string.Join(", ", missingComponents));
+        }
+
+        // Signal BEFORE any install work starts: the pot supervisor and the
+        // session maintenance can both trigger installs on their own first
+        // round - they wait for this signal, so the plan above always
+        // precedes every individual install line no matter which service
+        // wins the race.
+        signalComponentPlanLogged();
+
+        if (missingComponents.Count == 0)
+        {
+            releaseWaitingTasks();
+            return;
+        }
+
+        // 4. Installs run last and only miss what is missing. A failure is
+        //    logged, never thrown: the waiting tasks are released below and
+        //    the next supervisor round retries the install.
+        try
+        {
+            await installMissingComponents();
+            log.Information("All components ready: {Components}",
+                string.Join(", ", readyComponents.Concat(missingComponents)));
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            log.Information("Startup component install cancelled by shutdown");
+            // Shutting down: held tasks stay Waiting and the next boot's
+            // recovery picks them up again.
+            return;
+        }
+        catch (Exception ex)
+        {
+            log.Error(ex, "Startup dependency install failed");
+        }
+
+        // 5. Installs done (or failed): open the queue.
+        releaseWaitingTasks();
+    }
     private readonly IHostApplicationLifetime _lifetime;
     private readonly IConfiguration _config;
     private readonly UserService _userService;
@@ -97,9 +192,8 @@ public sealed class StartupTasksHostedService : BackgroundService
             }
         }
 
-        // 2. Component check: one line for ready components (skipped), one
-        //    for components that need installing; then install only the
-        //    missing ones so each install task logs its own progress.
+        // Component checks are fast file lookups; the plan they produce is
+        // logged and the installs (if any) run after task recovery.
         var ready = new List<string>();
         var toInstall = new List<string>();
         if (_ytdlp.IsYtDlpInstalled()) ready.Add("yt-dlp"); else toInstall.Add("yt-dlp");
@@ -112,32 +206,16 @@ public sealed class StartupTasksHostedService : BackgroundService
         // each has its own check/marker so any mismatch triggers a reinstall.
         if (_browser.IsFirefoxReady()) ready.Add("firefox"); else toInstall.Add("firefox");
 
-        if (ready.Count > 0)
-        {
-            _log.Information("Components ready, skipping install: {Components}", string.Join(", ", ready));
-        }
-
-        if (toInstall.Count > 0 && (!bool.TryParse(Get(ConfigKeys.AutoInstallDeps), out var autoInstall) || !autoInstall))
-        {
-            _log.Information("Components missing and auto-install disabled: {Components}", string.Join(", ", toInstall));
-            SignalComponentPlanLogged();
-            return;
-        }
-
-        if (toInstall.Count > 0)
-        {
-            _log.Information("Installing missing components: {Components}", string.Join(", ", toInstall));
-        }
-
-        // Signal BEFORE any install work starts: the pot supervisor and the
-        // session maintenance can both trigger installs on their first round -
-        // they wait for this signal, so the plan above always precedes every
-        // individual install line no matter which service wins the race.
-        SignalComponentPlanLogged();
-
-        if (toInstall.Count > 0)
-        {
-            try
+        await RunStartupSequenceAsync(
+            _log,
+            stoppingToken,
+            recoverPending: () => _taskService.RecoverPending(),
+            reconcileFileNames: () => _taskService.ReconcileFileNames(),
+            releaseWaitingTasks: () => _taskService.ReleaseWaitingTasks(),
+            readyComponents: ready,
+            missingComponents: toInstall,
+            autoInstallEnabled: bool.TryParse(Get(ConfigKeys.AutoInstallDeps), out var autoInstall) && autoInstall,
+            installMissingComponents: async () =>
             {
                 // yt-dlp/deno/ffmpeg: only missing ones are installed (installed are silent).
                 if (!_ytdlp.IsYtDlpInstalled() || !_ytdlp.IsDenoInstalled() || !_ytdlp.IsFfmpegInstalled())
@@ -152,25 +230,8 @@ public sealed class StartupTasksHostedService : BackgroundService
                 {
                     await _browser.EnsureInstalledAsync(stoppingToken);
                 }
-
-                _log.Information("All components ready: {Components}",
-                    string.Join(", ", ready.Concat(toInstall)));
-            }
-            catch (Exception ex)
-            {
-                _log.Error(ex, "Startup dependency install failed");
-            }
-        }
-
-        // 3. Recover tasks after a restart (Running/Queued -> Queued, re-queued).
-        var recovered = _taskService.RecoverPending();
-        _log.Information("Recovered {Count} pending tasks after restart", recovered);
-
-        // 4. Adopt on-disk file sizes for completed tasks whose recorded
-        //    size mismatches (e.g. lost in a download-report encoding
-        //    mismatch) - the disk file is the source of truth.
-        var reconciled = _taskService.ReconcileFileNames();
-        _log.Information("Reconciled {Count} completed task file sizes from disk", reconciled);
+            },
+            signalComponentPlanLogged: SignalComponentPlanLogged);
     }
 
     private string Get(string key) => ConfigRegistry.From(_config, key);

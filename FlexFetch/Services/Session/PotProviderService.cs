@@ -21,6 +21,12 @@ public sealed class PotProviderService
     /// <summary>Pinned bgutil-ytdlp-pot-provider version (source + plugin).</summary>
     public const string PotProviderVersion = "2.0.0";
 
+    /// <summary>Budget for the warm-up run: a cold deno compiles the
+    /// script's whole import graph (jsdom and friends) - on low-power hosts
+    /// far beyond the plugin's 15s probe timeout, which is exactly what this
+    /// run absorbs.</summary>
+    public static readonly TimeSpan WarmUpTimeout = TimeSpan.FromSeconds(120);
+
     /// <summary>GitHub repository of the server sources (the release page
     /// only ships the yt-dlp plugin zip; the script runs from the source).</summary>
     public const string ServerRepoUrl = "https://github.com/Brainicism/bgutil-ytdlp-pot-provider";
@@ -29,15 +35,19 @@ public sealed class PotProviderService
     private readonly IProxyService _proxy;
     private readonly ILogger _log;
     private readonly SemaphoreSlim _installLock = new(1, 1);
+    private readonly Func<System.Diagnostics.ProcessStartInfo, CancellationToken, Task>? _warmUpRunner;
+    private int _warmUpDone;
 
     public PotProviderService(
         YtdlpService ytdlp,
         IProxyService proxy,
-        ILogger log)
+        ILogger log,
+        Func<System.Diagnostics.ProcessStartInfo, CancellationToken, Task>? warmUpRunner = null)
     {
         _ytdlp = ytdlp;
         _proxy = proxy;
         _log = log;
+        _warmUpRunner = warmUpRunner;
     }
 
     private string ComponentsDir => _ytdlp.ComponentDir;
@@ -81,14 +91,16 @@ public sealed class PotProviderService
 
     /// <summary>
     /// Supervisor step: installs missing pieces (deno comes with the shared
-    /// component install). Idempotent, serialized; failures are logged and
-    /// retried on the next round.
+    /// component install) and pre-warms deno for the token script.
+    /// Idempotent, serialized; failures are logged and retried on the next
+    /// round.
     /// </summary>
     public async Task EnsureRunningAsync(CancellationToken cancellationToken = default)
     {
         try
         {
             await EnsureInstalledAsync(cancellationToken);
+            await WarmUpDenoAsync(cancellationToken);
             LastError = null;
         }
         catch (Exception ex)
@@ -130,6 +142,137 @@ public sealed class PotProviderService
         finally
         {
             _installLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Runs the bgutil script once through deno with the plugin's exact
+    /// arguments so deno's on-disk compile cache is hot before the first
+    /// real PO token request. The plugin probes the script with a hard 15s
+    /// timeout (getpot_bgutil_script._GET_SCRIPT_VSN_TIMEOUT); a cold deno
+    /// on a low-power host exceeds it, the probe then reports the provider
+    /// unavailable and YouTube loses its PO token even though every
+    /// component is fine. Runs once per process on success - a failed run
+    /// is retried by the next supervisor round. Start, finish and failure
+    /// are all logged so the warm-up is visible in the boot log.
+    /// </summary>
+    public async Task WarmUpDenoAsync(CancellationToken cancellationToken = default)
+    {
+        if (Volatile.Read(ref _warmUpDone) == 1 || !IsServerInstalled || !IsDenoInstalled)
+        {
+            return;
+        }
+
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        _log.Information(
+            "Pre-warming deno for the PO token script (a cold start exceeds the plugin's 15s probe budget on slow hosts)");
+        try
+        {
+            var psi = BuildWarmUpProcess();
+            if (_warmUpRunner is not null)
+            {
+                await _warmUpRunner(psi, cancellationToken);
+            }
+            else
+            {
+                await RunWarmUpProcessAsync(psi, cancellationToken);
+            }
+
+            Volatile.Write(ref _warmUpDone, 1);
+            _log.Information("Deno pre-warm finished in {Seconds:F1}s", started.Elapsed.TotalSeconds);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Warning("Deno pre-warm failed after {Seconds:F1}s: {Message}",
+                started.Elapsed.TotalSeconds, ex.Message);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// The command the warm-up runs - a faithful copy of the script-deno
+    /// provider's probe (getpot_bgutil_script.py): same permission flags,
+    /// cache directory derivation and environment, so this run populates
+    /// exactly the on-disk cache the plugin's later probes hit.
+    /// </summary>
+    private System.Diagnostics.ProcessStartInfo BuildWarmUpProcess()
+    {
+        var nodeModules = Path.Combine(ServerRoot, "server", "node_modules");
+        var cacheDir = ScriptCacheDir();
+        var psi = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = DenoPath,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        psi.ArgumentList.Add("run");
+        psi.ArgumentList.Add("--allow-env");
+        psi.ArgumentList.Add("--allow-net");
+        psi.ArgumentList.Add($"--allow-ffi={EscapeAllowList(nodeModules)}");
+        psi.ArgumentList.Add($"--allow-write={EscapeAllowList(cacheDir)}");
+        psi.ArgumentList.Add($"--allow-read={EscapeAllowList(cacheDir, nodeModules)}");
+        psi.ArgumentList.Add(ScriptPath);
+        psi.ArgumentList.Add("--version");
+        psi.Environment["DENO_NO_PROMPT"] = "1";
+        psi.Environment["DENO_NO_UPDATE_CHECK"] = "1";
+        psi.Environment["FORCE_COLOR"] = "false";
+        return psi;
+    }
+
+    /// <summary>The script cache directory the plugin passes to deno: under
+    /// XDG_CACHE_HOME when set, else ~/.cache (the server code accepts HOME
+    /// and USERPROFILE regardless of OS), else the server tree.</summary>
+    private string ScriptCacheDir()
+    {
+        var xdg = Environment.GetEnvironmentVariable("XDG_CACHE_HOME");
+        if (!string.IsNullOrWhiteSpace(xdg))
+        {
+            return Path.Combine(xdg, "bgutil-ytdlp-pot-provider");
+        }
+
+        var home = Environment.GetEnvironmentVariable("HOME")
+            ?? Environment.GetEnvironmentVariable("USERPROFILE");
+        if (!string.IsNullOrWhiteSpace(home))
+        {
+            return Path.Combine(home, ".cache", "bgutil-ytdlp-pot-provider");
+        }
+
+        return ServerRoot;
+    }
+
+    /// <summary>The plugin joins allow-list paths with commas and escapes
+    /// literal commas by doubling them.</summary>
+    private static string EscapeAllowList(params string[] paths) =>
+        string.Join(",", paths.Select(p => p.Replace(",", ",,")));
+
+    private static async Task RunWarmUpProcessAsync(
+        System.Diagnostics.ProcessStartInfo psi,
+        CancellationToken cancellationToken)
+    {
+        using var process = System.Diagnostics.Process.Start(psi)
+            ?? throw new InvalidOperationException($"Failed to start process: {psi.FileName}");
+        var stdout = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
+        var stderr = process.StandardError.ReadToEndAsync(CancellationToken.None);
+        try
+        {
+            await process.WaitForExitAsync(CancellationToken.None).WaitAsync(WarmUpTimeout, cancellationToken);
+        }
+        catch (TimeoutException)
+        {
+            process.Kill(entireProcessTree: true);
+            throw new TimeoutException($"deno pre-warm ran past {WarmUpTimeout.TotalSeconds:F0}s; process tree killed");
+        }
+
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"deno pre-warm failed (exit {process.ExitCode}): {(await stderr).Trim()}");
         }
     }
 

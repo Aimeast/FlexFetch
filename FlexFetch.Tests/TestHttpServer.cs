@@ -30,7 +30,7 @@ public sealed class TestHttpServer : IDisposable
 
     public List<HttpRequest> Requests { get; } = new();
 
-    public sealed record HttpRequest(Dictionary<string, string> Headers);
+    public sealed record HttpRequest(Dictionary<string, string> Headers, string Method = "GET", string Path = "/");
 
     public sealed record HttpResponse(int Status, byte[] Body, Dictionary<string, string>? Headers = null);
 
@@ -76,7 +76,11 @@ public sealed class TestHttpServer : IDisposable
                     }
                 }
 
-                var request = new HttpRequest(headers);
+                var requestLine = lines[0].Split(' ');
+                var request = new HttpRequest(
+                    headers,
+                    requestLine.Length > 0 ? requestLine[0] : "GET",
+                    requestLine.Length > 1 ? requestLine[1] : "/");
                 lock (Requests)
                 {
                     Requests.Add(request);
