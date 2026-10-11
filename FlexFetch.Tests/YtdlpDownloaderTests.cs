@@ -78,6 +78,9 @@ public sealed class YtdlpDownloaderTests
         // Patch-level versions (9.0.1) must not be truncated to 9.0.
         Assert.AreEqual("9.0.1", YtdlpService.ExtractFfmpegVersionNumber(
             "ffmpeg version 9.0.1-essentials_build-www.gyan.dev Copyright (c) 2000-2026 the FFmpeg developers"));
+        // BtbN builds carry a git-tag 'n' prefix and a git-describe suffix.
+        Assert.AreEqual("9.0.2", YtdlpService.ExtractFfmpegVersionNumber(
+            "ffmpeg version n9.0.2-25-g67b60c310b-20261010 Copyright (c) 2000-2026 the FFmpeg developers"));
         Assert.IsNull(YtdlpService.ExtractFfmpegVersionNumber(null));
         Assert.IsNull(YtdlpService.ExtractFfmpegVersionNumber("garbage output"));
     }
@@ -118,6 +121,173 @@ public sealed class YtdlpDownloaderTests
         await service.UpgradeFfmpegAsync(CancellationToken.None);
 
         CollectionAssert.AreEqual(new byte[] { 1, 2, 3 }, File.ReadAllBytes(ffmpegPath));
+    }
+
+    [TestMethod]
+    public void ExtractYtdlpUpToDateVersion_ParsesSelfUpdaterVerdict()
+    {
+        // Real output shape from the NAS logs.
+        const string output = """
+            Latest version: stable@2026.08.19 from yt-dlp/yt-dlp
+            yt-dlp is up to date (stable@2026.08.19 from yt-dlp/yt-dlp)
+            """;
+        Assert.AreEqual("2026.08.19", YtdlpService.ExtractYtdlpUpToDateVersion(output));
+        Assert.IsNull(YtdlpService.ExtractYtdlpUpToDateVersion(
+            "Latest version: stable@2026.08.19 from yt-dlp/yt-dlp\nUpdated yt-dlp to stable@2026.08.19"),
+            "an upgrade run is not a routine no-op and keeps the full output");
+    }
+
+    [TestMethod]
+    public void ExtractDenoUpToDateVersion_ParsesColoredVerdict()
+    {
+        // Real output shape from the NAS logs, ANSI escapes included.
+        const string output = "Current Deno version: v2.9.7\n"
+            + "\x1B[0m\x1B[38;5;245mLooking up stable version\x1B[0m\n\n"
+            + "Local deno version \x1B[32m2.9.7\x1B[39m is the most recent release\n";
+        Assert.AreEqual("2.9.7", YtdlpService.ExtractDenoUpToDateVersion(output));
+        Assert.AreEqual("2.9.7", YtdlpService.ExtractDenoUpToDateVersion(
+            "Local deno version 2.9.7 is the most recent release"),
+            "the plain variant must parse too");
+        Assert.IsNull(YtdlpService.ExtractDenoUpToDateVersion(
+            "Deno is upgrading to v2.9.8"), "an upgrade run is not a routine no-op");
+    }
+
+    [TestMethod]
+    public void StripAnsi_RemovesColorEscapes()
+    {
+        Assert.AreEqual("Local deno version 2.9.7 is the most recent release",
+            YtdlpService.StripAnsi("Local deno version \x1B[32m2.9.7\x1B[39m is the most recent release"));
+        Assert.AreEqual("plain text", YtdlpService.StripAnsi("plain text"));
+    }
+
+    [TestMethod]
+    public void ExtractReleaseVersion_ParsesReleaseTags()
+    {
+        Assert.AreEqual("6.1.1", YtdlpService.ExtractReleaseVersion("b6.1.1"));
+        Assert.AreEqual("7.1", YtdlpService.ExtractReleaseVersion("v7.1"));
+        Assert.AreEqual("9.0.2", YtdlpService.ExtractReleaseVersion("n9.0.2"));
+        Assert.AreEqual("9.0.2", YtdlpService.ExtractReleaseVersion("9.0.2"));
+        Assert.IsNull(YtdlpService.ExtractReleaseVersion("latest"));
+        Assert.IsNull(YtdlpService.ExtractReleaseVersion(null));
+    }
+
+    [TestMethod]
+    public void IsFfmpegUpToDate_InstalledNewerThanStalledSource_SkipsUpgrade()
+    {
+        // The 2026-10-11 incident: the version query (gyan.dev) said 9.0.2
+        // while the ffmpeg-static release source could only serve 7.0.2 - the
+        // daily "upgrade" re-downloaded the same binary forever. An installed
+        // build not older than the source's latest must count as up to date.
+        const string installed =
+            "ffmpeg version 7.0.2-static https://johnvansickle.com/ffmpeg/  Copyright (c) 2000-2024 the FFmpeg developers";
+
+        Assert.IsTrue(YtdlpService.IsFfmpegUpToDate(installed, "b6.1.1"),
+            "a stalled binary source must not trigger a re-download");
+        Assert.IsFalse(YtdlpService.IsFfmpegUpToDate(installed, "9.0.2"),
+            "a genuinely newer release must still upgrade");
+
+        // BtbN asset names carry the release branch ("9.0"), the binary its
+        // patch version ("9.0.2"): same branch counts as up to date.
+        Assert.IsTrue(YtdlpService.IsFfmpegUpToDate(installed.Replace("7.0.2", "9.0.2"), "9.0"),
+            "an installed patch release of the same branch is up to date");
+        Assert.IsFalse(YtdlpService.IsFfmpegUpToDate(installed, "9.0"),
+            "an older major must upgrade to the new branch");
+
+        // BtbN's real version line (git-tag 'n' prefix, git-describe suffix)
+        // must parse - before this was handled, the installed version was
+        // unreadable and every round judged the fresh 9.0.2 outdated.
+        Assert.IsTrue(YtdlpService.IsFfmpegUpToDate(
+            "ffmpeg version n9.0.2-25-g67b60c310b-20261010 Copyright (c) 2000-2026 the FFmpeg developers", "9.0"),
+            "the installed BtbN build of the current branch is up to date");
+
+        // The version authority is upstream (exact patch, e.g. gyan.dev's
+        // "9.0.2" or an upstream tag "n9.0.2"): equal counts as up to date,
+        // an upstream patch bump (9.0.3) must upgrade.
+        const string btbn =
+            "ffmpeg version n9.0.2-25-g67b60c310b-20261010 Copyright (c) 2000-2026 the FFmpeg developers";
+        Assert.IsTrue(YtdlpService.IsFfmpegUpToDate(btbn, "n9.0.2"));
+        Assert.IsFalse(YtdlpService.IsFfmpegUpToDate(btbn, "n9.0.3"),
+            "an upstream patch bump must trigger the upgrade");
+        Assert.IsFalse(YtdlpService.IsFfmpegUpToDate(btbn, "9.0.3"));
+    }
+
+    [TestMethod]
+    public async Task UpgradeFfmpegCore_SourceOlderThanInstalled_NeverDownloads()
+    {
+        var downloaded = false;
+        var localProbes = 0;
+
+        var result = await YtdlpService.UpgradeFfmpegCoreAsync(
+            Log,
+            _ => Task.FromResult<string?>("b6.1.1"),
+            getLocalVersion: () =>
+            {
+                localProbes++;
+                return Task.FromResult<string?>("ffmpeg version 7.0.2-static johnvansickle");
+            },
+            refreshLocalVersion: () => throw new InvalidOperationException(
+                "no download must happen, so no refresh probe either"),
+            download: _ =>
+            {
+                downloaded = true;
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.IsFalse(result);
+        Assert.IsFalse(downloaded);
+        Assert.AreEqual(1, localProbes);
+    }
+
+    [TestMethod]
+    public async Task UpgradeFfmpegCore_SourceNewer_DownloadsAndReprobes()
+    {
+        var downloads = 0;
+        var refreshProbes = 0;
+
+        var result = await YtdlpService.UpgradeFfmpegCoreAsync(
+            Log,
+            _ => Task.FromResult<string?>("9.0.2"),
+            getLocalVersion: () => Task.FromResult<string?>("ffmpeg version 7.0.2-static johnvansickle"),
+            refreshLocalVersion: () =>
+            {
+                refreshProbes++;
+                return Task.FromResult<string?>("ffmpeg version 9.0.2-essentials_build");
+            },
+            download: _ =>
+            {
+                downloads++;
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.IsTrue(result);
+        Assert.AreEqual(1, downloads);
+        Assert.AreEqual(1, refreshProbes, "the completion log must re-probe the installed binary");
+    }
+
+    [TestMethod]
+    public async Task UpgradeFfmpegCore_UnparseableLatest_FallsBackToDownload()
+    {
+        // Unrecognized latest-version strings keep the conservative old
+        // behavior: no recognized "up to date" verdict, so the upgrade
+        // proceeds rather than skipping on a guess.
+        var downloaded = false;
+
+        var result = await YtdlpService.UpgradeFfmpegCoreAsync(
+            Log,
+            _ => Task.FromResult<string?>("garbage"),
+            getLocalVersion: () => Task.FromResult<string?>("ffmpeg version 7.0.2-static johnvansickle"),
+            refreshLocalVersion: () => Task.FromResult<string?>("ffmpeg version 7.0.2-static johnvansickle"),
+            download: _ =>
+            {
+                downloaded = true;
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.IsTrue(result);
+        Assert.IsTrue(downloaded);
     }
 
     [TestMethod]

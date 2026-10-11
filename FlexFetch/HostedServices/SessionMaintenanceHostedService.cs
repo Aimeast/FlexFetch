@@ -75,14 +75,64 @@ public sealed class SessionMaintenanceHostedService : IntervalHostedService
         if (_snapshot.Age is { } age && age >= GetInterval())
         {
             // Aged snapshot: the full pipeline refreshes it (and its probe
-            // is the same authoritative check the light path would do).
+            // is the same authoritative check the light path would do) - its
+            // verdict feeds the same canary bookkeeping, so the periodic
+            // card reflects it instead of staying "first check pending"
+            // forever (with interval == snapshot period every round finds
+            // the snapshot aged and the light path would never run).
             _log.Information("Periodic session export starting (snapshot age: {Age})", age);
-            await _export.RunExportAsync(cancellationToken);
+            await RunAgedExportRoundAsync(_log, _export.RunExportAsync, RecordExportVerdict, cancellationToken);
             return;
         }
 
         await RunHealthCheckAsync(cancellationToken);
     }
+
+    /// <summary>
+    /// One aged-snapshot round: run the full export pipeline and record its
+    /// verdict in the canary bookkeeping. Static with injected delegates so
+    /// tests can pin the verdict mapping without a browser; cancellation
+    /// passes through untouched.
+    /// </summary>
+    public static async Task RunAgedExportRoundAsync(
+        ILogger log,
+        Func<CancellationToken, Task<SessionHealth>> runExport,
+        Action<SessionHealth, string?> recordVerdict,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var health = await runExport(cancellationToken);
+            recordVerdict(health, null);
+        }
+        catch (ExportRejectedException ex)
+        {
+            recordVerdict(ex.Health, ex.Message);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            log.Error(ex, "Periodic session export failed");
+            recordVerdict(SessionHealth.Error, ex.Message);
+        }
+    }
+
+    /// <summary>True when the verdict still means the session works for
+    /// yt-dlp. WebBindingOnly is informational - InnerTube accepted and only
+    /// the web surface declined - so it counts as a pass for the failure
+    /// counter instead of walking toward the alert.</summary>
+    public static bool IsUsable(SessionHealth health) =>
+        health is SessionHealth.Ok or SessionHealth.WebBindingOnly;
+
+    /// <summary>Canary bookkeeping for the aged-snapshot path: the export
+    /// pipeline IS the refresh, so a rejection must not immediately trigger
+    /// another one (TriggerReExport stays the light path's and the
+    /// downloader's remedy; the next round retries on its own).</summary>
+    private void RecordExportVerdict(SessionHealth health, string? detail) =>
+        RecordVerdict(health, detail, triggerReExport: false);
 
     /// <summary>
     /// Cheap health check: one InnerTube probe on a one-time snapshot copy,
@@ -127,17 +177,24 @@ public sealed class SessionMaintenanceHostedService : IntervalHostedService
         }
     }
 
-    private void RecordVerdict(SessionHealth health, string? detail)
+    private void RecordVerdict(SessionHealth health, string? detail, bool triggerReExport = true)
     {
         LastCheckAt = DateTime.UtcNow;
         LastHealth = health;
         LastDetail = detail;
 
-        if (health == SessionHealth.Ok)
+        if (IsUsable(health))
         {
             ConsecutiveFailures = 0;
             _snapshot.UpdateMeta(m => m.Health = health.ToString());
-            _log.Information("Session health check: the session is healthy");
+            if (health == SessionHealth.Ok)
+            {
+                _log.Information("Session health check: the session is healthy");
+            }
+            else
+            {
+                _log.Information("Session health check: web surface declined but InnerTube accepted (informational)");
+            }
             return;
         }
 
@@ -153,7 +210,7 @@ public sealed class SessionMaintenanceHostedService : IntervalHostedService
 
         // Rotated/bot-checked jars may still be recoverable by a re-export;
         // an inconsistent jar can only be fixed by a fresh import.
-        if (health is SessionHealth.BotCheck or SessionHealth.SessionRotated)
+        if (triggerReExport && health is SessionHealth.BotCheck or SessionHealth.SessionRotated)
         {
             _export.TriggerReExport();
         }

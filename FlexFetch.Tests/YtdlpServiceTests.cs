@@ -18,23 +18,42 @@ public sealed class YtdlpServiceTests
     }
 
     [TestMethod]
-    public void FfmpegDownloadUrl_PerPlatform()
+    public void SelectBtbnAsset_PicksNewestReleaseBranchBuild()
     {
-        Assert.AreEqual(
-            "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
-            YtdlpService.FfmpegDownloadUrl(isWindows: true, isLinux: false, isArm64: false));
-        Assert.AreEqual(
-            "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/ffmpeg-linux-x64",
-            YtdlpService.FfmpegDownloadUrl(isWindows: false, isLinux: true, isArm64: false));
-        Assert.AreEqual(
-            "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/ffmpeg-linux-arm64",
-            YtdlpService.FfmpegDownloadUrl(isWindows: false, isLinux: true, isArm64: true));
-        Assert.AreEqual(
-            "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/ffmpeg-macOS-x64",
-            YtdlpService.FfmpegDownloadUrl(isWindows: false, isLinux: false, isArm64: false));
-        Assert.AreEqual(
-            "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/ffmpeg-macOS-arm64",
-            YtdlpService.FfmpegDownloadUrl(isWindows: false, isLinux: false, isArm64: true));
+        const string json = """
+            {"tag_name":"latest","assets":[
+                {"name":"ffmpeg-master-latest-linux64-gpl.tar.xz","browser_download_url":"https://example.com/master.tar.xz"},
+                {"name":"ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz","browser_download_url":"https://example.com/n8.1.tar.xz"},
+                {"name":"ffmpeg-n9.0-latest-linux64-gpl-9.0.tar.xz","browser_download_url":"https://example.com/n9.0.tar.xz"},
+                {"name":"ffmpeg-n9.0-latest-linux64-gpl-shared-9.0.tar.xz","browser_download_url":"https://example.com/n9.0-shared.tar.xz"},
+                {"name":"ffmpeg-n9.0-latest-linuxarm64-gpl-9.0.tar.xz","browser_download_url":"https://example.com/n9.0-arm64.tar.xz"},
+                {"name":"ffmpeg-n9.0-latest-win64-gpl-9.0.zip","browser_download_url":"https://example.com/n9.0-win.zip"}
+            ]}
+            """;
+
+        var x64 = YtdlpService.SelectBtbnAsset(json, isArm64: false);
+        Assert.IsNotNull(x64);
+        Assert.AreEqual("9.0", x64.BranchVersion);
+        Assert.AreEqual("https://example.com/n9.0.tar.xz", x64.Url,
+            "the newest release branch, static (not shared), gpl, linux64");
+
+        var arm64 = YtdlpService.SelectBtbnAsset(json, isArm64: true);
+        Assert.IsNotNull(arm64);
+        Assert.AreEqual("https://example.com/n9.0-arm64.tar.xz", arm64.Url);
+    }
+
+    [TestMethod]
+    public void SelectBtbnAsset_NoReleaseBranchBuild_ReturnsNull()
+    {
+        // Master-only releases offer no versioned branch to pin: null makes
+        // the caller fail loudly instead of installing a rolling build.
+        const string json = """
+            {"assets":[
+                {"name":"ffmpeg-master-latest-linux64-gpl.tar.xz","browser_download_url":"https://example.com/master.tar.xz"}
+            ]}
+            """;
+        Assert.IsNull(YtdlpService.SelectBtbnAsset(json, isArm64: false));
+        Assert.IsNull(YtdlpService.SelectBtbnAsset("""{"assets":[]}""", isArm64: false));
     }
 
     [TestMethod]
