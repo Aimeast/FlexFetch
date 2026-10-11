@@ -35,10 +35,13 @@
 
             <h3>Periodic health check</h3>
             <div class="muted" style="margin-bottom:0.5rem">
-                Every 12 hours (by default) a one-time snapshot copy is probed
-                to answer "is the session still usable?". An unhealthy result
-                triggers a throttled automatic refresh; consecutive failures
-                raise an alert. It runs automatically once a snapshot exists.
+                Every 12 hours (by default) the session is checked. While the
+                snapshot is young a one-time copy is probed; an aged snapshot
+                runs the full refresh pipeline instead - its probe is the
+                same authoritative check, and the verdict lands here either
+                way. An unhealthy light check triggers a throttled automatic
+                refresh; consecutive failures raise an alert. It runs
+                automatically once a snapshot exists.
             </div>
             <div class="kv" id="canary-kv"></div>
         </div>

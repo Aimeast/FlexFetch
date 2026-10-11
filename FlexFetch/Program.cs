@@ -1,6 +1,13 @@
 ﻿using System.Text;
 using FlexFetch.Startup;
 
+// Capture the process start time before anything else. It must NOT be a
+// static field initializer: Program has no explicit static constructor, so
+// beforefieldinit defers the type initialization until the first static
+// field access - which would report the first /info request (the first
+// System page visit) instead of the actual process start.
+Program.StartedAt = DateTime.UtcNow;
+
 Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
 // Child-process entry used by the startup service to install the headless
@@ -32,8 +39,10 @@ return 0;
 // Expose the generated Program class for integration tests (WebApplicationFactory).
 public partial class Program
 {
-    /// <summary>Process start time (UTC), surfaced by the system info API.</summary>
-    public static readonly DateTime StartedAt = DateTime.UtcNow;
+    /// <summary>Process start time (UTC), surfaced by the system info API.
+    /// Assigned at the top of the entry point - see the note there for why
+    /// this is not a field initializer.</summary>
+    public static DateTime StartedAt { get; private set; }
 
     /// <summary>True when shutdown was requested via the system API, so the
     /// stop log can distinguish it from Ctrl+C / host signals.</summary>

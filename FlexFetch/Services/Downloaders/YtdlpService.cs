@@ -34,7 +34,9 @@ public sealed class YtdlpService
     /// <summary>Serializes whole upgrade runs (manual button + periodic service).</summary>
     private readonly SemaphoreSlim _upgradeLock = new(1, 1);
 
-    /// <summary>Injected latest-ffmpeg-version query (default: GitHub API); testable.</summary>
+    /// <summary>Injected latest-ffmpeg-version query (default: the upstream
+    /// stable version number via gyan.dev, or the ffmpeg-static release tag
+    /// on macOS); testable.</summary>
     private readonly Func<CancellationToken, Task<string?>> _fetchLatestFfmpegTag;
 
     /// <summary>Component currently being upgraded, or null when idle.</summary>
@@ -293,6 +295,7 @@ public sealed class YtdlpService
             process = System.Diagnostics.Process.Start(psi);
             if (process is null)
             {
+                _log.Warning("ffmpeg -version could not be started; reporting no version");
                 return null;
             }
 
@@ -300,11 +303,25 @@ public sealed class YtdlpService
             await process.WaitForExitAsync(timeout.Token);
             if (process.ExitCode != 0)
             {
+                // A silent null here once left the upgrade log saying
+                // "(version unknown)" with nothing to explain why.
+                var stderr = (await process.StandardError.ReadToEndAsync(timeout.Token)).Trim();
+                _log.Warning("ffmpeg -version exited {ExitCode}: {Detail}", process.ExitCode,
+                    stderr.Length == 0
+                        ? "(no stderr)"
+                        : string.Join(" | ", stderr.Split('\n',
+                            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).TakeLast(2)));
                 return null;
             }
 
             var first = output.Split('\n').FirstOrDefault()?.Trim();
-            return string.IsNullOrWhiteSpace(first) ? null : first;
+            if (string.IsNullOrWhiteSpace(first))
+            {
+                _log.Warning("ffmpeg -version produced no output; reporting no version");
+                return null;
+            }
+
+            return first;
         }
         catch (OperationCanceledException)
         {
@@ -467,14 +484,26 @@ public sealed class YtdlpService
         await upgrade();
     }
 
-    /// <summary>Upgrades yt-dlp via its native self-update (-U), through the proxy when configured.</summary>
+    /// <summary>Upgrades yt-dlp via its native self-update (-U), through the
+    /// proxy when configured. The daily verdict uses the uniform up-to-date
+    /// line; the tool's own output stays at Debug (and at Information when
+    /// it is NOT a routine no-op - upgrades and annotations need detail).</summary>
     public async Task UpgradeYtDlpAsync(CancellationToken cancellationToken = default)
     {
         await _installLock.WaitAsync(cancellationToken);
         try
         {
-            _log.Information("Upgrading yt-dlp");
-            await RunProcessAsync(BinaryPath, BuildArgs("-U"), cancellationToken);
+            var output = await RunComponentWithOutputAsync(BinaryPath, BuildArgs("-U"), cancellationToken);
+            if (ExtractYtdlpUpToDateVersion(output) is { } version)
+            {
+                _log.Debug("yt-dlp -U output: {Output}", output.Trim());
+                _log.Information("yt-dlp is up to date ({Version})", version);
+            }
+            else
+            {
+                _log.Information("yt-dlp -U output: {Output}", output.Trim());
+            }
+
             _ytdlpVersion = null; // the self-update may have changed the version
         }
         finally
@@ -486,15 +515,25 @@ public sealed class YtdlpService
     /// <summary>
     /// Upgrades deno via its native upgrade command. deno does not accept a
     /// --proxy argument, so the proxy is passed through the child process
-    /// environment (HTTPS_PROXY/HTTP_PROXY), like HttpGetUrl does.
-    /// </summary>
+    /// environment (HTTPS_PROXY/HTTP_PROXY), like HttpGetUrl does. The daily
+    /// verdict uses the uniform up-to-date line; the tool's own output stays
+    /// at Debug (and at Information when it is NOT a routine no-op).</summary>
     public async Task UpgradeDenoAsync(CancellationToken cancellationToken = default)
     {
         await _installLock.WaitAsync(cancellationToken);
         try
         {
-            _log.Information("Upgrading deno");
-            await RunProcessAsync(DenoPath, "upgrade", cancellationToken, GetProxy());
+            var output = await RunComponentWithOutputAsync(DenoPath, "upgrade", cancellationToken, GetProxy());
+            if (ExtractDenoUpToDateVersion(output) is { } version)
+            {
+                _log.Debug("deno upgrade output: {Output}", output.Trim());
+                _log.Information("deno is up to date ({Version})", version);
+            }
+            else
+            {
+                _log.Information("deno upgrade output: {Output}", output.Trim());
+            }
+
             _denoVersion = null;
         }
         finally
@@ -504,48 +543,29 @@ public sealed class YtdlpService
     }
 
     /// <summary>
-    /// Upgrades the bundled ffmpeg by re-downloading it (ffmpeg has no
-    /// self-upgrade command; the download is idempotent and overwrites the
-    /// existing binary). Before downloading, queries the latest stable
-    /// release and skips when the installed binary already matches (the
-    /// archive is large, so an unconditional re-download would be wasteful).
+    /// Upgrades the bundled ffmpeg by re-downloading it. The decision lives
+    /// in <see cref="UpgradeFfmpegCoreAsync"/> (static, delegate-injected,
+    /// unit-tested); this wrapper owns the install lock and the version memo.
     /// </summary>
     public async Task UpgradeFfmpegAsync(CancellationToken cancellationToken = default)
     {
-        string? latest;
-        try
-        {
-            latest = await _fetchLatestFfmpegTag(cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            // Cannot verify freshness (network/API issue): do not download
-            // blindly, keep whatever is installed.
-            _log.Warning(ex, "Could not query latest ffmpeg version; skipping upgrade");
-            return;
-        }
-
-        if (string.IsNullOrEmpty(latest))
-        {
-            _log.Warning("Latest ffmpeg version query returned no version; skipping upgrade");
-            return;
-        }
-
-        // Compare against the installed binary's own version string (the
-        // binary is the single source of truth - no sidecar marker file).
-        var localLine = await GetFfmpegVersionAsync(cancellationToken);
-        if (IsFfmpegUpToDate(localLine, latest))
-        {
-            _log.Information("ffmpeg is already up to date ({Version})", latest);
-            return;
-        }
-
         await _installLock.WaitAsync(cancellationToken);
         try
         {
-            _log.Information("Upgrading ffmpeg ({Old} -> {New})", ExtractFfmpegVersionNumber(localLine) ?? "none", latest);
-            await DownloadFfmpegAsync(cancellationToken);
-            _ffmpegVersion = null;
+            await UpgradeFfmpegCoreAsync(
+                _log,
+                _fetchLatestFfmpegTag,
+                getLocalVersion: () => GetFfmpegVersionAsync(CancellationToken.None),
+                refreshLocalVersion: () =>
+                {
+                    // The memo still holds the pre-download probe; drop it so
+                    // the completion log (and the next /info) reflect the new
+                    // binary.
+                    _ffmpegVersion = null;
+                    return GetFfmpegVersionAsync(CancellationToken.None);
+                },
+                download: DownloadFfmpegAsync,
+                cancellationToken);
         }
         finally
         {
@@ -554,13 +574,103 @@ public sealed class YtdlpService
     }
 
     /// <summary>
-    /// True when the installed ffmpeg version line already matches the given
-    /// release version (e.g. "ffmpeg version 7.1-essentials_build..." vs "7.1").
+    /// One ffmpeg upgrade round: query the latest release, skip when the
+    /// installed binary is not older (the download is large and the binary
+    /// source can lag the version source - see <see cref="IsFfmpegUpToDate"/>),
+    /// otherwise download and re-probe so the completion log states the
+    /// version actually installed. Returns true when a download happened.
+    /// </summary>
+    public static async Task<bool> UpgradeFfmpegCoreAsync(
+        ILogger log,
+        Func<CancellationToken, Task<string?>> fetchLatestVersion,
+        Func<Task<string?>> getLocalVersion,
+        Func<Task<string?>> refreshLocalVersion,
+        Func<CancellationToken, Task> download,
+        CancellationToken cancellationToken)
+    {
+        string? latest;
+        try
+        {
+            latest = await fetchLatestVersion(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            // Cannot verify freshness (network/API issue): do not download
+            // blindly, keep whatever is installed.
+            log.Warning(ex, "Could not query latest ffmpeg version; skipping upgrade");
+            return false;
+        }
+
+        if (string.IsNullOrEmpty(latest))
+        {
+            log.Warning("Latest ffmpeg version query returned no version; skipping upgrade");
+            return false;
+        }
+
+        // Compare against the installed binary's own version string (the
+        // binary is the single source of truth - no sidecar marker file).
+        var localLine = await getLocalVersion();
+        if (IsFfmpegUpToDate(localLine, latest))
+        {
+            // Uniform per-component verdict (yt-dlp/deno speak theirs too);
+            // both versions appear in the Upgrading line when they differ.
+            log.Information("ffmpeg is up to date ({Version})",
+                ExtractFfmpegVersionNumber(localLine) ?? "unknown");
+            return false;
+        }
+
+        log.Information("Upgrading ffmpeg ({Old} -> {New})",
+            ExtractFfmpegVersionNumber(localLine) ?? "none", latest);
+        await download(cancellationToken);
+
+        // Log the outcome with the binary's own words: the download source
+        // can serve an older build than the version query suggested (a
+        // stalled release repo or a stale cache) - the re-probe makes that
+        // visible instead of leaving the round silently "successful". The
+        // raw line is logged when it does not parse, so a new version-string
+        // flavor diagnoses itself.
+        var refreshed = await refreshLocalVersion();
+        var installed = ExtractFfmpegVersionNumber(refreshed);
+        log.Information("ffmpeg {Version} installed",
+            installed ?? refreshed ?? "(version unknown)");
+
+        // The binary supplier rebuilds daily: a round that fires between an
+        // upstream release and the supplier's rebuild installs the previous
+        // patch. Make that state explicit instead of looking like a silent
+        // no-op - the next round retries once the rebuild carries it.
+        if (Version.TryParse(installed, out var actual)
+            && Version.TryParse(ExtractReleaseVersion(latest), out var target)
+            && actual < target)
+        {
+            log.Information("ffmpeg binary source is still at {Installed} (upstream {Target}); retrying next round",
+                installed, ExtractReleaseVersion(latest));
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// True when the installed ffmpeg version line is not older than the
+    /// release version (e.g. "ffmpeg version 7.1-essentials_build..." vs
+    /// "7.1"). ">=" rather than "==": the binary download source can lag the
+    /// version query source (a stalled release repo, a stale cache), and an
+    /// installed build newer than the source's latest must not be
+    /// "upgraded" - re-downloading would rewrite the same bytes every cycle.
     /// </summary>
     public static bool IsFfmpegUpToDate(string? localVersionLine, string latestVersion)
     {
         var local = ExtractFfmpegVersionNumber(localVersionLine);
-        return local is not null && string.Equals(local, latestVersion, StringComparison.Ordinal);
+        var latest = ExtractReleaseVersion(latestVersion);
+        if (local is null || latest is null)
+        {
+            // Unrecognized input: only skip on an exact textual match, never
+            // on a guess (the installed binary could be older or newer).
+            return local is not null && string.Equals(local, latestVersion, StringComparison.Ordinal);
+        }
+
+        return Version.TryParse(local, out var parsedLocal) && Version.TryParse(latest, out var parsedLatest)
+            ? parsedLocal >= parsedLatest
+            : string.Equals(local, latest, StringComparison.Ordinal);
     }
 
     /// <summary>Extracts "9.0.1" from "ffmpeg version 9.0.1-essentials_build...", or null.</summary>
@@ -573,21 +683,85 @@ public sealed class YtdlpService
 
         // Match the full version number (major.minor[.patch...]) so e.g.
         // 9.0.1 is not truncated to 9.0 (which would never equal the remote
-        // release version and would trigger a needless re-download).
-        var match = System.Text.RegularExpressions.Regex.Match(versionLine, @"version\s+([0-9]+(?:\.[0-9]+)+)");
+        // release version and would trigger a needless re-download). The
+        // optional n/v prefix covers release-tag flavored builds - BtbN's
+        // report "ffmpeg version n9.0.2-25-g67b60c310b-20261010".
+        var match = System.Text.RegularExpressions.Regex.Match(versionLine, @"version\s+[nv]?([0-9]+(?:\.[0-9]+)+)");
         return match.Success ? match.Groups[1].Value : null;
     }
 
-    /// <summary>Returns the version of the latest stable ffmpeg release, or null.</summary>
+    /// <summary>Extracts "6.1.1" from a release tag/version string such as
+    /// "b6.1.1", "v7.1", "n9.0" or "9.0.2", or null when none is present.</summary>
+    public static string? ExtractReleaseVersion(string? versionTag)
+    {
+        if (string.IsNullOrWhiteSpace(versionTag))
+        {
+            return null;
+        }
+
+        var match = System.Text.RegularExpressions.Regex.Match(
+            versionTag.Trim(), @"^[nvb]?([0-9]+(?:\.[0-9]+)+)$");
+        return match.Success ? match.Groups[1].Value : null;
+    }
+
+    /// <summary>Strips ANSI color escapes so tool output can be matched
+    /// reliably (deno upgrade colors its version numbers).</summary>
+    public static string StripAnsi(string text) =>
+        System.Text.RegularExpressions.Regex.Replace(text, "\x1B\\[[0-9;]*[A-Za-z]", string.Empty);
+
+    /// <summary>Extracts the version from yt-dlp's self-update verdict
+    /// ("yt-dlp is up to date (stable@2026.08.19 from ...)"), or null when
+    /// the output is not a routine no-op - upgrades and annotations need
+    /// the full output at full level instead.</summary>
+    public static string? ExtractYtdlpUpToDateVersion(string output)
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(
+            output, @"is up to date \((?:[a-z]+@)?([0-9]+(?:\.[0-9]+)+)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        return match.Success ? match.Groups[1].Value : null;
+    }
+
+    /// <summary>Extracts the version from deno's upgrade verdict ("Local
+    /// deno version 2.9.7 is the most recent release", ANSI-colored), or
+    /// null when the output is not a routine no-op.</summary>
+    public static string? ExtractDenoUpToDateVersion(string output)
+    {
+        var clean = StripAnsi(output);
+        var match = System.Text.RegularExpressions.Regex.Match(
+            clean, @"deno version v?([0-9]+(?:\.[0-9]+)+) is the most recent",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        return match.Success ? match.Groups[1].Value : null;
+    }
+
+    /// <summary>Returns the version of the latest stable ffmpeg release, or
+    /// null. The version authority is the upstream stable number (gyan.dev's
+    /// plain-text endpoint - the same number ffmpeg.org announces), NOT the
+    /// binary supplier's own naming: the BtbN asset name only carries the
+    /// branch ("n9.0"), which is rebuilt daily under that same name, so a
+    /// patch release (9.0.2 -> 9.0.3) would be invisible there. BtbN's daily
+    /// rebuilds track upstream within a day, so a round that fires inside
+    /// that lag window re-installs the previous patch once and converges on
+    /// the next (surfaced by the retry note in the upgrade round). macOS
+    /// (dev only) keeps the ffmpeg-static tag as both its version and
+    /// binary source.</summary>
     private async Task<string?> GetLatestFfmpegTagAsync(CancellationToken cancellationToken = default)
     {
-        // gyan.dev publishes a plain-text endpoint with the current stable
-        // release version (e.g. "7.1"); stable builds avoid the rolling
-        // master/development artifacts.
-        const string url = "https://www.gyan.dev/ffmpeg/builds/release-version";
-        var bytes = await DownloadBytesAsync(url, cancellationToken);
-        var version = System.Text.Encoding.UTF8.GetString(bytes).Trim();
-        return string.IsNullOrEmpty(version) ? null : version;
+        if (!OperatingSystem.IsMacOS())
+        {
+            // gyan.dev publishes a plain-text endpoint with the current stable
+            // release version (e.g. "9.0.2"); stable builds avoid the rolling
+            // master/development artifacts.
+            const string url = "https://www.gyan.dev/ffmpeg/builds/release-version";
+            var bytes = await DownloadBytesAsync(url, cancellationToken);
+            var version = System.Text.Encoding.UTF8.GetString(bytes).Trim();
+            return string.IsNullOrEmpty(version) ? null : version;
+        }
+
+        // macOS: bare release tag from the ffmpeg-static repo.
+        const string macOSReleasesUrl = "https://api.github.com/repos/eugeneware/ffmpeg-static/releases/latest";
+        var json = System.Text.Encoding.UTF8.GetString(await DownloadBytesAsync(macOSReleasesUrl, cancellationToken));
+        using var document = System.Text.Json.JsonDocument.Parse(json);
+        return document.RootElement.TryGetProperty("tag_name", out var tag) ? tag.GetString() : null;
     }
 
     /// <summary>
@@ -607,10 +781,12 @@ public sealed class YtdlpService
     }
 
     /// <summary>
-    /// Runs a component binary with the given arguments and logs its output.
-    /// When a proxy is provided it is set on the child process environment.
+    /// Runs a component binary with the given arguments and returns its
+    /// combined output WITHOUT logging: the caller classifies it (uniform
+    /// up-to-date verdict vs. full detail). When a proxy is provided it is
+    /// set on the child process environment.
     /// </summary>
-    private async Task RunProcessAsync(string fileName, string args, CancellationToken cancellationToken, string? proxyUrl = null)
+    private async Task<string> RunComponentWithOutputAsync(string fileName, string args, CancellationToken cancellationToken, string? proxyUrl = null)
     {
         var psi = new System.Diagnostics.ProcessStartInfo
         {
@@ -627,15 +803,14 @@ public sealed class YtdlpService
             psi.Environment["HTTP_PROXY"] = proxyUrl;
         }
 
-        await RunProcessAsync(psi, cancellationToken, _log);
+        return await RunProcessWithOutputAsync(psi, cancellationToken);
     }
 
     /// <summary>
-    /// Runs a process to completion and throws on a non-zero exit code.
-    /// Shared with the session-side services (deno-based installs). When a
-    /// logger is given the combined output is logged on success.
+    /// Runs a process to completion, throws on a non-zero exit code and
+    /// returns the combined output.
     /// </summary>
-    public static async Task RunProcessAsync(System.Diagnostics.ProcessStartInfo psi, CancellationToken cancellationToken, ILogger? log = null)
+    public static async Task<string> RunProcessWithOutputAsync(System.Diagnostics.ProcessStartInfo psi, CancellationToken cancellationToken)
     {
         using var process = System.Diagnostics.Process.Start(psi)
             ?? throw new InvalidOperationException($"Failed to start process: {psi.FileName}");
@@ -649,15 +824,25 @@ public sealed class YtdlpService
                 $"{Path.GetFileName(psi.FileName)} failed (exit {process.ExitCode}): {stderr.Trim()}");
         }
 
+        // Some CLIs (e.g. deno upgrade) write their output to stderr even on
+        // success, so combine both streams to avoid an empty output.
+        return string.Join(Environment.NewLine,
+            new[] { stdout, stderr }.Where(s => !string.IsNullOrWhiteSpace(s)));
+    }
+
+    /// <summary>
+    /// Runs a process to completion and throws on a non-zero exit code.
+    /// Shared with the session-side services (deno-based installs). When a
+    /// logger is given the combined output is logged on success.
+    /// </summary>
+    public static async Task RunProcessAsync(System.Diagnostics.ProcessStartInfo psi, CancellationToken cancellationToken, ILogger? log = null)
+    {
+        var output = await RunProcessWithOutputAsync(psi, cancellationToken);
         if (log is null)
         {
             return;
         }
 
-        // Some CLIs (e.g. deno upgrade) write their output to stderr even on
-        // success, so log both streams to avoid an empty "output:" line.
-        var output = string.Join(Environment.NewLine,
-            new[] { stdout, stderr }.Where(s => !string.IsNullOrWhiteSpace(s)));
         log.Information("{File} {Args} output: {Output}",
             Path.GetFileName(psi.FileName),
             psi.Arguments.Length > 0 ? psi.Arguments : string.Join(' ', psi.ArgumentList),
@@ -740,42 +925,169 @@ public sealed class YtdlpService
             return;
         }
 
-        // Linux/macOS: gyan.dev serves Windows builds only, so pull a
-        // ready-to-run static binary from the ffmpeg-static GitHub releases
-        // - the same host as yt-dlp/deno, so a proxy policy that reaches
-        // those reaches this too.
-        var unixUrl = FfmpegDownloadUrl(
-            OperatingSystem.IsWindows(),
-            OperatingSystem.IsLinux(),
-            System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture
-                == System.Runtime.InteropServices.Architecture.Arm64);
-        var unixBytes = await DownloadBytesAsync(unixUrl, cancellationToken);
-        await File.WriteAllBytesAsync(FfmpegPath, unixBytes, cancellationToken);
+        if (OperatingSystem.IsLinux())
+        {
+            await DownloadLinuxFfmpegAsync(cancellationToken);
+            return;
+        }
+
+        // macOS (dev only): BtbN publishes no macOS builds, so the
+        // ffmpeg-static raw binary stays the source there.
+        var macOSUrl = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture
+            == System.Runtime.InteropServices.Architecture.Arm64
+                ? "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/ffmpeg-macOS-arm64"
+                : "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/ffmpeg-macOS-x64";
+        var macOSBytes = await DownloadBytesAsync(macOSUrl, cancellationToken);
+        await File.WriteAllBytesAsync(FfmpegPath, macOSBytes, cancellationToken);
         MakeExecutable(FfmpegPath);
     }
 
     /// <summary>
-    /// ffmpeg release download URL per platform. Windows: the gyan.dev
-    /// stable essentials archive; Linux/macOS: the ffmpeg-static project's
-    /// static binaries (gyan.dev has no builds for them).
+    /// Linux: BtbN FFmpeg-Builds is the static-build source the official
+    /// ffmpeg.org download page recommends, and it tracks the upstream
+    /// release branches (unlike the stalled ffmpeg-static repo this
+    /// replaces). Its assets are tar.xz archives - .NET has no Xz decoder,
+    /// so bin/ffmpeg is extracted with the system tar every deployment
+    /// image carries.
     /// </summary>
-    public static string FfmpegDownloadUrl(bool isWindows, bool isLinux, bool isArm64)
+    private async Task DownloadLinuxFfmpegAsync(CancellationToken cancellationToken)
     {
-        if (isWindows)
+        var asset = await GetBtbnAssetAsync(cancellationToken);
+        var archivePath = Path.Combine(Path.GetTempPath(), $"ffmpeg-{Guid.NewGuid():N}.tar.xz");
+        var extractDir = Path.Combine(Path.GetTempPath(), $"ffmpeg-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(extractDir);
+        try
         {
-            return "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
+            var bytes = await DownloadBytesAsync(asset.Url, cancellationToken);
+            await File.WriteAllBytesAsync(archivePath, bytes, cancellationToken);
+            // Extract only bin/ffmpeg: the full archive also carries several
+            // hundred MB of static libraries that would be discarded anyway.
+            await RunTarAsync(
+                $"-xJf \"{archivePath}\" -C \"{extractDir}\" --wildcards \"*/bin/ffmpeg\"",
+                cancellationToken);
+
+            var binary = Directory.EnumerateFiles(extractDir, "ffmpeg", SearchOption.AllDirectories)
+                .FirstOrDefault(path => string.Equals(
+                    Path.GetFileName(Path.GetDirectoryName(path)), "bin", StringComparison.Ordinal))
+                ?? throw new InvalidOperationException("ffmpeg archive does not contain bin/ffmpeg");
+            File.Copy(binary, FfmpegPath, overwrite: true);
+        }
+        finally
+        {
+            TryDelete(archivePath);
+            TryDelete(extractDir);
         }
 
-        if (isLinux)
+        MakeExecutable(FfmpegPath);
+    }
+
+    /// <summary>A BtbN FFmpeg-Builds release asset selected for install: the
+    /// download URL and the release-branch version its file name carries
+    /// (e.g. "9.0" for ffmpeg-n9.0-latest-linux64-gpl-9.0.tar.xz).</summary>
+    public sealed record BtbnFfmpegAsset(string Url, string BranchVersion);
+
+    /// <summary>
+    /// Resolves the BtbN auto-build asset to install: the newest
+    /// release-branch static GPL build for the running architecture. The
+    /// "latest" release is rebuilt daily and its assets track both git
+    /// master and the numbered release branches; master is skipped (rolling,
+    /// unversioned) and shared variants are skipped (they need bundled
+    /// libraries next to the binary).
+    /// </summary>
+    private async Task<BtbnFfmpegAsset> GetBtbnAssetAsync(CancellationToken cancellationToken)
+    {
+        const string releasesUrl = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest";
+        var json = System.Text.Encoding.UTF8.GetString(await DownloadBytesAsync(releasesUrl, cancellationToken));
+        return SelectBtbnAsset(json,
+            System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture
+                == System.Runtime.InteropServices.Architecture.Arm64)
+            ?? throw new InvalidOperationException(
+                "no ffmpeg release-branch build found in the BtbN auto-build release");
+    }
+
+    /// <summary>Pure selection over a BtbN release JSON: the newest
+    /// ffmpeg-nX.Y-latest-linux(64|arm64)-gpl-X.Y.tar.xz asset, or null.</summary>
+    public static BtbnFfmpegAsset? SelectBtbnAsset(string json, bool isArm64)
+    {
+        using var document = System.Text.Json.JsonDocument.Parse(json);
+        var platform = isArm64 ? "linuxarm64" : "linux64";
+        BtbnFfmpegAsset? best = null;
+        var bestVersion = new Version(0, 0);
+        foreach (var entry in document.RootElement.GetProperty("assets").EnumerateArray())
         {
-            return isArm64
-                ? "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/ffmpeg-linux-arm64"
-                : "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/ffmpeg-linux-x64";
+            var name = entry.GetProperty("name").GetString();
+            if (string.IsNullOrEmpty(name))
+            {
+                continue;
+            }
+
+            var match = System.Text.RegularExpressions.Regex.Match(
+                name, $@"^ffmpeg-n(?<branch>[0-9]+\.[0-9]+)-latest-{platform}-gpl-[0-9]+\.[0-9]+\.tar\.xz$");
+            if (!match.Success || !Version.TryParse(match.Groups["branch"].Value, out var version))
+            {
+                continue;
+            }
+
+            if (best is not null && version <= bestVersion)
+            {
+                continue;
+            }
+
+            var url = entry.GetProperty("browser_download_url").GetString();
+            if (string.IsNullOrEmpty(url))
+            {
+                continue;
+            }
+
+            best = new BtbnFfmpegAsset(url, match.Groups["branch"].Value);
+            bestVersion = version;
         }
 
-        return isArm64
-            ? "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/ffmpeg-macOS-arm64"
-            : "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/ffmpeg-macOS-x64";
+        return best;
+    }
+
+    /// <summary>Runs the system tar with the given arguments, bounded so a
+    /// stuck extraction cannot hold the install lock forever.</summary>
+    private static async Task RunTarAsync(string arguments, CancellationToken cancellationToken)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo("tar", arguments)
+        {
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        using var timeout = System.Threading.CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromMinutes(2));
+        using var process = System.Diagnostics.Process.Start(psi)
+            ?? throw new InvalidOperationException("tar could not be started");
+        var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
+        await process.WaitForExitAsync(timeout.Token);
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"tar extraction failed (exit {process.ExitCode}): {await stderr}");
+        }
+    }
+
+    /// <summary>Best-effort temp cleanup; the next run uses fresh paths.</summary>
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path, recursive: true);
+            }
+            else if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch
+        {
+            // Cleanup is best-effort.
+        }
     }
 
     /// <summary>

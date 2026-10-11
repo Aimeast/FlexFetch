@@ -61,6 +61,11 @@ public sealed class SystemApiTests
         Assert.AreNotEqual("unknown", body.BuildConfiguration);
         Assert.IsFalse(string.IsNullOrEmpty(body.PlaywrightVersion));
 
+        // Process start time must be a real timestamp: it is assigned at the
+        // top of the entry point (a static field initializer would be
+        // deferred by beforefieldinit and report the first /info request).
+        Assert.AreNotEqual(default, body.StartedAt);
+
         // Readiness matrix (what "all components installed" means). A fresh
         // data dir has no yt-dlp/deno components; the firefox layers depend
         // on the machine (a dev box has a global Playwright cache), so the
@@ -84,6 +89,7 @@ public sealed class SystemApiTests
         int QueuedTasks,
         int RunningTasks,
         int ConcurrencyLimit,
+        DateTime StartedAt,
         string Version,
         string GitLog,
         string BuildDateTime,

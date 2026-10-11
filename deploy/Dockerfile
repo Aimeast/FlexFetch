@@ -9,8 +9,10 @@
 #
 # Nothing the app can install itself is baked in: yt-dlp, deno, ffmpeg, the
 # Playwright Firefox AND its OS-level libraries are fetched at runtime into
-# the /data volume (ops.autoInstallDeps) - see BrowserInstaller. Only curl
-# is provided for in-container debugging.
+# the /data volume (ops.autoInstallDeps) - see BrowserInstaller. curl is for
+# in-container debugging; xz-utils is the one system tool the updater needs:
+# GNU tar unpacks the BtbN tar.xz ffmpeg archives by delegating to it, and
+# the slim base image does not carry it.
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
 WORKDIR /app
@@ -23,7 +25,7 @@ COPY deploy/appsettings.docker.json appsettings.template.json
 # build-args; runtime browser-dependency installs support the
 # FLEXFETCH_APT_MIRROR environment variable instead (see BrowserInstaller).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
+    && apt-get install -y --no-install-recommends curl xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # /data is the app's self-discovered data directory (database, logs,
