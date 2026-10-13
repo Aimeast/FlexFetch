@@ -6,6 +6,8 @@
 /// application/octet-stream (forced download). Sources:
 /// chromium mime_util.cc (kPrimaryMappings/kSecondaryMappings) and the
 /// Android mime.types list; only the audio and video entries are kept.
+/// The reverse direction (MIME type to extension, for routing and naming
+/// direct links) lives in MimeTypes.
 /// </summary>
 public static class FileMime
 {
@@ -111,38 +113,19 @@ public static class FileMime
     }
 
     /// <summary>
-    /// Default extension for a served media MIME type (".mp4" for video/mp4),
-    /// or null for unmapped and generic byte-stream types. Used to complete
-    /// URL-inferred file names whose path carries no extension.
+    /// True when a MIME type is a playable video/audio type (the inline
+    /// gate for serving stored files).
     /// </summary>
-    public static string? ExtensionFor(string? mime)
-    {
-        if (string.IsNullOrEmpty(mime) || mime == "application/octet-stream")
-        {
-            return null;
-        }
-
-        foreach (var (candidate, extensions) in MediaMappings)
-        {
-            if (candidate.Equals(mime, StringComparison.OrdinalIgnoreCase))
-            {
-                return "." + extensions.Split(',')[0];
-            }
-        }
-
-        return null;
-    }
+    public static bool IsMediaMime(string? mime) =>
+        !string.IsNullOrEmpty(mime)
+        && (mime.StartsWith("video/", StringComparison.OrdinalIgnoreCase)
+            || mime.StartsWith("audio/", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// True when the file is mapped to a playable video/audio type (the
     /// browser can play it inline); everything else downloads.
     /// </summary>
-    public static bool IsMedia(string? fileName)
-    {
-        var mime = For(fileName);
-        return mime.StartsWith("video/", StringComparison.OrdinalIgnoreCase)
-            || mime.StartsWith("audio/", StringComparison.OrdinalIgnoreCase);
-    }
+    public static bool IsMedia(string? fileName) => IsMediaMime(For(fileName));
 
     /// <summary>
     /// Builds the Content-Disposition header for a media file that is played

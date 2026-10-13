@@ -234,7 +234,7 @@ public class YtdlpDownloader : IDownloader
             };
         }
 
-        var fileName = $"{SanitizeTitle(data.Title)}.{data.Extension}";
+        var fileName = $"{SanitizeTitle(data.Title)}.{ResolveExtension(data)}";
         return new AnalysisResult
         {
             Title = data.Title ?? string.Empty,
@@ -484,6 +484,35 @@ public class YtdlpDownloader : IDownloader
             ct: cancellationToken,
             progress: dlProgress,
             overrideOptions: options);
+    }
+
+    /// <summary>
+    /// Picks the file extension of a single-video analysis. yt-dlp's generic
+    /// extractor answers direct file links it cannot classify (a signed .iso
+    /// download link, for one) with the placeholder extension
+    /// "unknown_video" and a title stripped of its real extension; appending
+    /// the placeholder would name the file "name.unknown_video". The direct
+    /// URL's own path extension is the better answer; "mp4" is the media
+    /// default when even the URL carries none.
+    /// </summary>
+    private static string ResolveExtension(VideoData data)
+    {
+        var ext = data.Extension;
+        if (!string.IsNullOrEmpty(ext)
+            && !ext.Equals("unknown_video", StringComparison.OrdinalIgnoreCase))
+        {
+            return ext;
+        }
+
+        var url = data.Url ?? data.WebpageUrl;
+        if (url is not null
+            && Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            && Path.GetExtension(uri.AbsolutePath) is { Length: > 0 } pathExtension)
+        {
+            return pathExtension[1..];
+        }
+
+        return "mp4";
     }
 
     protected static string SanitizeTitle(string? title)

@@ -38,21 +38,16 @@ public sealed class FileMimeTests
     }
 
     [TestMethod]
-    public void ExtensionFor_MediaMimes_ReturnsCanonicalExtension()
+    public void IsMediaMime_GatesVideoAndAudioOnly()
     {
-        Assert.AreEqual(".mp4", FileMime.ExtensionFor("video/mp4"));
-        Assert.AreEqual(".webm", FileMime.ExtensionFor("video/webm"));
-        Assert.AreEqual(".mp3", FileMime.ExtensionFor("audio/mpeg"));
-        Assert.AreEqual(".m4a", FileMime.ExtensionFor("audio/mp4"));
-    }
-
-    [TestMethod]
-    public void ExtensionFor_UnmappedMimes_ReturnsNull()
-    {
-        Assert.IsNull(FileMime.ExtensionFor("application/octet-stream"));
-        Assert.IsNull(FileMime.ExtensionFor("text/html"));
-        Assert.IsNull(FileMime.ExtensionFor(null));
-        Assert.IsNull(FileMime.ExtensionFor(""));
+        // The inline gate for serving: stored server-declared types replay
+        // verbatim, and only video/audio may render inline.
+        Assert.IsTrue(FileMime.IsMediaMime("video/mp4"));
+        Assert.IsTrue(FileMime.IsMediaMime("AUDIO/OGG"));
+        Assert.IsFalse(FileMime.IsMediaMime("application/pdf"));
+        Assert.IsFalse(FileMime.IsMediaMime("application/octet-stream"));
+        Assert.IsFalse(FileMime.IsMediaMime("text/html"));
+        Assert.IsFalse(FileMime.IsMediaMime(null));
     }
 
     [TestMethod]

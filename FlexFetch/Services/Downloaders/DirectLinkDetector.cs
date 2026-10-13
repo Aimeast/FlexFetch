@@ -1,67 +1,66 @@
-﻿using System.Net;
+﻿using System.Collections.Concurrent;
+using System.Net;
 using System.Net.Http.Headers;
 using FlexFetch.Services.Routing;
 
 namespace FlexFetch.Services.Downloaders;
 
 /// <summary>
-/// Detects whether a URL is a direct media file link (as opposed to a web
-/// page). Detection is two-tiered: a fast extension check on the URL path,
-/// and - when the extension is ambiguous - a HEAD probe of the response
-/// Content-Type (some direct videos have no media extension and are only
-/// identifiable by their MIME type).
+/// Detects whether a URL is a direct file link (as opposed to a web page)
+/// by asking the server: a HEAD probe - falling back to a one-byte Range
+/// GET - returns the served Content-Type and, when advertised, the real
+/// Content-Disposition file name. The answer routes the URL: a named file
+/// or a table-mapped MIME type downloads directly, pages and unknown
+/// payloads go to the media extractors.
 /// </summary>
 public static class DirectLinkDetector
 {
-    private static readonly HashSet<string> MediaExtensions = new(StringComparer.OrdinalIgnoreCase)
+    // Playlist manifests are parsed by yt-dlp, never saved as raw files:
+    // an HLS manifest becomes a playable stream, a plain m3u list a
+    // playlist expansion, a DASH manifest a media set.
+    private static readonly HashSet<string> ManifestExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".mp4", ".webm", ".mkv", ".mov", ".avi", ".flv",
-        ".ts", ".m3u8", ".m3u", ".mpd",
-        ".mp3", ".m4a", ".aac", ".ogg", ".wav", ".flac",
-        ".zip", ".tar", ".gz", ".7z", ".pdf", ".exe", ".bin",
+        ".m3u", ".m3u8", ".mpd",
     };
 
-    /// <summary>
-    /// True when the URL points at a playlist manifest (.m3u/.m3u8 HLS or
-    /// media list, .mpd DASH). Manifests must not be saved as raw files by
-    /// the generic downloader: yt-dlp parses them into either a playable
-    /// stream (HLS) or a playlist expansion (plain m3u lists).
-    /// </summary>
-    public static bool IsManifestExtension(string url)
+    /// <summary>True when a file name (URL path or advertised name) is a
+    /// playlist manifest (.m3u/.m3u8 HLS or media list, .mpd DASH).</summary>
+    public static bool IsManifestFileName(string? name)
     {
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        if (string.IsNullOrWhiteSpace(name))
         {
             return false;
         }
 
-        var ext = Path.GetExtension(uri.AbsolutePath);
-        return ext.Equals(".m3u", StringComparison.OrdinalIgnoreCase)
-            || ext.Equals(".m3u8", StringComparison.OrdinalIgnoreCase)
-            || ext.Equals(".mpd", StringComparison.OrdinalIgnoreCase);
+        return ManifestExtensions.Contains(Path.GetExtension(name));
     }
 
-    /// <summary>True when the URL path ends with a known media/download extension.</summary>
-    public static bool HasMediaExtension(string url)
-    {
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
-        {
-            return false;
-        }
-
-        return MediaExtensions.Contains(Path.GetExtension(uri.AbsolutePath));
-    }
+    /// <summary>True when the URL points at a playlist manifest.</summary>
+    public static bool IsManifestExtension(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri) && IsManifestFileName(uri.AbsolutePath);
 
     /// <summary>What the probe learned about a direct link: the served media
     /// type and, when the server advertises one, the real file name
     /// (Content-Disposition).</summary>
     public sealed record DirectLinkProbe(string? ContentType, string? FileName);
 
+    // Probe answers are memoized: routing probes a URL and the generic
+    // downloader's analysis wants the same answer, so one URL costs one
+    // network round trip. Signed download links expire, so successes age
+    // out quickly; failures age out faster still so a transient outage or
+    // a slow HEAD does not stick to the URL.
+    private static readonly ConcurrentDictionary<string, (DateTime At, DirectLinkProbe? Probe)> ProbeMemo = new();
+    private static readonly TimeSpan SuccessAge = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan FailureAge = TimeSpan.FromMinutes(1);
+    private const int MemoCapacity = 512;
+
     /// <summary>
     /// Probes the URL for its media type and real file name. HEAD goes first
     /// (the cheap form static file servers answer); a server that rejects or
     /// mishandles HEAD falls back to a one-byte Range GET, which succeeds
-    /// wherever the actual download would. Returns null only when the URL is
-    /// unreachable - the download itself would then fail the same way.
+    /// wherever the actual download would. Answers are memoized per URL.
+    /// Returns null only when the URL is unreachable - the download itself
+    /// would then fail the same way.
     /// </summary>
     public static async Task<DirectLinkProbe?> ProbeAsync(
         string url,
@@ -73,13 +72,26 @@ public static class DirectLinkDetector
             return null;
         }
 
+        if (ProbeMemo.TryGetValue(url, out var hit)
+            && DateTime.UtcNow - hit.At < (hit.Probe is null ? FailureAge : SuccessAge))
+        {
+            return hit.Probe;
+        }
+
         var (contentType, fileName) = await ProbeWithAsync(uri, proxy, HttpMethod.Head, cancellationToken);
         if (contentType is null)
         {
             (contentType, fileName) = await ProbeWithAsync(uri, proxy, HttpMethod.Get, cancellationToken);
         }
 
-        return contentType is null ? null : new DirectLinkProbe(contentType, fileName);
+        var probe = contentType is null ? null : new DirectLinkProbe(contentType, fileName);
+        if (ProbeMemo.Count >= MemoCapacity)
+        {
+            ProbeMemo.Clear();
+        }
+
+        ProbeMemo[url] = (DateTime.UtcNow, probe);
+        return probe;
     }
 
     private static async Task<(string? ContentType, string? FileName)> ProbeWithAsync(

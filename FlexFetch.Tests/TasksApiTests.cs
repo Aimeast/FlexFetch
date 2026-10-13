@@ -187,6 +187,43 @@ public sealed class TasksApiTests
     }
 
     [TestMethod]
+    public async Task TaskFile_StoredMimeType_ReplaysForExtensionlessName()
+    {
+        // The MIME the server declared at download time is replayed even
+        // when the file name carries no extension: the payload must not be
+        // misparsed as octet-stream, and media still plays inline.
+        using var factory = TestApp.CreateFactory(_dataDir!);
+        var (alice, aliceId) = await LoginAsync(factory, "alice");
+        var taskId = SeedCompletedTask(factory, aliceId, "stream", "VIDEODATA", "video/mp4");
+
+        var response = await alice.GetAsync($"/api/tasks/{taskId}/file");
+
+        Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+        Assert.AreEqual("video/mp4", response.Content.Headers.ContentType?.MediaType);
+        var disposition = response.Content.Headers.ContentDisposition;
+        Assert.IsNotNull(disposition);
+        Assert.AreEqual("inline", disposition.DispositionType);
+    }
+
+    [TestMethod]
+    public async Task TaskFile_ExtensionlessNameWithoutStoredType_ServesOctetStreamAttachment()
+    {
+        // Legacy records and servers that declare nothing fall back to the
+        // extension mapping: an unknown payload stays a forced download.
+        using var factory = TestApp.CreateFactory(_dataDir!);
+        var (alice, aliceId) = await LoginAsync(factory, "alice");
+        var taskId = SeedCompletedTask(factory, aliceId, "stream", "DATA");
+
+        var response = await alice.GetAsync($"/api/tasks/{taskId}/file");
+
+        Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+        Assert.AreEqual("application/octet-stream", response.Content.Headers.ContentType?.MediaType);
+        var disposition = response.Content.Headers.ContentDisposition;
+        Assert.IsNotNull(disposition);
+        Assert.AreEqual("attachment", disposition.DispositionType);
+    }
+
+    [TestMethod]
     public async Task TaskFile_MediaNonAsciiName_EncodesRfc5987()
     {
         using var factory = TestApp.CreateFactory(_dataDir!);
@@ -267,7 +304,7 @@ public sealed class TasksApiTests
         return (client, body!.Id);
     }
 
-    private string SeedCompletedTask(WebApplicationFactory<Program> factory, string ownerUserId, string fileName, string content)
+    private string SeedCompletedTask(WebApplicationFactory<Program> factory, string ownerUserId, string fileName, string content, string? contentType = null)
     {
         var taskId = FlexFetch.Entities.RandomId.New();
         var filesDir = Path.Combine(_dataDir!, "files", taskId);
@@ -283,6 +320,7 @@ public sealed class TasksApiTests
             OwnerUserId = ownerUserId,
             Url = "https://example.com/report.pdf",
             FileName = fileName,
+            ContentType = contentType,
             Status = FlexFetch.Enums.TaskStatus.Completed,
             Progress = 100,
         });

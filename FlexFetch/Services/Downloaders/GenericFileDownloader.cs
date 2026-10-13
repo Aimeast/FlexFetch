@@ -112,6 +112,7 @@ public sealed class GenericFileDownloader : IDownloader
 
             var fileName = ResolveFileName(response, analysis, url, task.FileName);
             task.FileName = fileName;
+            task.ContentType = SanitizeMimeType(response.Content.Headers.ContentType?.MediaType);
             _log.Information("Downloading {Url} to {File} ({Total} bytes)", url, fileName, totalLength);
 
             await using (var fileStream = new FileStream(
@@ -176,6 +177,24 @@ public sealed class GenericFileDownloader : IDownloader
         }
 
         return response;
+    }
+
+    /// <summary>
+    /// Keeps a replayable media type: a bare type/subtype token pair,
+    /// bounded in length. A hostile server must not smuggle header syntax
+    /// into a stored task record that serving endpoints echo back.
+    /// </summary>
+    private static string? SanitizeMimeType(string? contentType)
+    {
+        if (string.IsNullOrWhiteSpace(contentType))
+        {
+            return null;
+        }
+
+        var cleaned = contentType.Trim();
+        var valid = cleaned.Length <= 100
+            && cleaned.All(c => char.IsAsciiLetterOrDigit(c) || "!#$%&'*+-.^_`|~/".Contains(c));
+        return valid ? cleaned : null;
     }
 
     private static string ResolveFileName(HttpResponseMessage response, AnalysisResult analysis, Uri url, string? taskFileName)

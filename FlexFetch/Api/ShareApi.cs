@@ -101,12 +101,12 @@ public static class ShareApi
             }
 
             var stream = File.OpenRead(path);
-            // Media is served with an inline disposition carrying the real
-            // name (same contract as the tasks file endpoint): the browser
-            // plays it inline in a new tab and uses that name for "save
-            // link as"; other types keep the attachment name and download.
-            var mime = FileMime.For(task.FileName);
-            if (FileMime.IsMedia(task.FileName))
+            // Same contract as the tasks file endpoint: the server-declared
+            // MIME wins over extension mapping, media plays inline with a
+            // disposition carrying the real name, other types keep the
+            // attachment name and download.
+            var mime = task.ContentType ?? FileMime.For(task.FileName);
+            if (FileMime.IsMediaMime(mime))
             {
                 var disposition = FileMime.InlineDispositionFor(task.FileName);
                 if (disposition is not null)
