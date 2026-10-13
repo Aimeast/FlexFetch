@@ -52,33 +52,21 @@ public sealed class DownloaderFactoryTests
     }
 
     [TestMethod]
-    public void SelectDownloaders_DirectMediaLink_PromotesGenericFirst()
+    public void SelectDownloaders_DirectFileLinkWithQuery_StillReturnsGenericChain()
     {
+        // Whether a URL is a direct file is decided by probing the server in
+        // the executor, not from the URL text: selection returns the fixed
+        // generic chain for any non-specific URL.
         var ytdlp = new FakeDownloader("Ytdlp", isDomainSpecific: false, "http");
         var generic = new FakeDownloader("Generic", isDomainSpecific: false, "http");
         var factory = new DownloaderFactory(new IDownloader[] { ytdlp, generic });
 
-        // A direct media URL (no specific match): generic goes first.
-        var selected = factory.SelectDownloaders("https://cdn.example.com/clip.mp4");
+        var selected = factory.SelectDownloaders(
+            "https://software.download.example.com/os/professional_x64_26300_9457.iso?t=abc&P1=1");
 
         Assert.HasCount(2, selected);
-        Assert.AreEqual("Generic", selected[0].Type);
-        Assert.AreEqual("Ytdlp", selected[1].Type);
-    }
-
-    [TestMethod]
-    public void SelectDownloaders_ManifestLink_KeepsYtdlpFirst()
-    {
-        // Playlist manifests (.m3u/.m3u8/.mpd) must be parsed by yt-dlp (HLS
-        // stream or playlist expansion), not saved as raw files by the generic
-        // downloader: the generic file downloader is not promoted.
-        var ytdlp = new FakeDownloader("Ytdlp", isDomainSpecific: false, "http");
-        var generic = new FakeDownloader("Generic", isDomainSpecific: false, "http");
-        var factory = new DownloaderFactory(new IDownloader[] { generic, ytdlp });
-
-        Assert.AreEqual("Ytdlp", factory.SelectDownloaders("https://cdn.example.com/stream.m3u8")[0].Type);
-        Assert.AreEqual("Ytdlp", factory.SelectDownloaders("https://cdn.example.com/list.m3u")[0].Type);
-        Assert.AreEqual("Ytdlp", factory.SelectDownloaders("https://cdn.example.com/manifest.mpd")[0].Type);
+        Assert.AreEqual("Ytdlp", selected[0].Type);
+        Assert.AreEqual("Generic", selected[1].Type);
     }
 
     [TestMethod]

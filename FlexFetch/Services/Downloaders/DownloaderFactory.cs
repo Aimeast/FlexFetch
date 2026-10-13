@@ -46,9 +46,9 @@ public sealed class DownloaderFactory
     /// <summary>
     /// Selects downloader candidates for a URL. A matching domain-specific
     /// downloader is returned alone (more than one is a runtime error); with
-    /// no specific match the generic chain is returned in its fixed order,
-    /// promoting the generic file downloader to the front for direct media
-    /// links so a direct file downloads straight away.
+    /// no specific match the generic chain is returned in its fixed order.
+    /// Whether a URL is a direct file is decided later by probing the server
+    /// (DownloaderTaskExecutor), not from the URL text.
     /// </summary>
     public IReadOnlyList<IDownloader> SelectDownloaders(string url)
     {
@@ -66,25 +66,10 @@ public sealed class DownloaderFactory
             return specific;
         }
 
-        var candidates = _downloaders
+        return _downloaders
             .Where(d => !d.IsDomainSpecific && d.CanHandle(url))
             .OrderBy(d => Array.IndexOf(GenericChainOrder, d.Type))
             .ToList();
-        // Direct file links skip the slow yt-dlp attempt and download straight
-        // away - except playlist manifests (.m3u/.m3u8/.mpd), which yt-dlp must
-        // parse first: an HLS manifest becomes a playable stream, a plain m3u
-        // list expands into playlist entries (child tasks).
-        if (DirectLinkDetector.HasMediaExtension(url) && !DirectLinkDetector.IsManifestExtension(url))
-        {
-            var generic = candidates.FirstOrDefault(d => d.Type == "Generic");
-            if (generic is not null && candidates.Count > 0 && candidates[0] != generic)
-            {
-                candidates.Remove(generic);
-                candidates.Insert(0, generic);
-            }
-        }
-
-        return candidates;
     }
 
     /// <summary>The guaranteed fallback downloader (end of the generic chain).</summary>

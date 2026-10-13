@@ -71,6 +71,42 @@ public sealed class YtdlpDownloaderTests
     }
 
     [TestMethod]
+    public void BuildAnalysis_DirectLinkUnknownVideoExt_TakesExtensionFromUrl()
+    {
+        // yt-dlp's generic extractor labels direct file links it cannot
+        // classify with the placeholder ext "unknown_video" and strips the
+        // extension from the title (a signed .iso download link, for one).
+        // The suggested file name must keep the URL's real extension.
+        var downloader = CreateDownloader();
+        var data = new VideoData
+        {
+            Title = "professional_x64_zh-cn_26300_9457",
+            Extension = "unknown_video",
+            Url = "https://software.download.example.com/dbazure/professional_x64_zh-cn_26300_9457.iso?t=abc&P1=1",
+        };
+
+        var analysis = downloader.BuildAnalysis(data);
+
+        Assert.AreEqual("professional_x64_zh-cn_26300_9457.iso", analysis.SuggestedFileName);
+    }
+
+    [TestMethod]
+    public void BuildAnalysis_UnknownVideoExtWithoutUrlExtension_FallsBackToMp4()
+    {
+        var downloader = CreateDownloader();
+        var data = new VideoData
+        {
+            Title = "Sample Clip",
+            Extension = "unknown_video",
+            Url = "https://example.com/file?taskId=1",
+        };
+
+        var analysis = downloader.BuildAnalysis(data);
+
+        Assert.AreEqual("Sample Clip.mp4", analysis.SuggestedFileName);
+    }
+
+    [TestMethod]
     public void ExtractFfmpegVersionNumber_ParsesStableVersion()
     {
         Assert.AreEqual("7.1", YtdlpService.ExtractFfmpegVersionNumber(

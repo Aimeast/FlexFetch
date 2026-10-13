@@ -81,6 +81,17 @@ public sealed class BrowserParsingDownloader : IDownloader
         };
     }
 
+    // Sniffing-only URL-extension fallback: rendered-page responses without
+    // a usable Content-Type are still collected as media by their extension.
+    // This list does not route downloads - collected URLs become child tasks
+    // and go through the normal probe-based routing.
+    private static readonly HashSet<string> SniffedMediaExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".mp4", ".webm", ".mkv", ".mov", ".avi", ".flv",
+        ".ts", ".m3u8", ".m3u", ".mpd",
+        ".mp3", ".m4a", ".aac", ".ogg", ".wav", ".flac",
+    };
+
     /// <summary>
     /// Classifies a network response as media based on Content-Type (video/*,
     /// audio/*, HLS/DASH manifests - the shared DirectLinkDetector rules) with
@@ -97,7 +108,8 @@ public sealed class BrowserParsingDownloader : IDownloader
             return true;
         }
 
-        return DirectLinkDetector.HasMediaExtension(url);
+        return Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            && SniffedMediaExtensions.Contains(Path.GetExtension(uri.AbsolutePath));
     }
 
     /// <summary>Browser sniffing always expands children; nothing to download here.</summary>

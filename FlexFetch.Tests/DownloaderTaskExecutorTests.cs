@@ -2,6 +2,7 @@
 using FlexFetch.Entities;
 using FlexFetch.Services;
 using FlexFetch.Services.Downloaders;
+using FlexFetch.Services.Routing;
 using FlexFetch.Services.Tasks;
 using Serilog;
 
@@ -74,6 +75,134 @@ public sealed class DownloaderTaskExecutorTests
     }
 
     [TestMethod]
+    public async Task ExecuteAsync_UnknownFileExtension_PromotesGenericByContentType()
+    {
+        // Direct file links whose URL extension tells nothing (.dmg plus a
+        // signed query string) are promoted by the server's answer: the
+        // octet-stream type maps to an extension in the MIME table, so the
+        // file downloads straight away instead of being renamed by yt-dlp's
+        // "unknown_video" placeholder.
+        using var server = new TestHttpServer(_ => new TestHttpServer.HttpResponse(
+            200,
+            Array.Empty<byte>(),
+            new Dictionary<string, string> { ["Content-Type"] = "application/octet-stream" }));
+
+        var task = new TaskItem { OwnerUserId = "user-1", Url = server.BaseUrl + "/setup_x64_9457.dmg?t=abc" };
+        var executor = CreateExecutor();
+
+        await executor.ExecuteAsync(task, _ => { }, CancellationToken.None);
+
+        Assert.AreEqual("Generic", task.DownloaderType);
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_HtmlAnswer_KeepsYtdlpFirst()
+    {
+        // Pages (text/html, absent from the MIME table) and unknown payloads
+        // stay with the extractors: only server-named files and table-mapped
+        // types are direct downloads.
+        using var server = new TestHttpServer(_ => new TestHttpServer.HttpResponse(
+            200,
+            Array.Empty<byte>(),
+            new Dictionary<string, string> { ["Content-Type"] = "text/html" }));
+
+        var task = new TaskItem { OwnerUserId = "user-1", Url = server.BaseUrl + "/watch?id=1" };
+        var executor = CreateExecutor();
+
+        await executor.ExecuteAsync(task, _ => { }, CancellationToken.None);
+
+        Assert.AreEqual("Ytdlp", task.DownloaderType);
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_ServerNamedFile_DownloadsUnderAdvertisedName()
+    {
+        // The signed image-ISO scenario end to end: the probe sees a
+        // disposition name and octet-stream, the generic downloader is
+        // promoted, and the file lands under the advertised name with the
+        // served MIME stored for serving - the routing probe is the only
+        // probe (the analysis reuses the memoized answer).
+        using var server = new TestHttpServer(_ => new TestHttpServer.HttpResponse(
+            200,
+            new byte[] { 1, 2, 3 },
+            new Dictionary<string, string>
+            {
+                ["Content-Type"] = "application/octet-stream",
+                ["Content-Disposition"] = "attachment; filename=professional_x64_zh-cn_26300_9457.iso",
+            }));
+
+        var task = new TaskItem
+        {
+            OwnerUserId = "user-1",
+            Url = server.BaseUrl + "/dbazure/professional_x64_zh-cn_26300_9457.iso?t=abc",
+        };
+        var factory = new DownloaderFactory(new IDownloader[]
+        {
+            new FakeDownloader("Ytdlp"),
+            new GenericFileDownloader(new DirectProxyService(), _storage!, new TestConfig(), Log),
+        });
+        var executor = new DownloaderTaskExecutor(factory, new DirectProxyService(), _tasks!, _storage!, Log);
+
+        await executor.ExecuteAsync(task, _ => { }, CancellationToken.None);
+
+        Assert.AreEqual("Generic", task.DownloaderType);
+        Assert.AreEqual("professional_x64_zh-cn_26300_9457.iso", task.FileName);
+        Assert.AreEqual("application/octet-stream", task.ContentType);
+        Assert.IsTrue(File.Exists(_storage!.GetTaskFilePath(task, "professional_x64_zh-cn_26300_9457.iso")));
+        Assert.HasCount(2, server.Requests);
+        Assert.AreEqual("HEAD", server.Requests[0].Method);
+        Assert.AreEqual("GET", server.Requests[1].Method);
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_ManifestDispositionName_KeepsYtdlpFirst()
+    {
+        // A manifest served with a Content-Disposition (some CDNs do) is
+        // still a playlist for yt-dlp, never a raw file download.
+        using var server = new TestHttpServer(_ => new TestHttpServer.HttpResponse(
+            200,
+            Array.Empty<byte>(),
+            new Dictionary<string, string>
+            {
+                ["Content-Type"] = "application/octet-stream",
+                ["Content-Disposition"] = "attachment; filename=stream.m3u8",
+            }));
+
+        var task = new TaskItem { OwnerUserId = "user-1", Url = server.BaseUrl + "/live/stream" };
+        var executor = CreateExecutor();
+
+        await executor.ExecuteAsync(task, _ => { }, CancellationToken.None);
+
+        Assert.AreEqual("Ytdlp", task.DownloaderType);
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_DomainSpecificMatch_SkipsProbe()
+    {
+        // Domain-specific matchers claim their URLs alone: no probe round
+        // trip is spent on pages they will handle anyway.
+        using var server = new TestHttpServer(_ => new TestHttpServer.HttpResponse(
+            200,
+            Array.Empty<byte>(),
+            new Dictionary<string, string> { ["Content-Type"] = "text/html" }));
+
+        var site = new FakeDownloader("Site") { DomainSpecific = true };
+        var factory = new DownloaderFactory(new IDownloader[]
+        {
+            site,
+            new FakeDownloader("Generic"),
+            new FakeDownloader("Ytdlp"),
+        });
+        var executor = new DownloaderTaskExecutor(factory, new DirectProxyService(), _tasks!, _storage!, Log);
+        var task = new TaskItem { OwnerUserId = "user-1", Url = server.BaseUrl + "/watch" };
+
+        await executor.ExecuteAsync(task, _ => { }, CancellationToken.None);
+
+        Assert.AreEqual("Site", task.DownloaderType);
+        Assert.IsEmpty(server.Requests);
+    }
+
+    [TestMethod]
     public async Task ExecuteAsync_PinnedDownloaderType_UsesItDirectly()
     {
         // A child task whose parent analysis already resolved the downloader
@@ -120,7 +249,7 @@ public sealed class DownloaderTaskExecutorTests
         // both so every later file operation finds the directory without
         // re-resolving the parent.
         var task = new TaskItem { OwnerUserId = "user-1", Url = "https://example.com/x" };
-        var executor = CreateExecutor();
+        var executor = CreateExecutor(probe: ProbeNone);
 
         await executor.ExecuteAsync(task, _ => { }, CancellationToken.None);
 
@@ -151,7 +280,8 @@ public sealed class DownloaderTaskExecutorTests
             {
                 capturedFolder = parent.StorageFolder;
                 return "child-id";
-            });
+            },
+            ProbeNone);
 
         var parent = new TaskItem { OwnerUserId = "user-1", Url = "https://example.com/list" };
         var result = await executor.ExecuteAsync(parent, _ => { }, CancellationToken.None);
@@ -198,7 +328,8 @@ public sealed class DownloaderTaskExecutorTests
             new DirectProxyService(),
             _tasks,
             _storage,
-            Log);
+            Log,
+            probe: ProbeNone);
 
         await executor.ExecuteAsync(child, _ => { }, CancellationToken.None);
 
@@ -208,14 +339,22 @@ public sealed class DownloaderTaskExecutorTests
         Assert.AreEqual("ep [C001].mp4", _tasks.GetById("C001")!.FileName);
     }
 
-    private DownloaderTaskExecutor CreateExecutor(Func<TaskItem, MediaChild, string?, string>? submitChild = null)
+    /// <summary>Probe stub for tests whose URLs name no real server: the
+    /// routing falls through to the plain generic chain.</summary>
+    private static Task<DirectLinkDetector.DirectLinkProbe?> ProbeNone(
+        string url, IProxyService proxy, CancellationToken cancellationToken) =>
+        Task.FromResult<DirectLinkDetector.DirectLinkProbe?>(null);
+
+    private DownloaderTaskExecutor CreateExecutor(
+        Func<TaskItem, MediaChild, string?, string>? submitChild = null,
+        Func<string, IProxyService, CancellationToken, Task<DirectLinkDetector.DirectLinkProbe?>>? probe = null)
     {
         var factory = new DownloaderFactory(new IDownloader[]
         {
             new FakeDownloader("Generic"),
             new FakeDownloader("Ytdlp"),
         });
-        return new DownloaderTaskExecutor(factory, new DirectProxyService(), _tasks!, _storage!, Log, submitChild);
+        return new DownloaderTaskExecutor(factory, new DirectProxyService(), _tasks!, _storage!, Log, submitChild, probe);
     }
 
     private sealed class FakeDownloader : IDownloader
@@ -224,7 +363,9 @@ public sealed class DownloaderTaskExecutorTests
 
         public string Type { get; }
 
-        public bool IsDomainSpecific => false;
+        public bool IsDomainSpecific => DomainSpecific;
+
+        public bool DomainSpecific { get; init; }
 
         public string Title { get; set; } = "t";
 

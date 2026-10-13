@@ -35,6 +35,12 @@ public sealed class TaskItem
 
     public string? FileName { get; set; }
 
+    /// <summary>Content-Type the server declared for this file, captured at
+    /// download time and replayed when serving so clients cannot misparse
+    /// the payload. Null on legacy records and when the server declared
+    /// nothing - extension mapping decides then.</summary>
+    public string? ContentType { get; set; }
+
     public long? FileSize { get; set; }
 
     public double Progress { get; set; }

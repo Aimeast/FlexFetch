@@ -84,9 +84,10 @@ public static class FileNameRules
     /// <summary>
     /// Picks the display name for a direct link: the server-advertised name
     /// (Content-Disposition) when the probe saw one, else the URL path
-    /// segment - extended from the probed Content-Type when the segment has
-    /// no extension (share-style endpoints like "/file?taskId=..." would
-    /// otherwise name every download after their literal last segment).
+    /// segment - extended from the probed Content-Type through the MIME
+    /// table when the segment has no extension (share-style endpoints like
+    /// "/file?taskId=..." and extension-less direct videos would otherwise
+    /// name every download after their literal last segment).
     /// </summary>
     public static string FromUrlAndProbe(string url, string? contentType, string? dispositionName)
     {
@@ -98,7 +99,7 @@ public static class FileNameRules
         var inferred = Sanitize(InferFromUrl(url));
         if (!string.IsNullOrWhiteSpace(contentType)
             && string.IsNullOrEmpty(Path.GetExtension(inferred))
-            && FileMime.ExtensionFor(contentType) is { } extension)
+            && MimeTypes.ExtensionFor(contentType) is { } extension)
         {
             inferred += extension;
         }

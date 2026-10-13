@@ -10,10 +10,10 @@ namespace FlexFetch.Services.Downloaders;
 /// <summary>
 /// Bridges TaskService and the downloader plugins: selects a downloader by
 /// match rules, analyzes the URL, expands playlists into child tasks and
-/// downloads - degrading to the next candidate on failure. Direct media
-/// links (by extension, or by HEAD-probed Content-Type when the URL has no
-/// extension) are handed to the generic file downloader right away instead
-/// of wasting a slow yt-dlp attempt.
+/// downloads - degrading to the next candidate on failure. URLs the server
+/// answers with a file (a Content-Disposition name, or a MIME type that
+/// maps to an extension) are handed to the generic file downloader right
+/// away instead of wasting a slow yt-dlp attempt.
 /// </summary>
 public sealed class DownloaderTaskExecutor : ITaskExecutor
 {
@@ -26,13 +26,17 @@ public sealed class DownloaderTaskExecutor : ITaskExecutor
     /// <summary>Creates a child task (parent, child, referrer) -> child id.</summary>
     private readonly Func<TaskItem, MediaChild, string?, string> _submitChild;
 
+    /// <summary>The server probe behind direct-file routing (injectable in tests).</summary>
+    private readonly Func<string, IProxyService, CancellationToken, Task<DirectLinkDetector.DirectLinkProbe?>> _probe;
+
     public DownloaderTaskExecutor(
         DownloaderFactory factory,
         IProxyService proxy,
         ITaskRepository tasks,
         StorageService storage,
         ILogger log,
-        Func<TaskItem, MediaChild, string?, string>? submitChild = null)
+        Func<TaskItem, MediaChild, string?, string>? submitChild = null,
+        Func<string, IProxyService, CancellationToken, Task<DirectLinkDetector.DirectLinkProbe?>>? probe = null)
     {
         _factory = factory;
         _proxy = proxy;
@@ -41,6 +45,7 @@ public sealed class DownloaderTaskExecutor : ITaskExecutor
         _log = log;
         _submitChild = submitChild
             ?? ((_, _, _) => throw new InvalidOperationException("Child task submission is not configured"));
+        _probe = probe ?? DirectLinkDetector.ProbeAsync;
     }
 
     public async Task<TaskExecutionResult> ExecuteAsync(
@@ -65,7 +70,7 @@ public sealed class DownloaderTaskExecutor : ITaskExecutor
         else
         {
             candidates = _factory.SelectDownloaders(task.Url);
-            candidates = await PromoteDirectLinkAsync(candidates, task.Url, cancellationToken);
+            candidates = await PromoteDirectFileAsync(candidates, task.Url, cancellationToken);
         }
 
         Exception? lastError = null;
@@ -179,35 +184,40 @@ public sealed class DownloaderTaskExecutor : ITaskExecutor
     }
 
     /// <summary>
-    /// When the URL has no media extension but the server serves a media
-    /// Content-Type (direct video without a suffix), promote the generic
-    /// downloader to the front so the file is downloaded directly. The probe
-    /// falls back from HEAD to a one-byte Range GET, so it answers anywhere
-    /// the download itself would - a failed HEAD used to leave yt-dlp in
-    /// front, and its generic extractor then renamed the file after the URL
-    /// ("file" + mime extension) instead of the served Content-Disposition.
+    /// Asks the server what it serves (HEAD, falling back to a one-byte
+    /// Range GET) and promotes the generic file downloader to the front when
+    /// the answer is a file: the response carries a Content-Disposition name,
+    /// or the Content-Type maps to an extension in the MIME table. The file
+    /// is then named and downloaded straight away; handing such links to
+    /// yt-dlp first made its generic extractor rename them after its
+    /// "unknown_video" placeholder instead. Pages (text/html and friends,
+    /// absent from the MIME table), HLS/DASH manifests, probe failures and
+    /// domain-specific matches keep the normal chain.
     /// </summary>
-    private async Task<IReadOnlyList<IDownloader>> PromoteDirectLinkAsync(
+    private async Task<IReadOnlyList<IDownloader>> PromoteDirectFileAsync(
         IReadOnlyList<IDownloader> candidates,
         string url,
         CancellationToken cancellationToken)
     {
-        if (DirectLinkDetector.HasMediaExtension(url) || !Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        // Domain-specific matchers claim their URLs alone; a probe would be
+        // a wasted round trip on every video page.
+        if (candidates.Count == 0 || candidates[0].IsDomainSpecific || !Uri.TryCreate(url, UriKind.Absolute, out _))
         {
             return candidates;
         }
 
-        // Only probe extension-less URLs; URLs with a page-like extension
-        // (e.g. .html) are pages and go through the normal chain.
-        if (!string.IsNullOrEmpty(Path.GetExtension(uri.AbsolutePath)))
-        {
-            return candidates;
-        }
-
-        var probe = await DirectLinkDetector.ProbeAsync(url, _proxy, cancellationToken);
+        var probe = await _probe(url, _proxy, cancellationToken);
         if (probe is null
-            || !DirectLinkDetector.IsMediaContentType(probe.ContentType)
-            || DirectLinkDetector.IsManifestContentType(probe.ContentType))
+            || DirectLinkDetector.IsManifestContentType(probe.ContentType)
+            || DirectLinkDetector.IsManifestFileName(probe.FileName))
+        {
+            return candidates;
+        }
+
+        // A file either way: the server named it, or its type maps to an
+        // extension (video/mp4 on an extension-less URL, a PDF, an ISO).
+        // Unmapped types (HTML pages among them) belong to the extractors.
+        if (string.IsNullOrWhiteSpace(probe.FileName) && MimeTypes.ExtensionFor(probe.ContentType) is null)
         {
             return candidates;
         }
@@ -218,7 +228,8 @@ public sealed class DownloaderTaskExecutor : ITaskExecutor
             return candidates;
         }
 
-        _log.Information("Direct media link detected by Content-Type {ContentType}", probe.ContentType);
+        _log.Information("Direct file link detected (type {ContentType}, advertised name {Name})",
+            probe.ContentType, probe.FileName ?? "none");
         return new[] { generic }.Concat(candidates.Where(d => d != generic)).ToList();
     }
 }

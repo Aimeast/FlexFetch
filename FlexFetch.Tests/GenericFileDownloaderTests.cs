@@ -64,6 +64,38 @@ public sealed class GenericFileDownloaderTests
     }
 
     [TestMethod]
+    public async Task Download_StoresServerDeclaredMimeType()
+    {
+        // The served Content-Type is captured on the task (parameters
+        // stripped) so serving endpoints can replay it verbatim - clients
+        // must not misparse a file whose name carries no extension.
+        using var server = new TestHttpServer(_ => new TestHttpServer.HttpResponse(
+            200,
+            new byte[] { 1 },
+            new Dictionary<string, string> { ["Content-Type"] = "video/mp4" }));
+
+        var task = new TaskItem { Id = "t7", Url = server.BaseUrl + "/stream", OwnerUserId = "u" };
+        var analysis = new FlexFetch.Services.Downloaders.AnalysisResult { Title = "s", DirectUrl = task.Url };
+
+        await _downloader!.DownloadAsync(task, analysis, _ => { }, CancellationToken.None);
+
+        Assert.AreEqual("video/mp4", task.ContentType);
+    }
+
+    [TestMethod]
+    public async Task Download_LeavesContentTypeNullWhenServerDeclaresNone()
+    {
+        using var server = new TestHttpServer(_ => new TestHttpServer.HttpResponse(200, new byte[] { 1 }));
+
+        var task = new TaskItem { Id = "t8", Url = server.BaseUrl + "/raw", OwnerUserId = "u" };
+        var analysis = new FlexFetch.Services.Downloaders.AnalysisResult { Title = "r", DirectUrl = task.Url };
+
+        await _downloader!.DownloadAsync(task, analysis, _ => { }, CancellationToken.None);
+
+        Assert.IsNull(task.ContentType);
+    }
+
+    [TestMethod]
     public async Task Download_Http500_ThrowsRetryable()
     {
         using var server = new TestHttpServer(_ => new TestHttpServer.HttpResponse(500, Array.Empty<byte>()));

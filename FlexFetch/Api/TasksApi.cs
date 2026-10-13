@@ -105,13 +105,15 @@ public static class TasksApi
             }
 
             var stream = File.OpenRead(path);
-            // Media is served with an inline disposition carrying the real
-            // name: the browser plays it (RFC 6266 - inline filenames never
-            // influence rendering) and uses that same name for "save link
-            // as" instead of deriving "file.mp4" from the generic URL.
-            // Other types keep the attachment name and download.
-            var mime = FileMime.For(task.FileName);
-            if (FileMime.IsMedia(task.FileName))
+            // The MIME the server declared at download time wins (clients
+            // cannot misparse the payload); extension mapping is the
+            // fallback for legacy records. Media plays inline with a
+            // disposition carrying the real name (RFC 6266 - inline
+            // filenames never influence rendering) and uses that same name
+            // for "save link as"; other types keep the attachment name and
+            // download.
+            var mime = task.ContentType ?? FileMime.For(task.FileName);
+            if (FileMime.IsMediaMime(mime))
             {
                 var disposition = FileMime.InlineDispositionFor(task.FileName);
                 if (disposition is not null)

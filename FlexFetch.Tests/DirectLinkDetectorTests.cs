@@ -7,15 +7,37 @@ namespace FlexFetch.Tests;
 public sealed class DirectLinkDetectorTests
 {
     [TestMethod]
-    public void HasMediaExtension_MatchesMediaAndDownloadExtensions()
+    public void IsManifestFileName_ClassifiesManifestNames()
     {
-        Assert.IsTrue(DirectLinkDetector.HasMediaExtension("https://cdn.example.com/clip.mp4"));
-        Assert.IsTrue(DirectLinkDetector.HasMediaExtension("https://cdn.example.com/stream.m3u8?token=1"));
-        Assert.IsTrue(DirectLinkDetector.HasMediaExtension("https://cdn.example.com/list.m3u"));
-        Assert.IsTrue(DirectLinkDetector.HasMediaExtension("https://cdn.example.com/audio.mp3"));
-        Assert.IsTrue(DirectLinkDetector.HasMediaExtension("https://cdn.example.com/file.zip"));
-        Assert.IsFalse(DirectLinkDetector.HasMediaExtension("https://example.com/watch?v=123"));
-        Assert.IsFalse(DirectLinkDetector.HasMediaExtension("https://example.com/page.html"));
+        Assert.IsTrue(DirectLinkDetector.IsManifestFileName("stream.m3u8"));
+        Assert.IsTrue(DirectLinkDetector.IsManifestFileName("list.m3u"));
+        Assert.IsTrue(DirectLinkDetector.IsManifestFileName("manifest.mpd"));
+        Assert.IsFalse(DirectLinkDetector.IsManifestFileName("clip.mp4"));
+        Assert.IsFalse(DirectLinkDetector.IsManifestFileName("file?taskId=1"));
+        Assert.IsFalse(DirectLinkDetector.IsManifestFileName(null));
+    }
+
+    [TestMethod]
+    public async Task ProbeAsync_MemoizesAnswerPerUrl()
+    {
+        // Routing probes a URL and the generic downloader's analysis wants
+        // the same answer: the second call must reuse the memoized one
+        // instead of costing another network round trip.
+        using var server = new TestHttpServer(_ => new TestHttpServer.HttpResponse(
+            200,
+            Array.Empty<byte>(),
+            new Dictionary<string, string> { ["Content-Type"] = "video/mp4" }));
+
+        var first = await DirectLinkDetector.ProbeAsync(
+            server.BaseUrl + "/stream", new DirectProxyService(), CancellationToken.None);
+        var second = await DirectLinkDetector.ProbeAsync(
+            server.BaseUrl + "/stream", new DirectProxyService(), CancellationToken.None);
+
+        Assert.IsNotNull(first);
+        Assert.IsNotNull(second);
+        Assert.AreEqual(first.ContentType, second.ContentType);
+        Assert.HasCount(1, server.Requests);
+        Assert.AreEqual("HEAD", server.Requests[0].Method);
     }
 
     [TestMethod]
