@@ -3,6 +3,7 @@ using FlexFetch.Services;
 using FlexFetch.Services.Downloaders;
 using FlexFetch.Services.Routing;
 using FlexFetch.Services.Session;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -109,19 +110,23 @@ public sealed class DownloaderFactoryTests
                 sp.GetRequiredService<IProxyService>(),
                 sp.GetRequiredService<Serilog.ILogger>(),
                 dir));
-            services.AddSingleton<SessionSnapshotService>();
+            services.AddSingleton<SessionFileStore>(sp => new SessionFileStore(
+                sp.GetRequiredService<StorageService>(),
+                new EphemeralDataProtectionProvider(),
+                sp.GetRequiredService<Serilog.ILogger>()));
+            services.AddSingleton<YouTubeSessionStore>();
             services.AddSingleton(sp => new FirefoxBrowserService(
                 sp.GetRequiredService<IProxyService>(),
                 sp.GetRequiredService<StorageService>(),
                 sp.GetRequiredService<Serilog.ILogger>()));
-            services.AddSingleton(sp => new SessionProbeService(
+            services.AddSingleton(sp => new YouTubeSessionProbeService(
                 sp.GetRequiredService<YtdlpService>(),
                 sp.GetRequiredService<IProxyService>(),
                 sp.GetRequiredService<Serilog.ILogger>()));
-            services.AddSingleton(sp => new SessionExportService(
+            services.AddSingleton(sp => new YouTubeSessionExportService(
                 sp.GetRequiredService<FirefoxBrowserService>(),
-                sp.GetRequiredService<SessionSnapshotService>(),
-                sp.GetRequiredService<SessionProbeService>(),
+                sp.GetRequiredService<YouTubeSessionStore>(),
+                sp.GetRequiredService<YouTubeSessionProbeService>(),
                 sp.GetRequiredService<IConfiguration>(),
                 sp.GetRequiredService<Serilog.ILogger>()));
             var provider = services.BuildServiceProvider();

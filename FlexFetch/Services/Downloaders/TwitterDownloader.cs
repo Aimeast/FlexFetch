@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using FlexFetch.Entities;
 using FlexFetch.Services.Routing;
+using FlexFetch.Services.Session;
 using Serilog;
 using ILogger = Serilog.ILogger;
 
@@ -12,25 +13,55 @@ namespace FlexFetch.Services.Downloaders;
 /// <summary>
 /// Twitter/X downloader: resolves the post's own media through the syndication
 /// embed endpoint (tweet-result JSON with mediaDetails: photo URLs and
-/// video_info variants), falling back to scraping the status page HTML
-/// (og:image media ids plus the mp4 variant JSON embedded in the page) when
-/// the endpoint refuses. Each media item becomes a child task downloaded with
-/// the status page as Referrer; video variants are reduced to the
-/// highest-bitrate mp4, photos are requested at original size.
+/// video_info variants). When that endpoint refuses (tombstone: sensitive or
+/// restricted posts are gated for anonymous viewers) and an X session is
+/// imported, the GraphQL TweetResultByRestId endpoint is called with the
+/// session's auth_token; the last resort is scraping the status page HTML
+/// (og:image media ids plus the mp4 variant JSON embedded in the page). Each
+/// media item becomes a child task downloaded with the status page as
+/// Referrer; video variants are reduced to the highest-bitrate mp4, photos
+/// are requested at original size.
 /// </summary>
 public sealed partial class TwitterDownloader : IDownloader
 {
     private const int FetchTimeoutSeconds = 60;
 
+    /// <summary>The public web client bearer token (anonymous, ships with
+    /// every x.com browser session) that accompanies GraphQL calls.</summary>
+    private const string WebBearerToken = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs"
+        + "%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA";
+
+    /// <summary>How long the scraped GraphQL descriptor (query id + feature
+    /// switches) may be reused before the main bundle is scraped again.</summary>
+    private static readonly TimeSpan DescriptorLifetime = TimeSpan.FromHours(6);
+
+    private static readonly object DescriptorLock = new();
+    private static (string QueryId, string Features, DateTime FetchedAt)? DescriptorCache;
+
     private readonly IProxyService _proxy;
     private readonly ILogger _log;
     private readonly Func<string, CancellationToken, Task<string>> _fetchText;
 
-    public TwitterDownloader(IProxyService proxy, ILogger log, Func<string, CancellationToken, Task<string>>? fetchText = null)
+    /// <summary>Injectable HTTP runner for the authenticated GraphQL flow
+    /// (tests); must keep UseCookies=false so Set-Cookie stays visible.</summary>
+    private readonly Func<string, IReadOnlyDictionary<string, string>?, CancellationToken, Task<HttpResponseMessage>> _send;
+
+    /// <summary>Null in tests that do not care about the session: the
+    /// GraphQL fallback is skipped and anonymous errors stay anonymous.</summary>
+    private readonly TwitterSessionStore? _twitterSession;
+
+    public TwitterDownloader(
+        IProxyService proxy,
+        ILogger log,
+        Func<string, CancellationToken, Task<string>>? fetchText = null,
+        TwitterSessionStore? twitterSession = null,
+        Func<string, IReadOnlyDictionary<string, string>?, CancellationToken, Task<HttpResponseMessage>>? sendAsync = null)
     {
         _proxy = proxy;
         _log = log;
         _fetchText = fetchText ?? FetchTextAsync;
+        _twitterSession = twitterSession;
+        _send = sendAsync ?? DefaultSendAsync;
     }
 
     public string Type => "Twitter";
@@ -48,7 +79,15 @@ public sealed partial class TwitterDownloader : IDownloader
         if (statusId.Length > 0)
         {
             var json = await TryFetchSyndicationAsync(url, statusId, cancellationToken);
-            if (TryParsePayload(json, out var post))
+            if (!TryParsePayload(json, out var post))
+            {
+                // Tombstoned or endpoint down: sensitive/restricted posts are
+                // anonymous-gated exactly this way - retry with the session
+                // over GraphQL before giving the page scrape a chance.
+                post = await TryAnalyzeViaGraphQLAsync(url, statusId, cancellationToken);
+            }
+
+            if (post is not null)
             {
                 // A repost carries no text of its own (the body is just the
                 // t.co media link): borrow the title from the post the media
@@ -60,7 +99,9 @@ public sealed partial class TwitterDownloader : IDownloader
                 }
 
                 var analysis = BuildAnalysis(post, text, url);
-                _log.Information("Twitter analysis of {Url} via syndication: {Count} media items", url, analysis.Children.Count);
+                _lastAnalysisSource = "syndication";
+                _log.Information("Twitter analysis of {Url} via {Source}: {Count} media items",
+                    url, _lastAnalysisSource, analysis.Children.Count);
                 if (analysis.Children.Count == 0)
                 {
                     throw new InvalidOperationException($"Post {statusId} contains no downloadable media (text-only post)");
@@ -76,10 +117,354 @@ public sealed partial class TwitterDownloader : IDownloader
         _log.Information("Twitter analysis of {Url} via page: {Count} media items", url, fallback.Children.Count);
         if (fallback.Children.Count == 0)
         {
+            if (statusId.Length > 0 && !HasSession())
+            {
+                throw new AuthRequiredException(AuthFailureReason.LoginRequired,
+                    $"X refuses anonymous access to post {statusId} (sensitive, age-restricted, or removed content). "
+                    + "Import an X session on the Session page and retry.");
+            }
+
             throw new InvalidOperationException($"No downloadable media found on {url}");
         }
 
         return fallback;
+    }
+
+    /// <summary>True when an X session with an auth_token is available.</summary>
+    private bool HasSession()
+    {
+        if (_twitterSession is null || !_twitterSession.Exists)
+        {
+            return false;
+        }
+
+        return _twitterSession.ReadCookies()
+            .Any(c => c.Name.Equals("auth_token", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// The authenticated path for gated posts: derive a fresh csrf token
+    /// (x.com sets ct0 for a presented auth_token), scrape the GraphQL
+    /// descriptor (query id + feature switches) from the web client's main
+    /// bundle, then call TweetResultByRestId. Returns null on any failure -
+    /// the caller falls through to the page scrape.
+    /// </summary>
+    private async Task<TweetPayload?> TryAnalyzeViaGraphQLAsync(string url, string statusId, CancellationToken cancellationToken)
+    {
+        if (_twitterSession is null || !HasSession())
+        {
+            return null;
+        }
+
+        var authToken = _twitterSession.ReadCookies()
+            .First(c => c.Name.Equals("auth_token", StringComparison.OrdinalIgnoreCase)).Value;
+
+        var ct0 = await DeriveCsrfAsync(authToken, cancellationToken);
+        if (ct0 is null)
+        {
+            // The token no longer carries a session; the stored verdict is
+            // already marked Invalid. Anonymous fallbacks may still work.
+            _log.Warning("Twitter session is no longer accepted by x.com; re-import it on the Session page");
+            return null;
+        }
+
+        var (queryId, features) = await GetDescriptorAsync(force: false, authToken, cancellationToken);
+        var json = await FetchTweetResultAsync(queryId, features, statusId, authToken, ct0, cancellationToken);
+        if (json is null)
+        {
+            // A stale descriptor (rotated bundle) is the common 400 cause:
+            // scrape it once more and retry before giving up.
+            (queryId, features) = await GetDescriptorAsync(force: true, authToken, cancellationToken);
+            json = await FetchTweetResultAsync(queryId, features, statusId, authToken, ct0, cancellationToken);
+            if (json is null)
+            {
+                return null;
+            }
+        }
+
+        if (TryParseGraphQLPayload(json, out var payload, out var parseFailReason))
+        {
+            _lastAnalysisSource = "graphql";
+            return payload;
+        }
+
+        // The excerpt distinguishes an expected tombstone from an errors[]
+        // body or a shape the parser does not know yet.
+        _log.Information("Twitter GraphQL payload for {StatusId} is not a readable tweet ({Reason}): {Excerpt}",
+            statusId, parseFailReason, json.Length > 600 ? json[..600] : json);
+        return null;
+    }
+
+    private string? _lastAnalysisSource;
+
+    /// <summary>GETs x.com with the auth_token and returns the freshly set
+    /// ct0 csrf cookie, or null when x.com refuses the token (revoked).</summary>
+    private async Task<string?> DeriveCsrfAsync(string authToken, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(30));
+            using var response = await _send("https://x.com/",
+                new Dictionary<string, string> { ["Cookie"] = $"auth_token={authToken}" }, timeout.Token);
+            var setCookies = response.Headers.TryGetValues("Set-Cookie", out var values)
+                ? values.ToList()
+                : new List<string>();
+            var ct0 = TwitterSessionStore.ExtractSetCookieValue(setCookies, "ct0");
+            if (ct0 is null)
+            {
+                _twitterSession.UpdateMeta(m =>
+                {
+                    m.LastCheckAt = DateTime.UtcNow;
+                    m.Health = TwitterSessionHealth.Invalid.ToString();
+                    m.LastError = "x.com no longer accepts the auth_token (no fresh ct0); export fresh cookies";
+                });
+            }
+
+            return ct0;
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _log.Warning("Deriving the X csrf token failed: {Message}", ex.Message);
+            return null;
+        }
+    }
+
+    /// <summary>Returns the cached GraphQL descriptor or scrapes it from the
+    /// web client bundle: the query id rotates with every frontend deploy.
+    /// The home page must be fetched WITH the session cookie - the anonymous
+    /// landing page is a marketing shell without any bundle reference.</summary>
+    private async Task<(string QueryId, string Features)> GetDescriptorAsync(
+        bool force, string authToken, CancellationToken cancellationToken)
+    {
+        lock (DescriptorLock)
+        {
+            if (!force && DescriptorCache is { } cached && DateTime.UtcNow - cached.FetchedAt < DescriptorLifetime)
+            {
+                return (cached.QueryId, cached.Features);
+            }
+        }
+
+        var home = await _send("https://x.com/",
+            new Dictionary<string, string> { ["Cookie"] = $"auth_token={authToken}" }, cancellationToken);
+        string html;
+        using (home)
+        {
+            html = await home.Content.ReadAsStringAsync(cancellationToken);
+        }
+
+        var bundleUrl = MainBundleRegex().Match(html).Groups[1].Value;
+        if (bundleUrl.Length == 0)
+        {
+            throw new InvalidOperationException("x.com page does not reference the main bundle");
+        }
+
+        var bundle = await _send(bundleUrl, null, cancellationToken);
+        string js;
+        using (bundle)
+        {
+            js = await bundle.Content.ReadAsStringAsync(cancellationToken);
+        }
+
+        var match = OperationRegex().Match(js);
+        if (!match.Success)
+        {
+            throw new InvalidOperationException("TweetResultByRestId operation not found in the main bundle");
+        }
+
+        var names = FeatureSwitchRegex().Matches(match.Groups[2].Value)
+            .Select(m => $"\"{m.Groups[1].Value}\":true");
+        var descriptor = (match.Groups[1].Value, "{" + string.Join(",", names) + "}");
+        lock (DescriptorLock)
+        {
+            DescriptorCache = (descriptor.Item1, descriptor.Item2, DateTime.UtcNow);
+        }
+
+        return descriptor;
+    }
+
+    private async Task<string?> FetchTweetResultAsync(
+        string queryId, string features, string statusId, string authToken, string ct0, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(30));
+            var variables = JsonSerializer.Serialize(new Dictionary<string, object>
+            {
+                ["tweetId"] = statusId,
+                ["withCommunity"] = false,
+                ["includePromotedContent"] = false,
+                ["withVoice"] = false,
+            });
+            var url = "https://x.com/i/api/graphql/" + queryId + "/TweetResultByRestId"
+                + "?variables=" + Uri.EscapeDataString(variables)
+                + "&features=" + Uri.EscapeDataString(features);
+            var headers = new Dictionary<string, string>
+            {
+                ["Authorization"] = "Bearer " + WebBearerToken,
+                ["x-csrf-token"] = ct0,
+                ["Cookie"] = $"auth_token={authToken}; ct0={ct0}",
+            };
+            using var response = await _send(url, headers, timeout.Token);
+            if (!response.IsSuccessStatusCode)
+            {
+                // A 400 with a stale descriptor is the common rotation
+                // failure; null sends the caller into one refresh + retry.
+                _log.Information("Twitter GraphQL answered {Status}", (int)response.StatusCode);
+                return null;
+            }
+
+            return await response.Content.ReadAsStringAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _log.Warning("Twitter GraphQL call failed: {Message}", ex.Message);
+            return null;
+        }
+    }
+
+    private async Task<HttpResponseMessage> DefaultSendAsync(
+        string url, IReadOnlyDictionary<string, string>? headers, CancellationToken cancellationToken)
+    {
+        var uri = new Uri(url);
+        var handler = _proxy.CreateHandler(uri);
+        using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(FetchTimeoutSeconds) };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+        client.DefaultRequestHeaders.Referrer = new Uri("https://x.com/");
+        if (headers is not null)
+        {
+            foreach (var (name, value) in headers)
+            {
+                client.DefaultRequestHeaders.Add(name, value);
+            }
+        }
+
+        return await client.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+    }
+
+    /// <summary>
+    /// Parses the TweetResultByRestId JSON. The result may be wrapped in a
+    /// TweetWithVisibilityResults envelope (limited-action gating); a
+    /// tombstone or anything without legacy media parses as "not a tweet".
+    /// </summary>
+    private static bool TryParseGraphQLPayload(string? json, out TweetPayload payload, out string reason)
+    {
+        payload = new TweetPayload(string.Empty, null, Array.Empty<TweetMedia>());
+        reason = "empty";
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (!document.RootElement.TryGetProperty("data", out var data)
+                || !data.TryGetProperty("tweetResult", out var tweetResult)
+                || !tweetResult.TryGetProperty("result", out var result)
+                || result.ValueKind != JsonValueKind.Object)
+            {
+                reason = "no data.tweetResult.result";
+                return false;
+            }
+
+            var typename = result.TryGetProperty("__typename", out var t) && t.ValueKind == JsonValueKind.String
+                ? t.GetString()
+                : "(none)";
+            if (result.TryGetProperty("tweet", out var unwrapped)
+                && unwrapped.ValueKind == JsonValueKind.Object)
+            {
+                result = unwrapped;
+            }
+
+            if (!result.TryGetProperty("legacy", out var legacy)
+                || legacy.ValueKind != JsonValueKind.Object)
+            {
+                reason = $"no legacy (typename={typename})";
+                return false;
+            }
+
+            string? author = null;
+            if (result.TryGetProperty("core", out var core)
+                && core.TryGetProperty("user_results", out var userResults)
+                && userResults.TryGetProperty("result", out var userResult))
+            {
+                // The current shape carries the identity under result.core
+                // (name/screen_name); older shapes used result.legacy.
+                foreach (var identity in new[] { "core", "legacy" })
+                {
+                    if (!userResult.TryGetProperty(identity, out var identityBlock)
+                        || identityBlock.ValueKind != JsonValueKind.Object)
+                    {
+                        continue;
+                    }
+
+                    if (identityBlock.TryGetProperty("name", out var name) && name.ValueKind == JsonValueKind.String)
+                    {
+                        author = name.GetString();
+                        break;
+                    }
+
+                    if (identityBlock.TryGetProperty("screen_name", out var screenName) && screenName.ValueKind == JsonValueKind.String)
+                    {
+                        author = screenName.GetString();
+                        break;
+                    }
+                }
+            }
+
+            if (string.IsNullOrEmpty(author))
+            {
+                reason = $"no author (typename={typename})";
+                return false;
+            }
+
+            string? text = null;
+            if (legacy.TryGetProperty("full_text", out var fullText) && fullText.ValueKind == JsonValueKind.String)
+            {
+                text = fullText.GetString();
+            }
+
+            var media = new List<TweetMedia>();
+            if (legacy.TryGetProperty("extended_entities", out var entities)
+                && entities.TryGetProperty("media", out var items)
+                && items.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var entry in items.EnumerateArray())
+                {
+                    if (entry.ValueKind != JsonValueKind.Object)
+                    {
+                        continue;
+                    }
+
+                    string? mediaUrl = entry.TryGetProperty("media_url_https", out var mediaUrlElement)
+                        && mediaUrlElement.ValueKind == JsonValueKind.String
+                            ? mediaUrlElement.GetString()
+                            : null;
+                    string? expandedUrl = entry.TryGetProperty("expanded_url", out var expandedUrlElement)
+                        && expandedUrlElement.ValueKind == JsonValueKind.String
+                            ? expandedUrlElement.GetString()
+                            : null;
+                    media.Add(new TweetMedia(mediaUrl, expandedUrl, ParseVariants(entry)));
+                }
+            }
+
+            payload = new TweetPayload(author!, text, media);
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     /// <summary>Twitter analysis always expands children; nothing to download here.</summary>
@@ -443,6 +828,15 @@ public sealed partial class TwitterDownloader : IDownloader
             return false;
         }
     }
+
+    [GeneratedRegex(@"(https://abs\.twimg\.com/responsive-web/client-web/main\.[A-Za-z0-9]+\.js)")]
+    private static partial Regex MainBundleRegex();
+
+    [GeneratedRegex(@"queryId:""([0-9A-Za-z_-]+)"",operationName:""TweetResultByRestId"",operationType:""query"",metadata:\{featureSwitches:\[([^\]]*)\]")]
+    private static partial Regex OperationRegex();
+
+    [GeneratedRegex(@"""([A-Za-z0-9_]+)""")]
+    private static partial Regex FeatureSwitchRegex();
 
     [GeneratedRegex(@"(?:/status(?:es)?/)(\d+)", RegexOptions.IgnoreCase)]
     private static partial Regex StatusIdRegex();

@@ -10,7 +10,7 @@ namespace FlexFetch.Services.Session;
 /// <summary>Result of a session import attempt.</summary>
 public sealed record SessionImportResult(
     bool Ok,
-    SessionHealth Health,
+    YouTubeSessionHealth Health,
     string? Error,
     int Parsed,
     int ImportedToSnapshot,
@@ -27,22 +27,22 @@ public sealed record SessionImportResult(
 /// serialized by one lock (periodic export, canary re-export and manual
 /// triggers share it).
 /// </summary>
-public sealed class SessionExportService
+public sealed class YouTubeSessionExportService
 {
     private readonly FirefoxBrowserService _browser;
-    private readonly SessionSnapshotService _snapshot;
-    private readonly SessionProbeService _probe;
+    private readonly YouTubeSessionStore _snapshot;
+    private readonly YouTubeSessionProbeService _probe;
     private readonly IConfiguration _config;
     private readonly ILogger _log;
-    private readonly SemaphoreSlim _exportLock = new(1, 1);
+    private readonly SessionPipeline _pipeline = new("A session export/import is already running");
     private readonly Random _random = new();
 
     private DateTime? _lastReExportRequestUtc;
 
-    public SessionExportService(
+    public YouTubeSessionExportService(
         FirefoxBrowserService browser,
-        SessionSnapshotService snapshot,
-        SessionProbeService probe,
+        YouTubeSessionStore snapshot,
+        YouTubeSessionProbeService probe,
         IConfiguration config,
         ILogger log)
     {
@@ -54,21 +54,21 @@ public sealed class SessionExportService
     }
 
     /// <summary>True while an export/import pipeline holds the lock.</summary>
-    public bool IsRunning => _exportLock.CurrentCount == 0;
+    public bool IsRunning => _pipeline.IsRunning;
 
-    public DateTime? LastRunAt { get; private set; }
+    public DateTime? LastRunAt => _pipeline.LastRunAt;
 
-    public SessionHealth LastResult { get; private set; } = SessionHealth.Unknown;
+    public YouTubeSessionHealth LastResult { get; private set; } = YouTubeSessionHealth.Unknown;
 
-    public string? LastError { get; private set; }
+    public string? LastError => _pipeline.LastError;
 
     /// <summary>Pipeline stage currently executing (for the status API).</summary>
-    public string CurrentStage { get; private set; } = "idle";
+    public string CurrentStage => _pipeline.CurrentStage;
 
     /// <summary>Latest live line from the running probe, e.g. yt-dlp's own
     /// "Downloading webpage" or the PO token generation (status API surface;
     /// null while no pipeline runs).</summary>
-    public string? CurrentDetail { get; private set; }
+    public string? CurrentDetail => _pipeline.CurrentDetail;
 
     /// <summary>
     /// Identity family a logged-in YouTube jar must contain (all of them);
@@ -97,36 +97,27 @@ public sealed class SessionExportService
     /// ExportRejectedException for bounded failures (the snapshot stays
     /// untouched in every failure path).
     /// </summary>
-    public async Task<SessionHealth> RunExportAsync(CancellationToken cancellationToken = default)
+    public async Task<YouTubeSessionHealth> RunExportAsync(CancellationToken cancellationToken = default)
     {
-        if (!await _exportLock.WaitAsync(0, cancellationToken))
-        {
-            throw new InvalidOperationException("A session export is already running");
-        }
-
         try
         {
-            var result = await RunExportCoreAsync(cancellationToken);
-            LastResult = result;
-            LastError = null;
-            return result;
+            return await _pipeline.RunAsync(async ct =>
+            {
+                var result = await RunExportCoreAsync(ct);
+                LastResult = result;
+                return result;
+            }, cancellationToken);
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            LastResult = SessionHealth.Error;
-            LastError = ex.Message;
+            // The pipeline records the error text; the verdict mapping onto
+            // the YouTube health enum stays here.
+            LastResult = YouTubeSessionHealth.Error;
             throw;
-        }
-        finally
-        {
-            LastRunAt = DateTime.UtcNow;
-            CurrentStage = "idle";
-            CurrentDetail = null;
-            _exportLock.Release();
         }
     }
 
-    private async Task<SessionHealth> RunExportCoreAsync(CancellationToken cancellationToken)
+    private async Task<YouTubeSessionHealth> RunExportCoreAsync(CancellationToken cancellationToken)
     {
         if (!_snapshot.Exists)
         {
@@ -139,20 +130,20 @@ public sealed class SessionExportService
         using var browserHold = _browser.HoldSessionUse();
 
         var seed = _snapshot.ReadCookies();
-        var meta = _snapshot.ReadMeta() ?? new SessionMeta();
-        var health = SessionHealth.Ok;
+        var meta = _snapshot.ReadMeta() ?? new YouTubeSessionMeta();
+        var health = YouTubeSessionHealth.Ok;
 
-        CurrentStage = "launch";
+        _pipeline.SetStage("launch");
         await _browser.EnsureSessionAsync();
 
-        CurrentStage = "seed";
+        _pipeline.SetStage("seed");
         await _browser.SeedCookiesAsync(seed);
 
         // Silent jar read: no site page is loaded here.
-        CurrentStage = "jar";
-        var jar = SessionSnapshotService.FilterYouTubeDomain(await _browser.ReadJarAsync());
+        _pipeline.SetStage("jar");
+        var jar = YouTubeSessionStore.FilterYouTubeDomain(await _browser.ReadJarAsync());
 
-        CurrentStage = "identity";
+        _pipeline.SetStage("identity");
         var missing = MissingIdentityCookies(jar);
         if (missing.Count > 0)
         {
@@ -160,13 +151,13 @@ public sealed class SessionExportService
             // hold a logged-in session. Reject - never overwrite the snapshot
             // with an anonymous jar.
             throw new ExportRejectedException(
-                SessionHealth.LoginRequired,
+                YouTubeSessionHealth.LoginRequired,
                 $"Identity cookies missing from the browser jar: {string.Join(", ", missing)}");
         }
 
         // Authoritative gate: probe a candidate jar with a one-time copy.
-        CurrentStage = "probe";
-        CurrentDetail = null;
+        _pipeline.SetStage("probe");
+        _pipeline.SetDetail(null);
         var visitorData = ExtractVisitorData(jar);
         var candidatePath = WriteCandidateJar(jar);
         try
@@ -196,17 +187,17 @@ public sealed class SessionExportService
         // mean unhealthy, and InnerTube already accepted above.
         if (bool.TryParse(Get(ConfigKeys.SessionHumanize), out var humanize) && humanize)
         {
-            CurrentStage = "humanize";
+            _pipeline.SetStage("humanize");
             var webRejection = await HumanizedBridgeVisitAsync(cancellationToken);
             if (webRejection is not null)
             {
-                health = SessionHealth.WebBindingOnly;
+                health = YouTubeSessionHealth.WebBindingOnly;
                 _log.Information("Session export: web surface rejected the session ({Reason}); InnerTube accepted it, exporting anyway", webRejection);
             }
 
             // Re-read the jar after the visit: the server may have rotated
             // tickets. Only use the post-visit jar when it is still intact.
-            var refreshed = SessionSnapshotService.FilterYouTubeDomain(await _browser.ReadJarAsync());
+            var refreshed = YouTubeSessionStore.FilterYouTubeDomain(await _browser.ReadJarAsync());
             if (MissingIdentityCookies(refreshed).Count == 0 && refreshed.Count > 0)
             {
                 jar = refreshed;
@@ -214,7 +205,7 @@ public sealed class SessionExportService
             }
         }
 
-        CurrentStage = "write";
+        _pipeline.SetStage("write");
         meta.ExportedAt = DateTime.UtcNow;
         meta.VisitorData = visitorData;
         meta.Health = health.ToString();
@@ -231,81 +222,69 @@ public sealed class SessionExportService
     /// ZERO browser navigation. The snapshot is only replaced when the probe
     /// accepts; otherwise the last known good snapshot is kept.
     /// </summary>
-    public async Task<SessionImportResult> ImportAsync(string text, Uri? url, CancellationToken cancellationToken = default)
+    public Task<SessionImportResult> ImportAsync(string text, Uri? url, CancellationToken cancellationToken = default) =>
+        _pipeline.RunAsync(ct => ImportCoreAsync(text, url, ct), cancellationToken);
+
+    private async Task<SessionImportResult> ImportCoreAsync(string text, Uri? url, CancellationToken cancellationToken)
     {
-        if (!await _exportLock.WaitAsync(0, cancellationToken))
+        _pipeline.SetStage("parse");
+        var parse = CookieTextParser.Parse(text, url);
+        if (parse.Cookies.Count == 0)
         {
-            throw new InvalidOperationException("A session export/import is already running");
+            return new SessionImportResult(false, YouTubeSessionHealth.Error,
+                $"No cookies recognized: {string.Join("; ", parse.Errors)}", 0, 0, CurrentCount());
         }
 
+        var filtered = YouTubeSessionStore.FilterYouTubeDomain(parse.Cookies);
+        if (filtered.Count == 0)
+        {
+            return new SessionImportResult(false, YouTubeSessionHealth.Error,
+                "No youtube.com cookies in the import - only the youtube.com domain is imported", parse.Cookies.Count, 0, CurrentCount());
+        }
+
+        var merged = YouTubeSessionStore.Merge(_snapshot.ReadCookies(), filtered);
+        var visitorData = ExtractVisitorData(merged);
+        var candidatePath = WriteCandidateJar(merged);
         try
         {
-            CurrentStage = "parse";
-            var parse = CookieTextParser.Parse(text, url);
-            if (parse.Cookies.Count == 0)
-            {
-                return new SessionImportResult(false, SessionHealth.Error,
-                    $"No cookies recognized: {string.Join("; ", parse.Errors)}", 0, 0, CurrentCount());
-            }
+            _pipeline.SetStage("probe");
+            _pipeline.SetDetail(null);
+            var probe = await _probe.ProbeAsync(
+                _probe.GetProbeUrl(_config),
+                candidatePath,
+                YouTubePosture.BuildExtractorArgs(YouTubePosture.CookieClients, visitorData),
+                cancellationToken,
+                progress: ProbeProgress());
 
-            var filtered = SessionSnapshotService.FilterYouTubeDomain(parse.Cookies);
-            if (filtered.Count == 0)
+            if (!probe.Healthy)
             {
-                return new SessionImportResult(false, SessionHealth.Error,
-                    "No youtube.com cookies in the import - only the youtube.com domain is imported", parse.Cookies.Count, 0, CurrentCount());
-            }
-
-            var merged = SessionSnapshotService.Merge(_snapshot.ReadCookies(), filtered);
-            var visitorData = ExtractVisitorData(merged);
-            var candidatePath = WriteCandidateJar(merged);
-            try
-            {
-                CurrentStage = "probe";
-                CurrentDetail = null;
-                var probe = await _probe.ProbeAsync(
-                    _probe.GetProbeUrl(_config),
-                    candidatePath,
-                    YouTubePosture.BuildExtractorArgs(YouTubePosture.CookieClients, visitorData),
-                    cancellationToken,
-                    progress: ProbeProgress());
-
-                if (!probe.Healthy)
+                var health = MapProbeClass(probe.Class);
+                _snapshot.UpdateMeta(m =>
                 {
-                    var health = MapProbeClass(probe.Class);
-                    _snapshot.UpdateMeta(m =>
-                    {
-                        m.Health = health.ToString();
-                        m.LastProbeClass = probe.Class.ToString();
-                        m.LastError = $"Import rejected: {Describe(probe)}";
-                    });
-                    return new SessionImportResult(false, health,
-                        $"Import rejected by probe ({probe.Class}): {Describe(probe)}",
-                        parse.Cookies.Count, 0, CurrentCount());
-                }
+                    m.Health = health.ToString();
+                    m.LastProbeClass = probe.Class.ToString();
+                    m.LastError = $"Import rejected: {Describe(probe)}";
+                });
+                return new SessionImportResult(false, health,
+                    $"Import rejected by probe ({probe.Class}): {Describe(probe)}",
+                    parse.Cookies.Count, 0, CurrentCount());
             }
-            finally
-            {
-                TryDelete(candidatePath);
-            }
-
-            var meta = _snapshot.ReadMeta() ?? new SessionMeta();
-            meta.ImportedAt = DateTime.UtcNow;
-            meta.Health = SessionHealth.Ok.ToString();
-            meta.VisitorData = visitorData;
-            meta.LastError = null;
-            CurrentStage = "write";
-            _snapshot.WriteSnapshot(merged, meta);
-            _log.Information("Session import accepted: {Imported} imported, {Total} total in snapshot",
-                filtered.Count, merged.Count);
-            return new SessionImportResult(true, SessionHealth.Ok, null, parse.Cookies.Count, filtered.Count, merged.Count);
         }
         finally
         {
-            LastRunAt = DateTime.UtcNow;
-            CurrentStage = "idle";
-            CurrentDetail = null;
-            _exportLock.Release();
+            TryDelete(candidatePath);
         }
+
+        var meta = _snapshot.ReadMeta() ?? new YouTubeSessionMeta();
+        meta.ImportedAt = DateTime.UtcNow;
+        meta.Health = YouTubeSessionHealth.Ok.ToString();
+        meta.VisitorData = visitorData;
+        meta.LastError = null;
+        _pipeline.SetStage("write");
+        _snapshot.WriteSnapshot(merged, meta);
+        _log.Information("Session import accepted: {Imported} imported, {Total} total in snapshot",
+            filtered.Count, merged.Count);
+        return new SessionImportResult(true, YouTubeSessionHealth.Ok, null, parse.Cookies.Count, filtered.Count, merged.Count);
     }
 
     /// <summary>
@@ -392,7 +371,7 @@ public sealed class SessionExportService
 
     private string WriteCandidateJar(IReadOnlyList<CookieItem> cookies)
     {
-        var dir = Path.Combine(Path.GetDirectoryName(_snapshot.SnapshotPath)!, "copies");
+        var dir = _snapshot.CopyDirectory;
         Directory.CreateDirectory(dir);
         var path = Path.Combine(dir, $"candidate-{Guid.NewGuid():N}.txt");
         File.WriteAllText(path, CookieFile.BuildContent(cookies));
@@ -400,7 +379,7 @@ public sealed class SessionExportService
     }
 
     /// <summary>Wires the probe's live output lines into <see cref="CurrentDetail"/>.</summary>
-    private IProgress<string> ProbeProgress() => new Progress<string>(line => CurrentDetail = line);
+    private IProgress<string> ProbeProgress() => new Progress<string>(line => _pipeline.SetDetail(line));
 
     private int CurrentCount() => _snapshot.ReadCookies().Count;
 
@@ -424,15 +403,15 @@ public sealed class SessionExportService
     }
 
     /// <summary>Maps a probe classification onto a session health verdict.</summary>
-    public static SessionHealth MapProbeClass(YtdlpOutputClass c) => c switch
+    public static YouTubeSessionHealth MapProbeClass(YtdlpOutputClass c) => c switch
     {
-        YtdlpOutputClass.Ok => SessionHealth.Ok,
-        YtdlpOutputClass.BotCheck => SessionHealth.BotCheck,
-        YtdlpOutputClass.SessionRotated => SessionHealth.SessionRotated,
-        YtdlpOutputClass.JarInconsistent => SessionHealth.JarInconsistent,
-        YtdlpOutputClass.LoginRequired => SessionHealth.LoginRequired,
-        YtdlpOutputClass.ClientBlocked => SessionHealth.Unknown,
-        _ => SessionHealth.Error,
+        YtdlpOutputClass.Ok => YouTubeSessionHealth.Ok,
+        YtdlpOutputClass.BotCheck => YouTubeSessionHealth.BotCheck,
+        YtdlpOutputClass.SessionRotated => YouTubeSessionHealth.SessionRotated,
+        YtdlpOutputClass.JarInconsistent => YouTubeSessionHealth.JarInconsistent,
+        YtdlpOutputClass.LoginRequired => YouTubeSessionHealth.LoginRequired,
+        YtdlpOutputClass.ClientBlocked => YouTubeSessionHealth.Unknown,
+        _ => YouTubeSessionHealth.Error,
     };
 
     private static void TryDelete(string path)
@@ -457,10 +436,10 @@ public sealed class SessionExportService
 /// <summary>The pipeline rejected the candidate jar (snapshot untouched).</summary>
 public sealed class ExportRejectedException : Exception
 {
-    public ExportRejectedException(SessionHealth health, string message) : base(message)
+    public ExportRejectedException(YouTubeSessionHealth health, string message) : base(message)
     {
         Health = health;
     }
 
-    public SessionHealth Health { get; }
+    public YouTubeSessionHealth Health { get; }
 }

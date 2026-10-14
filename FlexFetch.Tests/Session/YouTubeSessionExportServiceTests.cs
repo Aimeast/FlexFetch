@@ -8,7 +8,7 @@ using ILogger = Serilog.ILogger;
 namespace FlexFetch.Tests;
 
 [TestClass]
-public sealed class SessionExportServiceTests
+public sealed class YouTubeSessionExportServiceTests
 {
     private static ProbeResult Probe(params string[] lines) =>
         new(false, YtdlpOutputClass.Unknown, lines, string.Empty);
@@ -28,7 +28,7 @@ public sealed class SessionExportServiceTests
             "ERROR: [youtube] aqz-KE-bpKQ: Requested format is not available"
             + " | WARNING: [youtube] aqz-KE-bpKQ: n challenge solving failed: ..."
             + " | WARNING: [youtube] aqz-KE-bpKQ: mweb client https formats require a GVS PO Token ...",
-            SessionExportService.Describe(probe));
+            YouTubeSessionExportService.Describe(probe));
     }
 
     [TestMethod]
@@ -36,16 +36,16 @@ public sealed class SessionExportServiceTests
     {
         Assert.AreEqual(
             "WARNING: one | WARNING: two",
-            SessionExportService.Describe(Probe("WARNING: one", "WARNING: two")));
+            YouTubeSessionExportService.Describe(Probe("WARNING: one", "WARNING: two")));
     }
 
     [TestMethod]
     public void Describe_FallsBackToExitFlagWithoutDiagnosticLines()
     {
-        Assert.AreEqual("exit=False", SessionExportService.Describe(Probe()));
+        Assert.AreEqual("exit=False", YouTubeSessionExportService.Describe(Probe()));
         Assert.AreEqual(
             "exit=True",
-            SessionExportService.Describe(new ProbeResult(true, YtdlpOutputClass.Ok, Array.Empty<string>(), "t")));
+            YouTubeSessionExportService.Describe(new ProbeResult(true, YtdlpOutputClass.Ok, Array.Empty<string>(), "t")));
     }
 
     [TestMethod]
@@ -57,10 +57,10 @@ public sealed class SessionExportServiceTests
         ILogger log = TestLog.Instance;
         var proxy = new NoProxyStub();
         var storage = new StorageService(dir);
-        var export = new SessionExportService(
+        var export = new YouTubeSessionExportService(
             new FirefoxBrowserService(proxy, storage, log),
-            new SessionSnapshotService(storage),
-            new SessionProbeService(new YtdlpService(proxy, log, dir), proxy, log),
+            TestApp.CreateYouTubeStore(dir),
+            new YouTubeSessionProbeService(new YtdlpService(proxy, log, dir), proxy, log),
             new ConfigurationBuilder().Build(),
             log);
 

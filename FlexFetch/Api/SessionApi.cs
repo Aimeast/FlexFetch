@@ -6,10 +6,11 @@ namespace FlexFetch.Api;
 public sealed record SessionImportRequest(string? Text, string? Url);
 
 /// <summary>
-/// Admin session endpoints: import a human-exported YouTube cookie jar,
-/// observe the export pipeline / canary / PO token provider, trigger a
-/// manual export, and run the diagnostic matrix (client posture x
-/// anonymous/session) that every session problem attribution starts from.
+/// Admin session endpoints, segmented by site: /api/session/youtube/* (the
+/// cookie import with the InnerTube probe gate, the refresh pipeline, the
+/// canary, the PO token provider and the diagnostic matrix) and
+/// /api/session/twitter/* (the auth_token import with the live identity
+/// gate, the status and the manual re-check).
 /// </summary>
 public static class SessionApi
 {
@@ -17,7 +18,9 @@ public static class SessionApi
     {
         var group = app.MapGroup("/api/session").RequireAuthorization("Admin");
 
-        group.MapPost("/import", async (SessionImportRequest req, SessionExportService export, ILogger log, CancellationToken ct) =>
+        // ---- YouTube session ----
+
+        group.MapPost("/youtube/import", async (SessionImportRequest req, YouTubeSessionExportService export, ILogger log, CancellationToken ct) =>
         {
             if (string.IsNullOrWhiteSpace(req.Text))
             {
@@ -53,7 +56,7 @@ public static class SessionApi
             }
         });
 
-        group.MapPost("/export", (SessionExportService export, ILogger log) =>
+        group.MapPost("/youtube/export", (YouTubeSessionExportService export, ILogger log) =>
         {
             if (export.IsRunning)
             {
@@ -74,29 +77,31 @@ public static class SessionApi
             return Results.Accepted((string?)null, new { exporting = true });
         });
 
-        group.MapGet("/export/status", (SessionSnapshotService snapshot, SessionExportService export) => Results.Ok(new
+        group.MapGet("/youtube/status", (YouTubeSessionStore snapshot, YouTubeSessionExportService export) => Results.Ok(new
         {
+            exists = snapshot.Exists,
+            ageMinutes = snapshot.Age?.TotalMinutes,
+            meta = snapshot.ReadMeta(),
+            cookieCount = snapshot.ReadCookies().Count,
+            storage = "encrypted v1",
             export.IsRunning,
             export.CurrentStage,
             export.CurrentDetail,
             export.LastRunAt,
             lastResult = export.LastResult.ToString(),
             export.LastError,
-            snapshotExists = snapshot.Exists,
-            snapshotAge = snapshot.Age?.TotalMinutes,
-            meta = snapshot.ReadMeta(),
         }));
 
-        group.MapGet("/canary", (HostedServices.SessionMaintenanceHostedService maintenance, SessionSnapshotService snapshot) => Results.Ok(new
+        group.MapGet("/youtube/canary", (HostedServices.YouTubeSessionMaintenanceHostedService maintenance, YouTubeSessionStore snapshot) => Results.Ok(new
         {
-            snapshotExists = snapshot.Exists,
+            exists = snapshot.Exists,
             lastCheckAt = maintenance.LastCheckAt,
             lastHealth = maintenance.LastHealth.ToString(),
             maintenance.LastDetail,
             maintenance.ConsecutiveFailures,
         }));
 
-        group.MapGet("/pot-status", (PotProviderService pot) => Results.Ok(new
+        group.MapGet("/youtube/pot-status", (PotProviderService pot) => Results.Ok(new
         {
             mode = "bgutil script via deno (no server process)",
             denoInstalled = pot.IsDenoInstalled,
@@ -107,7 +112,7 @@ public static class SessionApi
         }));
 
         // Runs a new matrix; the report is stored and also returned by GET.
-        group.MapPost("/diagnose", async (SessionDiagnosisService diagnosis, CancellationToken ct) =>
+        group.MapPost("/youtube/diagnose", async (YouTubeSessionDiagnosisService diagnosis, CancellationToken ct) =>
         {
             try
             {
@@ -121,7 +126,57 @@ public static class SessionApi
 
         // The last stored matrix report (null when none was run yet), so the
         // page shows the previous result by default after a refresh.
-        group.MapGet("/diagnose", (SessionDiagnosisService diagnosis) =>
+        group.MapGet("/youtube/diagnose", (YouTubeSessionDiagnosisService diagnosis) =>
             Results.Ok(new { last = diagnosis.Last, running = diagnosis.IsRunning }));
+
+        // ---- X (Twitter) session ----
+
+        group.MapPost("/twitter/import", async (SessionImportRequest req, TwitterSessionService twitter, ILogger log, CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(req.Text))
+            {
+                return Results.BadRequest(new { error = "Text is required" });
+            }
+
+            try
+            {
+                var result = await twitter.ImportAsync(req.Text, ct);
+                log.Information("Twitter session import via API: ok={Ok} stored={Stored} account={Account}",
+                    result.Ok, result.Stored, result.Account);
+                return result.Ok ? Results.Ok(result) : Results.BadRequest(result);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Results.Conflict(new { error = ex.Message });
+            }
+        });
+
+        group.MapGet("/twitter/status", (TwitterSessionStore store) => Results.Ok(new
+        {
+            exists = store.Exists,
+            meta = store.ReadMeta(),
+            cookieCount = store.ReadCookies().Count,
+            storage = "encrypted v1",
+        }));
+
+        group.MapPost("/twitter/check", async (TwitterSessionService twitter, CancellationToken ct) =>
+        {
+            try
+            {
+                var health = await twitter.CheckAsync(ct);
+                return Results.Ok(new { health = health.ToString() });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Results.Conflict(new { error = ex.Message });
+            }
+        });
+
+        group.MapDelete("/twitter", (TwitterSessionStore store, ILogger log) =>
+        {
+            store.Delete();
+            log.Information("Twitter session removed via API");
+            return Results.Ok(new { removed = true });
+        });
     }
 }

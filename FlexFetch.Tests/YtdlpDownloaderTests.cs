@@ -44,7 +44,7 @@ public sealed class YtdlpDownloaderTests
             new DirectProxyService(),
             new StorageService(ytDir),
             Log,
-            new SessionSnapshotService(new StorageService(ytDir)));
+            TestApp.CreateYouTubeStore(ytDir));
 
         // YtdlpDownloader is part of the generic fallback chain; YouTube is
         // a domain-specific downloader used alone.

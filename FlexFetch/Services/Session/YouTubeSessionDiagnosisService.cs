@@ -24,23 +24,23 @@ public sealed record DiagnoseReport(
 /// report in memory, so the status page can show it by default and it
 /// survives a page refresh (it does not survive a process restart).
 /// </summary>
-public sealed class SessionDiagnosisService
+public sealed class YouTubeSessionDiagnosisService
 {
     /// <summary>Per-item timeout: tight enough for an HTTP request, generous
     /// enough for a slow proxy.</summary>
     public static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(90);
 
-    private readonly SessionSnapshotService _snapshot;
-    private readonly SessionProbeService _probe;
+    private readonly YouTubeSessionStore _snapshot;
+    private readonly YouTubeSessionProbeService _probe;
     private readonly IConfiguration _config;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     /// <summary>Injectable probe runner (tests); defaults to the real probe.</summary>
     private readonly Func<string, string?, string, CancellationToken, Task<ProbeResult>> _runProbe;
 
-    public SessionDiagnosisService(
-        SessionSnapshotService snapshot,
-        SessionProbeService probe,
+    public YouTubeSessionDiagnosisService(
+        YouTubeSessionStore snapshot,
+        YouTubeSessionProbeService probe,
         IConfiguration config,
         Serilog.ILogger log,
         Func<string, string?, string, CancellationToken, Task<ProbeResult>>? runProbe = null)

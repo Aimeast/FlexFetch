@@ -14,7 +14,7 @@ public sealed class YouTubeDownloaderTests
 {
     private static readonly ILogger Log = TestLog.Instance;
 
-    private static (YouTubeDownloader Downloader, SessionSnapshotService Snapshot, string Dir) CreateDownloader(
+    private static (YouTubeDownloader Downloader, YouTubeSessionStore Snapshot, string Dir) CreateDownloader(
         Func<string, OptionSet, CancellationToken, Task<RunResult<VideoData>>>? fetch = null,
         Func<string, OptionSet, Action<double>, Action<long>, CancellationToken, Task<RunResult<string>>>? download = null)
     {
@@ -22,11 +22,11 @@ public sealed class YouTubeDownloaderTests
         var proxy = new DirectProxyService();
         var ytdlp = new YtdlpService(proxy, Log, dir);
         var storage = new StorageService(dir);
-        var snapshot = new SessionSnapshotService(storage);
+        var snapshot = TestApp.CreateYouTubeStore(dir);
         return (new YouTubeDownloader(ytdlp, proxy, storage, Log, snapshot, fetchData: fetch, download: download), snapshot, dir);
     }
 
-    private static void SeedSnapshot(SessionSnapshotService snapshot, string? visitorData = "visitor-123")
+    private static void SeedSnapshot(YouTubeSessionStore snapshot, string? visitorData = "visitor-123")
     {
         snapshot.WriteSnapshot(
             new List<CookieItem>
@@ -34,7 +34,7 @@ public sealed class YouTubeDownloaderTests
                 new() { Domain = ".youtube.com", Name = "SID", Value = "x", HttpOnly = true },
                 new() { Domain = ".youtube.com", Name = "LOGIN_INFO", Value = "y", HttpOnly = true },
             },
-            new SessionMeta { VisitorData = visitorData });
+            new YouTubeSessionMeta { VisitorData = visitorData });
     }
 
     private static RunResult<VideoData> BotCheckFailure() => new(
@@ -199,8 +199,8 @@ public sealed class YouTubeDownloaderTests
                 new VideoData { Title = "Fetched Title", Extension = "webm", Url = "https://example.com/v.webm" });
         });
         SeedSnapshot(snapshot);
-        var snapshotFile = Path.Combine(dir, "session", "session.txt");
-        var snapshotContent = File.ReadAllText(snapshotFile);
+        var snapshotFile = Path.Combine(dir, "session", "youtube.session");
+        var cookiesBefore = snapshot.ReadCookies();
 
         var analysis = await downloader.AnalyzeAsync("https://www.youtube.com/watch?v=abc", "task-1", CancellationToken.None);
 
@@ -213,9 +213,11 @@ public sealed class YouTubeDownloaderTests
         Assert.AreEqual("youtube:player_client=mweb;visitor_data=visitor-123", extractorArgsSeen);
         Assert.AreEqual("Fetched Title", analysis.Title);
 
-        // The copy is deleted after the run; the snapshot is untouched.
+        // The copy is deleted after the run; the session file is untouched.
         Assert.IsFalse(File.Exists(cookieFileSeen), "the one-time copy must be deleted after the run");
-        Assert.AreEqual(snapshotContent, File.ReadAllText(snapshotFile), "the snapshot must not be modified by yt-dlp");
+        var cookiesAfter = snapshot.ReadCookies();
+        Assert.HasCount(cookiesBefore.Count, cookiesAfter, "the session must not be modified by yt-dlp");
+        Assert.AreEqual("x", cookiesAfter[0].Value);
     }
 
     [TestMethod]

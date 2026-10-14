@@ -43,14 +43,18 @@ public static class ServiceRegistration
             sp.GetRequiredService<ILogger>(),
             dataDir));
 
-        // Session maintenance: the Firefox session source, the snapshot store (the
-        // single source of truth for the YouTube login session), the InnerTube probe
-        // and the export pipeline (the only snapshot writer).
-        services.AddSingleton<SessionSnapshotService>();
+        // Session maintenance: the Firefox session source, the encrypted per-site
+        // session file store, the YouTube session store (the single source of
+        // truth for the YouTube login session), the InnerTube probe and the
+        // export pipeline (the only session writer).
+        services.AddSingleton<SessionFileStore>();
+        services.AddSingleton<YouTubeSessionStore>();
+        services.AddSingleton<TwitterSessionStore>();
+        services.AddSingleton<TwitterSessionService>();
         services.AddSingleton<FirefoxBrowserService>();
-        services.AddSingleton<SessionProbeService>();
-        services.AddSingleton<SessionExportService>();
-        services.AddSingleton<SessionDiagnosisService>();
+        services.AddSingleton<YouTubeSessionProbeService>();
+        services.AddSingleton<YouTubeSessionExportService>();
+        services.AddSingleton<YouTubeSessionDiagnosisService>();
         services.AddSingleton<PotProviderService>();
 
         // Downloader plugins are self-discovered via reflection; no manual registration.
@@ -73,8 +77,8 @@ public static class ServiceRegistration
         // service are registered as concrete singletons first so other services can
         // inject them (the session status API reads maintenance; the pot supervisor
         // and maintenance await the startup component plan).
-        services.AddSingleton<SessionMaintenanceHostedService>();
-        services.AddHostedService(sp => sp.GetRequiredService<SessionMaintenanceHostedService>());
+        services.AddSingleton<YouTubeSessionMaintenanceHostedService>();
+        services.AddHostedService(sp => sp.GetRequiredService<YouTubeSessionMaintenanceHostedService>());
         services.AddSingleton<StartupTasksHostedService>();
         services.AddHostedService(sp => sp.GetRequiredService<StartupTasksHostedService>());
         services.AddHostedService<DependencyUpgradeHostedService>();
