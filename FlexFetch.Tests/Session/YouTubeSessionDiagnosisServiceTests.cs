@@ -8,17 +8,17 @@ using ILogger = Serilog.ILogger;
 namespace FlexFetch.Tests;
 
 [TestClass]
-public sealed class SessionDiagnosisServiceTests
+public sealed class YouTubeSessionDiagnosisServiceTests
 {
     private static readonly ILogger Log = TestLog.Instance;
 
     private static ProbeResult Result(YtdlpOutputClass cls, bool success) =>
         new(success, cls, success ? Array.Empty<string>() : new[] { "ERROR: injected" }, "Probe Video");
 
-    private static SessionDiagnosisService CreateService(
-        SessionSnapshotService snapshot,
+    private static YouTubeSessionDiagnosisService CreateService(
+        YouTubeSessionStore snapshot,
         Func<string, string?, string, CancellationToken, Task<ProbeResult>> runner) =>
-        new(snapshot, new SessionProbeService(
+        new(snapshot, new YouTubeSessionProbeService(
                 new YtdlpService(new DirectProxyService(), Log, TestApp.CreateTempDataDir()),
                 new DirectProxyService(), Log),
             new TestConfig(), Log, runner);
@@ -26,7 +26,7 @@ public sealed class SessionDiagnosisServiceTests
     [TestMethod]
     public async Task RunAsync_NoSnapshot_RunsAnonymousItemsOnly()
     {
-        var snapshot = new SessionSnapshotService(new StorageService(TestApp.CreateTempDataDir()));
+        var snapshot = TestApp.CreateYouTubeStore(TestApp.CreateTempDataDir());
         var seen = new List<(string? Cookie, string Args)>();
         var service = CreateService(snapshot, (url, cookieFile, args, ct) =>
         {
@@ -48,12 +48,11 @@ public sealed class SessionDiagnosisServiceTests
     [TestMethod]
     public async Task RunAsync_WithSnapshot_RunsSessionItemsOnCopiesAndStoresReport()
     {
-        var snapshot = new SessionSnapshotService(new StorageService(TestApp.CreateTempDataDir()));
+        var snapshot = TestApp.CreateYouTubeStore(TestApp.CreateTempDataDir());
         snapshot.WriteSnapshot(
             new List<CookieItem> { new() { Domain = ".youtube.com", Name = "SID", Value = "s" } },
-            new SessionMeta { VisitorData = "visitor-1" });
-        var snapshotPath = Path.Combine(Path.GetDirectoryName(snapshot.SnapshotPath)!, "session.txt");
-        var snapshotContent = File.ReadAllText(snapshotPath);
+            new YouTubeSessionMeta { VisitorData = "visitor-1" });
+        var snapshotCookies = snapshot.ReadCookies();
 
         string? sessionCookieFile = null;
         var service = CreateService(snapshot, (url, cookieFile, args, ct) =>
@@ -78,11 +77,14 @@ public sealed class SessionDiagnosisServiceTests
         Assert.IsTrue(report.Items.Any(i => i.Mode == "anonymous" && !i.Healthy));
         StringAssert.Contains(report.Resolution, "Session mode works on mweb");
 
-        // The session item ran on a COPY; the snapshot itself is untouched.
+        // The session item ran on a COPY; the session file itself is untouched.
         Assert.IsNotNull(sessionCookieFile);
-        Assert.AreNotEqual(snapshotPath, sessionCookieFile);
+        Assert.IsTrue(sessionCookieFile.StartsWith(snapshot.CopyDirectory, StringComparison.Ordinal),
+            "the session item must run on a one-time copy");
         Assert.IsFalse(File.Exists(sessionCookieFile), "the copy must be deleted after the run");
-        Assert.AreEqual(snapshotContent, File.ReadAllText(snapshotPath));
+        var cookiesAfter = snapshot.ReadCookies();
+        Assert.HasCount(snapshotCookies.Count, cookiesAfter);
+        Assert.AreEqual("s", cookiesAfter[0].Value);
 
         // The report is stored for the status page (GET /api/session/diagnose).
         Assert.AreSame(report, service.Last);
@@ -92,7 +94,7 @@ public sealed class SessionDiagnosisServiceTests
     [TestMethod]
     public async Task RunAsync_ConcurrentSecondCall_IsRejected()
     {
-        var snapshot = new SessionSnapshotService(new StorageService(TestApp.CreateTempDataDir()));
+        var snapshot = TestApp.CreateYouTubeStore(TestApp.CreateTempDataDir());
         var blocker = new TaskCompletionSource<ProbeResult>();
         var service = CreateService(snapshot, (url, cookieFile, args, ct) => blocker.Task);
 
@@ -115,15 +117,15 @@ public sealed class SessionDiagnosisServiceTests
         var anonOk = new DiagnoseItem("anonymous", "mweb", true, "Ok", true, "t");
 
         // Anonymous works, no snapshot: no session needed.
-        StringAssert.Contains(SessionDiagnosisService.BuildResolution(
+        StringAssert.Contains(YouTubeSessionDiagnosisService.BuildResolution(
             new[] { bot, new DiagnoseItem("anonymous", "mweb", true, "Ok", true, "t") }), "no session needed");
 
         // Anonymous mweb works, session fails: import a fresh jar.
-        StringAssert.Contains(SessionDiagnosisService.BuildResolution(
+        StringAssert.Contains(YouTubeSessionDiagnosisService.BuildResolution(
             new[] { failed, bot, anonOk }), "import a fresh session");
 
         // Everything fails: check the network first.
-        StringAssert.Contains(SessionDiagnosisService.BuildResolution(
+        StringAssert.Contains(YouTubeSessionDiagnosisService.BuildResolution(
             new[] { failed, bot }), "network/proxy");
     }
 

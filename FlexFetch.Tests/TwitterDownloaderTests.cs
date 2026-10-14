@@ -212,16 +212,18 @@ public sealed class TwitterDownloaderTests
     }
 
     [TestMethod]
-    public async Task AnalyzeAsync_UnresolvablePost_FailsWithClearMessage()
+    public async Task AnalyzeAsync_UnresolvablePost_FailsWithLoginRequired()
     {
         var downloader = CreateDownloader((url, _) => url.Contains("syndication.twimg.com")
             ? Task.FromException<string>(new HttpRequestException("404 for " + url))
             : Task.FromResult("<html><body>nothing</body></html>"));
 
-        var exception = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+        // Anonymous with no X session: a gated/removed post surfaces as
+        // login-required, pointing at the Session page.
+        var exception = await Assert.ThrowsExactlyAsync<AuthRequiredException>(() =>
             downloader.AnalyzeAsync("https://x.com/a/status/666", "task-1", CancellationToken.None));
 
-        StringAssert.Contains(exception.Message, "No downloadable media");
+        Assert.AreEqual(AuthFailureReason.LoginRequired, exception.Reason);
     }
 
     [TestMethod]
@@ -234,7 +236,7 @@ public sealed class TwitterDownloaderTests
             return Task.FromResult("<html><body>nothing</body></html>");
         });
 
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+        await Assert.ThrowsExactlyAsync<AuthRequiredException>(() =>
             downloader.AnalyzeAsync("https://x.com/a/status/1851515326581916096/video/1", "task-1", CancellationToken.None));
 
         CollectionAssert.Contains(requested, "https://cdn.syndication.twimg.com/tweet-result?id=1851515326581916096&token=a");

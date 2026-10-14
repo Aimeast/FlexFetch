@@ -19,8 +19,8 @@ namespace FlexFetch.Services.Downloaders;
 /// </summary>
 public sealed class YouTubeDownloader : YtdlpDownloader
 {
-    private readonly SessionSnapshotService _snapshot;
-    private readonly SessionExportService? _export;
+    private readonly YouTubeSessionStore _snapshot;
+    private readonly YouTubeSessionExportService? _export;
     private readonly PotProviderService? _pot;
 
     public YouTubeDownloader(
@@ -28,8 +28,8 @@ public sealed class YouTubeDownloader : YtdlpDownloader
         IProxyService proxy,
         StorageService storage,
         ILogger log,
-        SessionSnapshotService snapshot,
-        SessionExportService? export = null,
+        YouTubeSessionStore snapshot,
+        YouTubeSessionExportService? export = null,
         PotProviderService? pot = null,
         Func<string, OptionSet, CancellationToken, Task<RunResult<VideoData>>>? fetchData = null,
         Func<string, OptionSet, Action<double>, Action<long>, CancellationToken, Task<RunResult<string>>>? download = null)

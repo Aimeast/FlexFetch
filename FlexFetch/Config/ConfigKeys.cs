@@ -23,15 +23,15 @@ public static class ConfigKeys
     public const string RouteRules = "network.routeRules";
     public const string DefaultAction = "network.defaultAction";
 
-    // Session (YouTube login-session maintenance). There is no master
-    // switch: importing a session snapshot opts the deployment in. One
-    // period drives both gears - a young snapshot gets a cheap health
-    // check, an aged snapshot gets the full export pipeline.
-    public const string SessionPeriodHours = "session.periodHours";
-    public const string SessionCanaryReexportThrottleHours = "session.canaryReexportThrottleHours";
-    public const string SessionCanaryFailureThreshold = "session.canaryFailureThreshold";
-    public const string SessionProbeUrl = "session.probeUrl";
-    public const string SessionHumanize = "session.humanizeEnabled";
+    // YouTube login-session maintenance. There is no master switch:
+    // importing a session opts the deployment in. One period drives both
+    // gears - a young snapshot gets a cheap health check, an aged snapshot
+    // gets the full export pipeline.
+    public const string SessionPeriodHours = "youtube.periodHours";
+    public const string SessionCanaryReexportThrottleHours = "youtube.canaryReexportThrottleHours";
+    public const string SessionCanaryFailureThreshold = "youtube.canaryFailureThreshold";
+    public const string SessionProbeUrl = "youtube.probeUrl";
+    public const string SessionHumanize = "youtube.humanizeEnabled";
 
     // PO token provider (bgutil script-deno mode) is always active: it is
     // installed automatically by the supervisor and required for the mweb

@@ -19,8 +19,14 @@
     <main>
         <div class="msg" id="msg"></div>
 
+        <div class="row" id="site-tabs" style="margin-bottom:0.75rem">
+            <button id="tab-btn-youtube" onclick="switchTab('youtube')">YouTube</button>
+            <button id="tab-btn-twitter" class="secondary" onclick="switchTab('twitter')">X (Twitter)</button>
+        </div>
+
+        <div id="tab-youtube">
         <div class="card">
-            <h2>Session</h2>
+            <h2>YouTube session</h2>
             <div class="muted" style="margin-bottom:0.5rem">
                 The snapshot is the single source of truth for the YouTube login
                 session: the periodic refresh pipeline renews it, and yt-dlp
@@ -47,7 +53,7 @@
         </div>
 
         <div class="card">
-            <h2>PO token provider</h2>
+            <h2>YouTube PO token provider</h2>
             <div class="muted" style="margin-bottom:0.5rem">
                 Generates YouTube PO tokens through the bgutil script, executed
                 by Deno whenever yt-dlp needs one (no server process). Needed
@@ -59,7 +65,7 @@
         </div>
 
         <div class="card">
-            <h2>Diagnostic matrix</h2>
+            <h2>YouTube diagnostic matrix</h2>
             <div class="muted" style="margin-bottom:0.5rem">
                 Probes the probe URL with each client posture, anonymously and
                 with the session: every session problem attribution starts from
@@ -90,7 +96,7 @@
         </div>
 
         <div class="card">
-            <h2>Import session</h2>
+            <h2>Import YouTube session</h2>
             <div class="muted" style="margin-bottom:0.5rem">
                 Log in to youtube.com in a real browser, export the cookies of
                 the youtube.com domain (Netscape file or browser JSON export),
@@ -103,6 +109,40 @@
                 <button onclick="importSession(this)">Import</button>
             </div>
             <div class="muted" id="import-progress" style="margin-top:0.5rem; display:none"></div>
+        </div>
+        </div>
+
+        <div id="tab-twitter" style="display:none">
+        <div class="card">
+            <h2>X session</h2>
+            <div class="muted" style="margin-bottom:0.5rem">
+                An imported auth_token unlocks posts that X gates for anonymous
+                visitors (sensitive media, age-restricted content). The token
+                is stored encrypted; downloads still fetch the media from the
+                CDN without it. Nothing here refreshes on its own - verify
+                manually after logging out of that X session elsewhere.
+            </div>
+            <div class="kv" id="tw-status-kv"></div>
+            <div class="row" style="margin-top:0.5rem">
+                <button class="secondary" onclick="checkTwitter(this)">Check now</button>
+                <button class="secondary" onclick="removeTwitter(this)">Remove session</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Import X session</h2>
+            <div class="muted" style="margin-bottom:0.5rem">
+                Log in to x.com in a real browser, export the cookies of the
+                x.com domain (Netscape file or browser JSON export), then
+                paste them here. The auth_token cookie is required; the import
+                is only accepted when x.com confirms the token is live.
+            </div>
+            <textarea id="tw-import-text" rows="8"
+                placeholder="# Netscape HTTP Cookie File ... or [ { &quot;domain&quot;: &quot;.x.com&quot;, ... } ]"></textarea>
+            <div class="row" style="margin-top:0.5rem">
+                <button onclick="importTwitter(this)">Import</button>
+            </div>
+        </div>
         </div>
     </main>
 
@@ -181,14 +221,15 @@
 
         async function loadStatus() {
             try {
-                const status = await api('/api/session/export/status');
+                const status = await api('/api/session/youtube/status');
                 if (!status) return;
                 const meta = status.meta || {};
                 fillKv('status-kv', {
-                    'Snapshot': status.snapshotExists
+                    'Snapshot': status.exists
                         ? '<span class="badge ok">present</span>'
                         : mutedBadge('missing'),
-                    'Snapshot age': status.snapshotAge != null ? (status.snapshotAge / 60).toFixed(1) + ' h' : '-',
+                    'Storage': status.storage,
+                    'Snapshot age': status.ageMinutes != null ? (status.ageMinutes / 60).toFixed(1) + ' h' : '-',
                     'Health': healthBadge(meta.health),
                     'Cookies': meta.cookieCount,
                     'Visitor data': meta.visitorData ? 'present' : '-',
@@ -207,9 +248,9 @@
 
         async function loadCanary() {
             try {
-                const canary = await api('/api/session/canary');
+                const canary = await api('/api/session/youtube/canary');
                 if (!canary) return;
-                const lastHealth = !canary.snapshotExists
+                const lastHealth = !canary.exists
                     ? mutedBadge('no snapshot yet')
                     : canary.lastCheckAt
                         ? healthBadge(canary.lastHealth)
@@ -225,7 +266,7 @@
 
         async function loadPot() {
             try {
-                const pot = await api('/api/session/pot-status');
+                const pot = await api('/api/session/youtube/pot-status');
                 if (!pot) return;
                 fillKv('pot-kv', {
                     'Mode': pot.mode,
@@ -266,7 +307,7 @@
 
         async function loadDiagnose() {
             try {
-                const body = await api('/api/session/diagnose');
+                const body = await api('/api/session/youtube/diagnose');
                 if (!body || !body.last) return; // no report yet: card stays empty
                 renderDiagnose(body.last);
             } catch (e) { /* non-fatal */ }
@@ -277,7 +318,7 @@
             btn.disabled = true;
             show('Running the diagnostic matrix - real yt-dlp probes run in parallel, this takes up to ~1.5 minutes...', true);
             try {
-                const res = await fetch('/api/session/diagnose', { method: 'POST' });
+                const res = await fetch('/api/session/youtube/diagnose', { method: 'POST' });
                 if (res.status === 409) { show('A diagnostic matrix is already running'); return; }
                 if (!res.ok) { show('HTTP ' + res.status); return; }
                 const report = await res.json();
@@ -294,12 +335,12 @@
             if (btn.disabled) return;
             btn.disabled = true;
             try {
-                const res = await fetch('/api/session/export', { method: 'POST' });
+                const res = await fetch('/api/session/youtube/export', { method: 'POST' });
                 if (res.status === 409) { show('A session refresh is already running'); return; }
                 if (!res.ok) { show('HTTP ' + res.status); return; }
                 show('Session refresh started', true);
                 const poll = setInterval(async () => {
-                    const status = await api('/api/session/export/status').catch(() => null);
+                    const status = await api('/api/session/youtube/status').catch(() => null);
                     if (status && !status.isRunning) {
                         clearInterval(poll);
                         btn.disabled = false;
@@ -334,13 +375,13 @@
             render('starting', null);
             progress.style.display = '';
             const poll = setInterval(async () => {
-                const status = await api('/api/session/export/status').catch(() => null);
+                const status = await api('/api/session/youtube/status').catch(() => null);
                 if (status && status.isRunning) {
                     render(status.currentStage || 'probing', status.currentDetail);
                 }
             }, 1000);
             try {
-                const res = await fetch('/api/session/import', {
+                const res = await fetch('/api/session/youtube/import', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ text: text }),
@@ -365,6 +406,99 @@
 
         function fmtDate(value) {
             return value ? new Date(value).toLocaleString() : '-';
+        }
+
+        function switchTab(site) {
+            const youtube = site !== 'twitter';
+            document.getElementById('tab-youtube').style.display = youtube ? '' : 'none';
+            document.getElementById('tab-twitter').style.display = youtube ? 'none' : '';
+            document.getElementById('tab-btn-youtube').className = youtube ? '' : 'secondary';
+            document.getElementById('tab-btn-twitter').className = youtube ? 'secondary' : '';
+            if (!youtube) loadTwitterStatus();
+        }
+
+        async function loadTwitterStatus() {
+            try {
+                const status = await api('/api/session/twitter/status');
+                if (!status) return;
+                const meta = status.meta || {};
+                fillKv('tw-status-kv', {
+                    'Session': status.exists
+                        ? '<span class="badge ok">present</span>'
+                        : mutedBadge('missing'),
+                    'Storage': status.storage,
+                    'Health': healthBadge(meta.health),
+                    'Account': meta.account ? '@' + esc(meta.account) : (meta.userId ? mutedBadge('id ' + meta.userId) : '-'),
+                    'Cookies': status.exists ? status.cookieCount : undefined,
+                    'Imported at': fmtDate(meta.importedAt),
+                    'Last check': meta.lastCheckAt ? fmtDate(meta.lastCheckAt) : (status.exists ? mutedBadge('never') : undefined),
+                    'Last error': meta.lastError,
+                });
+            } catch (e) { show(e.message); }
+        }
+
+        async function importTwitter(btn) {
+            if (btn.disabled) return;
+            const text = document.getElementById('tw-import-text').value;
+            if (!text.trim()) { show('Paste the cookie text first'); return; }
+            btn.disabled = true;
+            try {
+                const res = await fetch('/api/session/twitter/import', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: text }),
+                });
+                const body = await res.json().catch(() => null);
+                if (res.ok && body && body.ok) {
+                    show('Import accepted for @' + (body.account || '(unknown account)'), true);
+                    document.getElementById('tw-import-text').value = '';
+                } else {
+                    show('Import rejected: ' + ((body && (body.error || body.health)) || 'HTTP ' + res.status));
+                }
+            } catch (e) {
+                show(e.message);
+            } finally {
+                btn.disabled = false;
+                loadTwitterStatus();
+            }
+        }
+
+        async function checkTwitter(btn) {
+            if (btn.disabled) return;
+            btn.disabled = true;
+            try {
+                const res = await fetch('/api/session/twitter/check', { method: 'POST' });
+                const body = await res.json().catch(() => null);
+                if (res.ok) {
+                    show('X session check: ' + body.health, body.health === 'Ok');
+                } else {
+                    show((body && body.error) || 'HTTP ' + res.status);
+                }
+            } catch (e) {
+                show(e.message);
+            } finally {
+                btn.disabled = false;
+                loadTwitterStatus();
+            }
+        }
+
+        async function removeTwitter(btn) {
+            if (btn.disabled) return;
+            if (!confirm('Remove the stored X session? Sensitive posts will fail again until a new import.')) return;
+            btn.disabled = true;
+            try {
+                const res = await fetch('/api/session/twitter', { method: 'DELETE' });
+                if (res.ok) {
+                    show('X session removed', true);
+                } else {
+                    show('HTTP ' + res.status);
+                }
+            } catch (e) {
+                show(e.message);
+            } finally {
+                btn.disabled = false;
+                loadTwitterStatus();
+            }
         }
 
         document.getElementById('logout-link').onclick = async () => {

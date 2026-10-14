@@ -5,14 +5,14 @@ using ILogger = Serilog.ILogger;
 namespace FlexFetch.Tests;
 
 [TestClass]
-public sealed class SessionMaintenanceHostedServiceTests
+public sealed class YouTubeSessionMaintenanceHostedServiceTests
 {
     [TestMethod]
     public async Task AgedRound_SuccessfulExport_RecordsOkVerdict()
     {
-        var (health, detail) = await Run(_ => Task.FromResult(SessionHealth.Ok));
+        var (health, detail) = await Run(_ => Task.FromResult(YouTubeSessionHealth.Ok));
 
-        Assert.AreEqual(SessionHealth.Ok, health);
+        Assert.AreEqual(YouTubeSessionHealth.Ok, health);
         Assert.IsNull(detail);
     }
 
@@ -20,9 +20,9 @@ public sealed class SessionMaintenanceHostedServiceTests
     public async Task AgedRound_RejectedExport_RecordsRejectionHealth()
     {
         var (health, detail) = await Run(_ =>
-            throw new ExportRejectedException(SessionHealth.SessionRotated, "the jar was rotated"));
+            throw new ExportRejectedException(YouTubeSessionHealth.SessionRotated, "the jar was rotated"));
 
-        Assert.AreEqual(SessionHealth.SessionRotated, health);
+        Assert.AreEqual(YouTubeSessionHealth.SessionRotated, health);
         Assert.AreEqual("the jar was rotated", detail);
     }
 
@@ -31,7 +31,7 @@ public sealed class SessionMaintenanceHostedServiceTests
     {
         var (health, detail) = await Run(_ => throw new InvalidOperationException("boom"));
 
-        Assert.AreEqual(SessionHealth.Error, health);
+        Assert.AreEqual(YouTubeSessionHealth.Error, health);
         Assert.AreEqual("boom", detail);
     }
 
@@ -42,7 +42,7 @@ public sealed class SessionMaintenanceHostedServiceTests
         cts.Cancel();
 
         await Assert.ThrowsExactlyAsync<OperationCanceledException>(
-            () => SessionMaintenanceHostedService.RunAgedExportRoundAsync(
+            () => YouTubeSessionMaintenanceHostedService.RunAgedExportRoundAsync(
                 TestLog.Instance,
                 ct => throw new OperationCanceledException(ct),
                 (_, _) => Assert.Fail("a cancelled round must not record a verdict"),
@@ -55,22 +55,22 @@ public sealed class SessionMaintenanceHostedServiceTests
         // WebBindingOnly is informational (InnerTube accepted, only the web
         // surface declined) - it must not walk the failure counter toward
         // the alert.
-        Assert.IsTrue(SessionMaintenanceHostedService.IsUsable(SessionHealth.Ok));
-        Assert.IsTrue(SessionMaintenanceHostedService.IsUsable(SessionHealth.WebBindingOnly));
-        Assert.IsFalse(SessionMaintenanceHostedService.IsUsable(SessionHealth.BotCheck));
-        Assert.IsFalse(SessionMaintenanceHostedService.IsUsable(SessionHealth.SessionRotated));
-        Assert.IsFalse(SessionMaintenanceHostedService.IsUsable(SessionHealth.JarInconsistent));
-        Assert.IsFalse(SessionMaintenanceHostedService.IsUsable(SessionHealth.LoginRequired));
-        Assert.IsFalse(SessionMaintenanceHostedService.IsUsable(SessionHealth.Error));
-        Assert.IsFalse(SessionMaintenanceHostedService.IsUsable(SessionHealth.Unknown));
+        Assert.IsTrue(YouTubeSessionMaintenanceHostedService.IsUsable(YouTubeSessionHealth.Ok));
+        Assert.IsTrue(YouTubeSessionMaintenanceHostedService.IsUsable(YouTubeSessionHealth.WebBindingOnly));
+        Assert.IsFalse(YouTubeSessionMaintenanceHostedService.IsUsable(YouTubeSessionHealth.BotCheck));
+        Assert.IsFalse(YouTubeSessionMaintenanceHostedService.IsUsable(YouTubeSessionHealth.SessionRotated));
+        Assert.IsFalse(YouTubeSessionMaintenanceHostedService.IsUsable(YouTubeSessionHealth.JarInconsistent));
+        Assert.IsFalse(YouTubeSessionMaintenanceHostedService.IsUsable(YouTubeSessionHealth.LoginRequired));
+        Assert.IsFalse(YouTubeSessionMaintenanceHostedService.IsUsable(YouTubeSessionHealth.Error));
+        Assert.IsFalse(YouTubeSessionMaintenanceHostedService.IsUsable(YouTubeSessionHealth.Unknown));
     }
 
-    private static async Task<(SessionHealth? Health, string? Detail)> Run(
-        Func<CancellationToken, Task<SessionHealth>> runExport)
+    private static async Task<(YouTubeSessionHealth? Health, string? Detail)> Run(
+        Func<CancellationToken, Task<YouTubeSessionHealth>> runExport)
     {
-        SessionHealth? health = null;
+        YouTubeSessionHealth? health = null;
         string? detail = null;
-        await SessionMaintenanceHostedService.RunAgedExportRoundAsync(
+        await YouTubeSessionMaintenanceHostedService.RunAgedExportRoundAsync(
             TestLog.Instance,
             runExport,
             (h, d) =>

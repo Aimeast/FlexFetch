@@ -140,7 +140,7 @@ public sealed class AnonymousAccessTests
         Assert.AreEqual(HttpStatusCode.Unauthorized, (await guest.GetAsync("/api/auth/me")).StatusCode);
         Assert.AreEqual(HttpStatusCode.Unauthorized, (await guest.GetAsync("/api/users/pending")).StatusCode);
         Assert.AreEqual(HttpStatusCode.Unauthorized, (await guest.GetAsync("/api/system/info")).StatusCode);
-        Assert.AreEqual(HttpStatusCode.Unauthorized, (await guest.GetAsync("/api/session/export/status")).StatusCode);
+        Assert.AreEqual(HttpStatusCode.Unauthorized, (await guest.GetAsync("/api/session/youtube/status")).StatusCode);
         var password = await guest.PostAsJsonAsync(
             "/api/auth/change-password", new { currentPassword = "x", newPassword = "yyyyyy" });
         Assert.AreEqual(HttpStatusCode.Unauthorized, password.StatusCode);

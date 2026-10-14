@@ -1,4 +1,7 @@
-﻿using FlexFetch.Services.Routing;
+﻿using FlexFetch.Services;
+using FlexFetch.Services.Routing;
+using FlexFetch.Services.Session;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Primitives;
@@ -17,6 +20,20 @@ public static class TestApp
         var dir = Path.Combine(Path.GetTempPath(), "flexfetch-test-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         return dir;
+    }
+
+    /// <summary>
+    /// A YouTube session store against an isolated data dir; the Data
+    /// Protection provider is ephemeral (per-call key ring), which is enough
+    /// because each test round-trips within one provider instance. Tests
+    /// that need several stores over one key ring pass their own
+    /// <see cref="SessionFileStore"/>.
+    /// </summary>
+    public static YouTubeSessionStore CreateYouTubeStore(string dataDir, SessionFileStore? files = null)
+    {
+        var storage = new StorageService(dataDir);
+        files ??= new SessionFileStore(storage, new EphemeralDataProtectionProvider(), TestLog.Instance);
+        return new YouTubeSessionStore(files, storage, TestLog.Instance);
     }
 
     public static WebApplicationFactory<Program> CreateFactory(

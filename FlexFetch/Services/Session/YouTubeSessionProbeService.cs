@@ -32,7 +32,7 @@ public sealed record ProbeResult(
 /// direct connection) must never hold the caller - the export lock or an
 /// HTTP request - forever.
 /// </summary>
-public sealed class SessionProbeService
+public sealed class YouTubeSessionProbeService
 {
     /// <summary>Hard per-probe timeout; a metadata fetch takes seconds when
     /// the network path works at all.</summary>
@@ -43,7 +43,7 @@ public sealed class SessionProbeService
     private readonly PotProviderService? _pot;
     private readonly ILogger _log;
 
-    public SessionProbeService(YtdlpService ytdlp, IProxyService proxy, ILogger log,
+    public YouTubeSessionProbeService(YtdlpService ytdlp, IProxyService proxy, ILogger log,
         PotProviderService? pot = null)
     {
         _ytdlp = ytdlp;
