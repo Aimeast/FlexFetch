@@ -61,6 +61,7 @@ public sealed class SessionFileStore
     private readonly IDataProtectionProvider _protection;
     private readonly ILogger _log;
     private readonly ConcurrentDictionary<string, IDataProtector> _protectors = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, object> _siteLocks = new(StringComparer.Ordinal);
 
     public SessionFileStore(StorageService storage, IDataProtectionProvider protection, ILogger log)
     {
@@ -126,20 +127,79 @@ public sealed class SessionFileStore
 
     /// <summary>
     /// Encrypts and atomically replaces the site's session file. A crash
-    /// mid-write leaves only a .tmp leftover, never a broken file.
+    /// mid-write leaves only a .tmp leftover, never a broken file. Serialized
+    /// per site: two writers to one site can never share the .tmp path.
     /// </summary>
     public void Write<TMeta>(string site, SessionFile<TMeta> file)
     {
-        file.Version = SessionFile<TMeta>.CurrentVersion;
-        file.Site = site;
-        var blob = Protector(site).Protect(JsonSerializer.SerializeToUtf8Bytes(file, JsonOptions));
-        Directory.CreateDirectory(_sessionDir);
-        var path = PathFor(site);
-        var tmp = path + ".tmp";
-        File.WriteAllBytes(tmp, blob);
-        RestrictPermissions(tmp);
-        File.Move(tmp, path, overwrite: true);
+        lock (SiteLock(site))
+        {
+            file.Version = SessionFile<TMeta>.CurrentVersion;
+            file.Site = site;
+            var blob = Protector(site).Protect(JsonSerializer.SerializeToUtf8Bytes(file, JsonOptions));
+            Directory.CreateDirectory(_sessionDir);
+            var path = PathFor(site);
+            var tmp = path + ".tmp";
+            File.WriteAllBytes(tmp, blob);
+            RestrictPermissions(tmp);
+            File.Move(tmp, path, overwrite: true);
+        }
     }
+
+    /// <summary>
+    /// Read-modify-write under the site's write lock: a meta-only update can
+    /// never interleave with another write, so it cannot clobber a
+    /// concurrently stored jar with stale cookies. Returns false when the
+    /// file does not exist - a meta-only update must never resurrect a
+    /// cleared session. Throws SessionFileUnreadableException when the file
+    /// exists but cannot be read back; the caller decides whether to
+    /// swallow that.
+    /// </summary>
+    public bool Update<TMeta>(string site, Action<SessionFile<TMeta>> update)
+    {
+        lock (SiteLock(site))
+        {
+            var file = Read<TMeta>(site);
+            if (file is null)
+            {
+                return false;
+            }
+
+            update(file);
+            Write(site, file);
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Removes the site's session file under the site's write lock, so an
+    /// in-flight meta update cannot resurrect the cleared file afterwards.
+    /// Returns true when a file was removed.
+    /// </summary>
+    public bool Delete(string site)
+    {
+        lock (SiteLock(site))
+        {
+            var path = PathFor(site);
+            if (!File.Exists(path))
+            {
+                return false;
+            }
+
+            File.Delete(path);
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// The per-site mutation lock: one lock per site file, different sites
+    /// are independent. Every writer in the process reaches it through this
+    /// singleton store. A plain monitor lock is enough - the guarded
+    /// sections are synchronous file operations only - and its reentrancy
+    /// lets Update call Write on the same site.
+    /// </summary>
+    private object SiteLock(string site) =>
+        _siteLocks.GetOrAdd(site.ToLowerInvariant(), _ => new object());
 
     private IDataProtector Protector(string site) =>
         _protectors.GetOrAdd(site.ToLowerInvariant(), s => _protection.CreateProtector("FlexFetch.SessionFiles." + s));

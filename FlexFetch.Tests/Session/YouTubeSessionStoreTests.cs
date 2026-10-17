@@ -200,6 +200,156 @@ public sealed class YouTubeSessionStoreTests
     }
 
     [TestMethod]
+    public void UpdateMeta_OnMissingSession_DoesNotCreateIt()
+    {
+        var store = CreateStore();
+
+        store.UpdateMeta(m => m.Health = YouTubeSessionHealth.Ok.ToString());
+
+        Assert.IsFalse(store.Exists, "a canary verdict must not resurrect a cleared session");
+        Assert.IsNull(store.Age);
+    }
+
+    [TestMethod]
+    public void FileStore_ConcurrentMetaUpdates_AreAllApplied()
+    {
+        var storage = new StorageService(_dir);
+        var files = new SessionFileStore(storage, new EphemeralDataProtectionProvider(), TestLog.Instance);
+        files.Write("youtube", new SessionFile<YouTubeSessionMeta>
+        {
+            Cookies = new List<CookieItem> { new() { Domain = ".youtube.com", Name = "SID", Value = "s" } },
+            Meta = new YouTubeSessionMeta(),
+        });
+
+        // Parallel read-modify-write rounds: every update increments the
+        // counter, so the final value proves that no update was lost to a
+        // racing writer (the per-site lock serializes the whole envelope
+        // swap; the tmp file is also shared and would corrupt without it).
+        const int writers = 4;
+        const int updatesPerWriter = 50;
+        var start = new ManualResetEventSlim(false);
+        var tasks = Enumerable.Range(0, writers).Select(_ => Task.Run(() =>
+        {
+            start.Wait();
+            for (var i = 0; i < updatesPerWriter; i++)
+            {
+                files.Update<YouTubeSessionMeta>("youtube", f => f.Meta!.CookieCount++);
+            }
+        })).ToList();
+        start.Set();
+        Task.WaitAll(tasks.ToArray());
+
+        var meta = files.Read<YouTubeSessionMeta>("youtube")!.Meta;
+        Assert.IsNotNull(meta);
+        Assert.AreEqual(writers * updatesPerWriter, meta.CookieCount,
+            "a lost update leaves the counter behind; the per-site lock must serialize the read-modify-write");
+        Assert.AreEqual("s", files.Read<YouTubeSessionMeta>("youtube")!.Cookies.Single().Value);
+    }
+
+    [TestMethod]
+    public void FileStore_Update_OnMissingFile_ReturnsFalseWithoutCreatingIt()
+    {
+        var storage = new StorageService(_dir);
+        var files = new SessionFileStore(storage, new EphemeralDataProtectionProvider(), TestLog.Instance);
+
+        var applied = files.Update<YouTubeSessionMeta>("youtube", f => f.Meta = new YouTubeSessionMeta());
+
+        Assert.IsFalse(applied);
+        Assert.IsFalse(files.Exists("youtube"), "a meta-only update must not create the session file");
+    }
+
+    [TestMethod]
+    public void FileStore_Update_AfterDelete_DoesNotResurrectTheSession()
+    {
+        var storage = new StorageService(_dir);
+        var files = new SessionFileStore(storage, new EphemeralDataProtectionProvider(), TestLog.Instance);
+        files.Write("youtube", new SessionFile<YouTubeSessionMeta>
+        {
+            Cookies = new List<CookieItem> { new() { Domain = ".youtube.com", Name = "SID", Value = "s" } },
+        });
+        Assert.IsTrue(files.Delete("youtube"));
+
+        var applied = files.Update<YouTubeSessionMeta>("youtube", f => f.Meta!.Health = "Ok");
+
+        Assert.IsFalse(applied);
+        Assert.IsFalse(files.Exists("youtube"));
+    }
+
+    [TestMethod]
+    public void FileStore_Update_RewritesMetaAndKeepsCookies()
+    {
+        var storage = new StorageService(_dir);
+        var files = new SessionFileStore(storage, new EphemeralDataProtectionProvider(), TestLog.Instance);
+        files.Write("youtube", new SessionFile<YouTubeSessionMeta>
+        {
+            Cookies = new List<CookieItem> { new() { Domain = ".youtube.com", Name = "SID", Value = "s" } },
+            Meta = new YouTubeSessionMeta(),
+        });
+
+        var applied = files.Update<YouTubeSessionMeta>("youtube", f =>
+        {
+            f.Meta!.Health = "BotCheck";
+            f.Meta.LastError = "probe rejected";
+        });
+
+        Assert.IsTrue(applied);
+        var file = files.Read<YouTubeSessionMeta>("youtube");
+        Assert.IsNotNull(file);
+        Assert.AreEqual("BotCheck", file.Meta!.Health);
+        Assert.AreEqual("probe rejected", file.Meta.LastError);
+        Assert.AreEqual("s", file.Cookies.Single().Value);
+        Assert.AreEqual(SessionFile<YouTubeSessionMeta>.CurrentVersion, file.Version);
+        Assert.AreEqual("youtube", file.Site);
+    }
+
+    [TestMethod]
+    public void FileStore_Update_OnUnreadableFile_ThrowsSessionFileUnreadable()
+    {
+        var storage = new StorageService(_dir);
+        var files = new SessionFileStore(storage, new EphemeralDataProtectionProvider(), TestLog.Instance);
+        files.Write("youtube", new SessionFile<YouTubeSessionMeta>
+        {
+            Cookies = new List<CookieItem> { new() { Domain = ".youtube.com", Name = "SID", Value = "s" } },
+        });
+        var path = files.PathFor("youtube");
+        var blob = File.ReadAllBytes(path);
+        blob[^5] ^= 0xFF;
+        File.WriteAllBytes(path, blob);
+
+        // The update must not silently rewrite an envelope it cannot read
+        // back; swallowing that is the store's (caller's) decision.
+        Assert.ThrowsExactly<SessionFileUnreadableException>(
+            () => files.Update<YouTubeSessionMeta>("youtube", f => f.Meta!.Health = "Ok"));
+    }
+
+    [TestMethod]
+    public void FileStore_Delete_RemovesOnlyTheNamedSite()
+    {
+        var storage = new StorageService(_dir);
+        var files = new SessionFileStore(storage, new EphemeralDataProtectionProvider(), TestLog.Instance);
+        files.Write("youtube", new SessionFile<YouTubeSessionMeta> { Cookies = new List<CookieItem>() });
+        files.Write("twitter", new SessionFile<YouTubeSessionMeta> { Cookies = new List<CookieItem>() });
+
+        Assert.IsFalse(files.Delete("vimeo"), "deleting an absent site must report false");
+        Assert.IsTrue(files.Delete("youtube"));
+        Assert.IsFalse(files.Exists("youtube"));
+        Assert.IsTrue(files.Exists("twitter"));
+    }
+
+    [TestMethod]
+    public void FileStore_WriteAndUpdate_LeaveNoTemporaryFileBehind()
+    {
+        var storage = new StorageService(_dir);
+        var files = new SessionFileStore(storage, new EphemeralDataProtectionProvider(), TestLog.Instance);
+
+        files.Write("youtube", new SessionFile<YouTubeSessionMeta> { Cookies = new List<CookieItem>() });
+        files.Update<YouTubeSessionMeta>("youtube", f => f.Meta = new YouTubeSessionMeta());
+
+        var leftovers = Directory.GetFiles(Path.Combine(_dir, "session"), "*.tmp");
+        Assert.IsEmpty(leftovers, "the atomic replace must move the temporary file away");
+    }
+
+    [TestMethod]
     public void CreateSnapshotCopy_IsIndependentOfTheSession()
     {
         var store = CreateStore();

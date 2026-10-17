@@ -93,6 +93,24 @@ public sealed class TwitterSessionServiceTests
     }
 
     [TestMethod]
+    public void UpdateMeta_DoesNotResurrectAClearedSession()
+    {
+        var (store, _, _) = Create();
+        store.Write(
+            new List<CookieItem> { new() { Domain = ".x.com", Name = "auth_token", Value = "t" } },
+            new TwitterSessionMeta());
+        store.Delete();
+
+        // The downloader records auth-failure verdicts from concurrent
+        // download tasks; racing a session clearance must not bring the
+        // file back as an empty jar.
+        store.UpdateMeta(m => m.Health = TwitterSessionHealth.Invalid.ToString());
+
+        Assert.IsFalse(store.Exists);
+        Assert.IsNull(store.ReadMeta());
+    }
+
+    [TestMethod]
     public async Task ImportAsync_RejectsJarWithoutTwitterDomains()
     {
         var (_, service, _) = Create((url, headers, ct) => Task.FromResult(IdentityResponseWithCookies()));

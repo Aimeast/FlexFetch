@@ -91,15 +91,19 @@ public sealed class TwitterSessionStore
         _files.Write(SiteName, new SessionFile<TwitterSessionMeta> { Cookies = cookies.ToList(), Meta = meta });
     }
 
-    /// <summary>Updates only the metadata (e.g. check verdicts).</summary>
+    /// <summary>Updates only the metadata (e.g. check verdicts). Skipped
+    /// when no session file exists - a meta-only update must not resurrect
+    /// a cleared session (the downloader records verdicts from concurrent
+    /// download tasks, which can race a clearance).</summary>
     public void UpdateMeta(Action<TwitterSessionMeta> update)
     {
         try
         {
-            var file = _files.Read<TwitterSessionMeta>(SiteName) ?? new SessionFile<TwitterSessionMeta>();
-            file.Meta ??= new TwitterSessionMeta();
-            update(file.Meta);
-            _files.Write(SiteName, file);
+            _files.Update<TwitterSessionMeta>(SiteName, file =>
+            {
+                file.Meta ??= new TwitterSessionMeta();
+                update(file.Meta);
+            });
         }
         catch (SessionFileUnreadableException)
         {
@@ -109,14 +113,7 @@ public sealed class TwitterSessionStore
     }
 
     /// <summary>Removes the session file (anonymous mode again).</summary>
-    public void Delete()
-    {
-        var path = _files.PathFor(SiteName);
-        if (File.Exists(path))
-        {
-            File.Delete(path);
-        }
-    }
+    public void Delete() => _files.Delete(SiteName);
 
     /// <summary>
     /// Keeps only cookies whose domain belongs to x.com or twitter.com (the

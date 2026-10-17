@@ -183,15 +183,18 @@ public sealed class YouTubeSessionStore
         _files.Write(SiteName, new SessionFile<YouTubeSessionMeta> { Cookies = cookies.ToList(), Meta = meta });
     }
 
-    /// <summary>Updates only the metadata (e.g. canary verdicts).</summary>
+    /// <summary>Updates only the metadata (e.g. canary verdicts). Skipped
+    /// when no session file exists - a meta-only update must not resurrect
+    /// a cleared session.</summary>
     public void UpdateMeta(Action<YouTubeSessionMeta> update)
     {
         try
         {
-            var file = _files.Read<YouTubeSessionMeta>(SiteName) ?? new SessionFile<YouTubeSessionMeta>();
-            file.Meta ??= new YouTubeSessionMeta();
-            update(file.Meta);
-            _files.Write(SiteName, file);
+            _files.Update<YouTubeSessionMeta>(SiteName, file =>
+            {
+                file.Meta ??= new YouTubeSessionMeta();
+                update(file.Meta);
+            });
         }
         catch (SessionFileUnreadableException)
         {
