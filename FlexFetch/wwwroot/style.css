@@ -168,8 +168,10 @@ th:nth-child(3), td:nth-child(3) { width: 6.5rem; min-width: 6.5rem; }
 th:nth-child(4), td:nth-child(4) { width: 9.5rem; min-width: 9.5rem; }
 
 /* Group header row: the original download URL spanning all columns.
-   Flex layout: URL text takes the remaining space (wraps, never overlaps
-   the right-aligned actions). */
+   Desktop layout: one line, the URL grows into the remaining space and
+   the actions stay right-aligned. The phone card layout swaps this for a
+   float of the actions (see the media query below) so the URL can use the
+   card's full width and share its last line with the buttons. */
 td.group-url-cell {
     background: #eef1f6;
     color: var(--muted);
@@ -358,6 +360,15 @@ dialog.card p { word-break: break-all; }
         width: 100%;
         min-width: 0;
     }
+
+    /* URL row in the card layout: the URL uses the card's full width and
+       the actions float at the right of the line where they occur - the
+       URL's last line - so the leftover text shares that line with the
+       buttons instead of leaving a mostly empty button row below. The
+       float only drops to its own (right-aligned) line when the last URL
+       line has no room left for the buttons. flow-root contains it. */
+    td.group-url-cell .url-row { display: flow-root; }
+    td.group-url-cell .url-actions { float: right; margin-left: 0.5rem; }
 
     /* On phones each file-row cell shows its column header (data-label)
        before the value: label floats left, value aligns right. Cells

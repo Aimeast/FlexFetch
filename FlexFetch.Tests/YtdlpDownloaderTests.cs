@@ -617,6 +617,93 @@ public sealed class YtdlpDownloaderTests
         }
     }
 
+    /// <summary>Runs a download whose fake yt-dlp process fails with the
+    /// given stderr lines and returns the resulting task-facing message.</summary>
+    private static async Task<string> DownloadFailureMessageAsync(string[] errorOutput)
+    {
+        var dir = TestApp.CreateTempDataDir();
+        try
+        {
+            var proxy = new DirectProxyService();
+            var ytdlp = new YtdlpService(proxy, Log, dir);
+            var storage = new StorageService(dir);
+            var task = new TaskItem { Id = "t-fail", Url = "https://vimeo.com/123" };
+            var analysis = new AnalysisResult { Title = "Clip", SuggestedFileName = "Clip.mp4" };
+            var downloader = new YtdlpDownloader(ytdlp, proxy, storage, Log,
+                download: (_, _, _, _, _) => Task.FromResult(
+                    new RunResult<string>(false, errorOutput, string.Empty)));
+
+            var ex = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+                () => downloader.DownloadAsync(task, analysis, _ => { }, CancellationToken.None));
+            return ex.Message;
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task DownloadAsync_GiveUpReportSplitAtCarriageReturn_SurfacesTheDetail()
+    {
+        // yt-dlp reports a fatal give-up as a single report carrying a
+        // carriage return ("ERROR: \r[download] Got error: <reason>. Giving
+        // up after N retries"). The process line reader splits on the lone
+        // \r, so the captured lines are a text-less "ERROR: " prefix
+        // fragment plus its continuation. The task message must show the
+        // continuation instead of joining the empty prefixes (on the NAS
+        // this surfaced as "yt-dlp download failed: ERROR: ;ERROR: ").
+        var message = await DownloadFailureMessageAsync(new[]
+        {
+            "ERROR: ",
+            "[download] Got error: HTTP Error 403: Forbidden. Giving up after 10 retries",
+            "ERROR: ",
+            "[download] Got error: HTTP Error 403: Forbidden. Giving up after 10 retries",
+        });
+
+        Assert.AreEqual(
+            "yt-dlp download failed: [download] Got error: HTTP Error 403: Forbidden. Giving up after 10 retries",
+            message);
+    }
+
+    [TestMethod]
+    public async Task DownloadAsync_CarriageReturnInsideOneCapturedLine_IsSplit()
+    {
+        // Defensive: even when a carriage return survives inside a single
+        // captured element, the prefix and the detail must be separated.
+        var message = await DownloadFailureMessageAsync(new[]
+        {
+            "ERROR: \rThe downloaded file is empty",
+        });
+
+        Assert.AreEqual("yt-dlp download failed: The downloaded file is empty", message);
+    }
+
+    [TestMethod]
+    public async Task DownloadAsync_ErrorLineWithText_KeepsPriorityOverTail()
+    {
+        // A text-carrying ERROR line is the primary message; warning lines
+        // and empty prefixes stay out of it.
+        var message = await DownloadFailureMessageAsync(new[]
+        {
+            "WARNING: Some earlier warning",
+            "ERROR: [site] abc: Video unavailable",
+            "ERROR: ",
+        });
+
+        Assert.AreEqual("yt-dlp download failed: ERROR: [site] abc: Video unavailable", message);
+    }
+
+    [TestMethod]
+    public async Task DownloadAsync_NoCapturedText_DropsTheEmptyJoin()
+    {
+        // Nothing but empty prefix fragments: the message must not trail an
+        // empty join ("yt-dlp download failed: ").
+        var message = await DownloadFailureMessageAsync(new[] { "ERROR: ", "ERROR: " });
+
+        Assert.AreEqual("yt-dlp download failed (no error details reported)", message);
+    }
+
     [TestMethod]
     public void NormalizeProgress_ClampsToUnitRange()
     {
