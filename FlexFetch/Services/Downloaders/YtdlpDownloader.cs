@@ -440,8 +440,40 @@ public class YtdlpDownloader : IDownloader
         };
     }
 
-    private static string BuildFailureMessage(IReadOnlyList<string> errorOutput, string prefix) =>
-        $"{prefix}: {string.Join(';', errorOutput.Where(l => l.StartsWith("ERROR:", StringComparison.OrdinalIgnoreCase)).Take(3))}";
+    /// <summary>
+    /// Assembles the task-facing message of a failed run. The captured lines
+    /// are yt-dlp's stderr; a give-up report embeds a carriage return after
+    /// the ERROR prefix ("ERROR: \r[download] Got error: ..."), so the line
+    /// reader leaves a text-less "ERROR: " fragment plus its continuation
+    /// lines. Fragments with text win, ERROR ones first; when none carries
+    /// text the tail of the output does - that is where the give-up detail
+    /// lives. Without any text the message names the failure class alone
+    /// instead of trailing an empty join.
+    /// </summary>
+    private static string BuildFailureMessage(IReadOnlyList<string> errorOutput, string prefix)
+    {
+        var fragments = errorOutput
+            .SelectMany(line => line.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+            .Select(fragment => fragment.Trim())
+            .Where(fragment => fragment.Length > 0
+                && !fragment.Equals("ERROR:", StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        var errors = fragments
+            .Where(fragment => fragment.StartsWith("ERROR:", StringComparison.OrdinalIgnoreCase))
+            .Take(3)
+            .ToList();
+        if (errors.Count > 0)
+        {
+            return $"{prefix}: {string.Join(';', errors)}";
+        }
+
+        var detail = fragments.TakeLast(3).ToList();
+        return detail.Count > 0
+            ? $"{prefix}: {string.Join(';', detail)}"
+            : $"{prefix} (no error details reported)";
+    }
 
     /// <summary>Runs the real yt-dlp binary to download the video (injectable in tests).</summary>
     private async Task<RunResult<string>> DefaultDownloadVideoAsync(
