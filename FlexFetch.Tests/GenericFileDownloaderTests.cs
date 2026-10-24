@@ -132,6 +132,50 @@ public sealed class GenericFileDownloaderTests
     }
 
     [TestMethod]
+    public async Task Download_PrefersAnalyzedNameOverTaskTitle()
+    {
+        // Child titles are page titles and carry no extension; the analyzed
+        // name (extension-complete and group-unique) must win, otherwise
+        // same-titled children overwrite each other's file.
+        using var server = new TestHttpServer(_ => new TestHttpServer.HttpResponse(200, new byte[] { 7 }));
+        var task = new TaskItem
+        {
+            Id = "t7",
+            Url = server.BaseUrl + "/videos/clip.mp4",
+            OwnerUserId = "u",
+            FileName = "My Page",
+        };
+        var analysis = new AnalysisResult
+        {
+            Title = "My Page",
+            DirectUrl = task.Url,
+            SuggestedFileName = "clip.mp4",
+        };
+
+        await _downloader!.DownloadAsync(task, analysis, _ => { }, CancellationToken.None);
+
+        Assert.AreEqual("clip.mp4", task.FileName);
+        Assert.IsTrue(File.Exists(_storage!.GetTaskFilePath("t7", "clip.mp4")));
+        Assert.IsFalse(File.Exists(_storage.GetTaskFilePath("t7", "My Page")));
+    }
+
+    [TestMethod]
+    public async Task Download_ChunkedResponse_RecordsOnDiskSize()
+    {
+        // No Content-Length means the progress total is unknown; completion
+        // must adopt the file's real size instead of leaving 0.
+        var body = Enumerable.Range(0, 4096).Select(i => (byte)i).ToArray();
+        using var server = new TestHttpServer(_ => new TestHttpServer.HttpResponse(200, body, Chunked: true));
+        var task = new TaskItem { Id = "t8", Url = server.BaseUrl + "/chunked.bin", OwnerUserId = "u" };
+        var analysis = new AnalysisResult { Title = "chunked.bin", DirectUrl = task.Url };
+
+        await _downloader!.DownloadAsync(task, analysis, _ => { }, CancellationToken.None);
+
+        Assert.AreEqual(body.Length, task.FileSize);
+        Assert.AreEqual("chunked.bin", task.FileName);
+    }
+
+    [TestMethod]
     public async Task Download_ReportsProgress()
     {
         var body = Enumerable.Range(0, 100_000).Select(i => (byte)(i % 251)).ToArray();

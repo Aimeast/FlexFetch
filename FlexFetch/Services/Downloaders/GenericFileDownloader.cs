@@ -143,6 +143,10 @@ public sealed class GenericFileDownloader : IDownloader
                 File.Delete(finalPath);
             }
             File.Move(partPath, finalPath);
+
+            // A chunked response carries no Content-Length, so the running
+            // estimate was 0. The file on disk is the final size.
+            task.FileSize = new FileInfo(finalPath).Length;
         }
     }
 
@@ -206,16 +210,19 @@ public sealed class GenericFileDownloader : IDownloader
             return FileNameRules.Sanitize(headerName);
         }
 
-        // The task's own filename (e.g. the title set when a child task was
-        // submitted from analysis) beats the URL-inferred fallback name.
-        if (!string.IsNullOrWhiteSpace(taskFileName))
-        {
-            return FileNameRules.Sanitize(taskFileName);
-        }
-
+        // The task's own filename is only a fallback: the executor has
+        // already resolved (and made group-unique) the analysis name, which
+        // also carries the real extension. A raw title must never win over
+        // it - several children of one page share a title, and overwriting
+        // each other's file would lose downloads.
         if (!string.IsNullOrWhiteSpace(analysis.SuggestedFileName))
         {
             return FileNameRules.Sanitize(analysis.SuggestedFileName);
+        }
+
+        if (!string.IsNullOrWhiteSpace(taskFileName))
+        {
+            return FileNameRules.Sanitize(taskFileName);
         }
 
         return FileNameRules.Sanitize(FileNameRules.InferFromUrl(url.ToString()));

@@ -292,6 +292,33 @@ public sealed class DownloaderTaskExecutorTests
     }
 
     [TestMethod]
+    public async Task ExecuteAsync_StampsResolvedFileNameBeforeDownload()
+    {
+        // The executor resolves the extension-complete, group-unique name;
+        // the task record must carry that same name so downloaders that
+        // prefer a recorded name still write the right file.
+        var task = new TaskItem
+        {
+            OwnerUserId = "user-1",
+            Url = "https://example.com/clip",
+            FileName = "Page Title",
+        };
+        var downloader = new FakeDownloader("Generic") { SuggestedFileName = "clip.mp4" };
+        var executor = new DownloaderTaskExecutor(
+            new DownloaderFactory(new IDownloader[] { downloader }),
+            new DirectProxyService(),
+            _tasks!,
+            _storage!,
+            Log,
+            probe: ProbeNone);
+
+        await executor.ExecuteAsync(task, _ => { }, CancellationToken.None);
+
+        Assert.AreEqual("clip.mp4", task.FileName);
+        Assert.AreEqual("clip.mp4", downloader.LastDownloadedName);
+    }
+
+    [TestMethod]
     public async Task ExecuteAsync_ChildNameClash_SuffixesNewFileAndRenamesSibling()
     {
         // Same-titled entries in one group folder (browser/HTML expansion

@@ -91,6 +91,31 @@ public sealed class TaskServiceTests
     }
 
     [TestMethod]
+    public async Task Submit_LateProgressAfterCompletion_IsIgnored()
+    {
+        // yt-dlp reports through Progress<T>, whose callbacks can be posted
+        // after the run finished. A late fraction must not rewrite the
+        // completed 100.
+        var late = new TaskCompletionSource<Action<double>>();
+        _executor!.Handler = (task, progress, ct) =>
+        {
+            progress(0.4);
+            task.FileName = "late.bin";
+            late.TrySetResult(progress);
+            return Task.CompletedTask;
+        };
+
+        var id = _service!.Submit("user-1", "https://example.com/late.bin");
+        await WaitForStatusAsync(id, TaskStatus.Completed);
+        Assert.AreEqual(100, _service.GetById(id)!.Progress);
+
+        late.Task.Result(0.1);
+        await Task.Delay(50);
+
+        Assert.AreEqual(100, _service.GetById(id)!.Progress);
+    }
+
+    [TestMethod]
     public async Task Submit_FailedTask_RetriesUpToLimitThenFails()
     {
         _config!.Set(ConfigKeys.MaxRetries, "2");
@@ -361,6 +386,57 @@ public sealed class TaskServiceTests
         Assert.IsNull(_tasks.GetById(childA.Id));
         Assert.IsNull(_tasks.GetById(childB.Id));
         Assert.IsEmpty(shares.GetByTaskId(childA.Id));
+    }
+
+    [TestMethod]
+    public async Task Delete_ChildRemovesItsFileAndReaggregatesParent()
+    {
+        // A child's final file lives in the group folder and is recorded on
+        // the child itself; deleting the child must remove it and let the
+        // remaining siblings decide the parent's status.
+        var parent = new TaskItem
+        {
+            OwnerUserId = "user-1",
+            Url = "https://example.com/list",
+            Status = TaskStatus.Running,
+            IsVirtual = true,
+            StorageFolder = "group-folder",
+        };
+        var failedChild = new TaskItem
+        {
+            OwnerUserId = "user-1",
+            Url = "https://example.com/a.mp4",
+            ParentId = parent.Id,
+            Status = TaskStatus.Failed,
+            StorageFolder = parent.StorageFolder,
+            FileName = "a.mp4",
+        };
+        var completedChild = new TaskItem
+        {
+            OwnerUserId = "user-1",
+            Url = "https://example.com/b.mp4",
+            ParentId = parent.Id,
+            Status = TaskStatus.Completed,
+            Progress = 100,
+            StorageFolder = parent.StorageFolder,
+            FileName = "b.mp4",
+        };
+        _tasks!.Insert(parent);
+        _tasks.Insert(failedChild);
+        _tasks.Insert(completedChild);
+        var dir = _storage!.GetTaskDir(parent);
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "a.mp4"), "abc");
+
+        Assert.IsTrue(_service!.Delete(failedChild.Id));
+
+        for (var _ = 0; _ < 50 && File.Exists(Path.Combine(dir, "a.mp4")); _++)
+        {
+            await Task.Delay(100);
+        }
+
+        Assert.IsFalse(File.Exists(Path.Combine(dir, "a.mp4")), "the child's final file must be removed");
+        Assert.AreEqual(TaskStatus.Completed, _tasks.GetById(parent.Id)!.Status);
     }
 
     [TestMethod]

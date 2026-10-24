@@ -244,7 +244,16 @@ public sealed class TaskService : IDisposable
             .ToList();
         var runIds = children.Select(c => c.Id).Append(id).ToList();
 
-        CleanupInBackground(task.Id, folder, deletesWholeFolder, runIds, childFileNames);
+        CleanupInBackground(task.Id, folder, deletesWholeFolder, runIds, childFileNames, task.FileName);
+
+        // A deleted child changes the group's aggregate: the remaining
+        // siblings decide the parent's status (for example it completes when
+        // the last failed child is removed).
+        if (task.ParentId is not null && _tasks.GetById(task.ParentId) is not null)
+        {
+            AggregateParent(task.ParentId);
+        }
+
         _log.Information("Task {TaskId} deleted ({ChildCount} children)", id, children.Count);
         return true;
     }
@@ -262,7 +271,8 @@ public sealed class TaskService : IDisposable
         string folder,
         bool deletesWholeFolder,
         IReadOnlyList<string> runIds,
-        IReadOnlyList<string> childFileNames)
+        IReadOnlyList<string> childFileNames,
+        string? ownFileName)
     {
         if (!_cleanupsInFlight.TryAdd(id, 0))
         {
@@ -286,8 +296,14 @@ public sealed class TaskService : IDisposable
                 }
 
                 // A deleted child takes only its own file out of the group
-                // folder; the folder itself stays.
+                // folder; the folder itself stays. The final file is recorded
+                // on the task itself, not in the child list.
                 await DeleteFileBestEffortAsync(_storage.GetTaskFilePath(folder, id + ".part"));
+                if (!string.IsNullOrEmpty(ownFileName))
+                {
+                    await DeleteFileBestEffortAsync(_storage.GetTaskFilePath(folder, ownFileName));
+                }
+
                 foreach (var fileName in childFileNames)
                 {
                     await DeleteFileBestEffortAsync(_storage.GetTaskFilePath(folder, fileName));
@@ -792,6 +808,15 @@ public sealed class TaskService : IDisposable
     /// </summary>
     private void UpdateProgress(TaskItem task, double progress)
     {
+        // Progress callbacks can arrive after the run finished (yt-dlp
+        // reports through Progress<T>, which posts to the thread pool). A
+        // late update must not turn a completed 100 back into a partial
+        // value and persist it.
+        if (task.Status is TaskStatus.Completed or TaskStatus.Failed)
+        {
+            return;
+        }
+
         var rounded = Math.Round(progress * 100, 2);
         if (Math.Abs(task.Progress - rounded) < 1)
         {

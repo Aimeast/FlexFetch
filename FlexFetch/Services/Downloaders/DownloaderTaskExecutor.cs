@@ -99,6 +99,16 @@ public sealed class DownloaderTaskExecutor : ITaskExecutor
                 }
 
                 analysis.SuggestedFileName = EnsureGroupUniqueName(task, analysis.SuggestedFileName);
+                // One file-name authority: the resolved (extension-complete,
+                // group-unique) name is also what the task records and what
+                // every downloader must use. Leaving the raw title in
+                // FileName let the generic downloader ignore both the
+                // extension and the uniqueness suffix.
+                if (!string.IsNullOrWhiteSpace(analysis.SuggestedFileName))
+                {
+                    task.FileName = analysis.SuggestedFileName;
+                }
+
                 await downloader.DownloadAsync(task, analysis, progress, cancellationToken);
                 return TaskExecutionResult.Completed;
             }
@@ -151,7 +161,8 @@ public sealed class DownloaderTaskExecutor : ITaskExecutor
         }
 
         var clash = _tasks.GetChildren(task.ParentId)
-            .FirstOrDefault(s => s.Id != task.Id && s.FileName == suggestedName);
+            .FirstOrDefault(s => s.Id != task.Id
+                && string.Equals(s.FileName, suggestedName, StringComparison.OrdinalIgnoreCase));
         if (clash is null)
         {
             return suggestedName;
@@ -166,12 +177,14 @@ public sealed class DownloaderTaskExecutor : ITaskExecutor
                 if (File.Exists(previous))
                 {
                     File.Move(previous, _storage.GetTaskFilePath(task.StorageFolder, renamed));
+                    // Only a real move may rewrite the sibling's record: an
+                    // absent or locked file must not leave a record pointing
+                    // at a name that does not exist on disk.
+                    clash.FileName = renamed;
+                    _tasks.Update(clash);
+                    _log.Information("Task {TaskId}: file name {Name} clashed with task {ClashId}; both files now carry their ids",
+                        task.Id, suggestedName, clash.Id);
                 }
-
-                clash.FileName = renamed;
-                _tasks.Update(clash);
-                _log.Information("Task {TaskId}: file name {Name} clashed with task {ClashId}; both files now carry their ids",
-                    task.Id, suggestedName, clash.Id);
             }
             catch (Exception ex)
             {

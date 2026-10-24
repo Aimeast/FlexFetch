@@ -32,7 +32,7 @@ public sealed class TestHttpServer : IDisposable
 
     public sealed record HttpRequest(Dictionary<string, string> Headers, string Method = "GET", string Path = "/");
 
-    public sealed record HttpResponse(int Status, byte[] Body, Dictionary<string, string>? Headers = null);
+    public sealed record HttpResponse(int Status, byte[] Body, Dictionary<string, string>? Headers = null, bool Chunked = false);
 
     private async Task AcceptLoopAsync()
     {
@@ -133,7 +133,15 @@ public sealed class TestHttpServer : IDisposable
         var sb = new StringBuilder();
         sb.Append($"HTTP/1.1 {response.Status} {reason}\r\n");
         sb.Append("Connection: close\r\n");
-        sb.Append($"Content-Length: {response.Body.Length}\r\n");
+        if (response.Chunked)
+        {
+            sb.Append("Transfer-Encoding: chunked\r\n");
+        }
+        else
+        {
+            sb.Append($"Content-Length: {response.Body.Length}\r\n");
+        }
+
         if (response.Headers is not null)
         {
             foreach (var (key, value) in response.Headers)
@@ -145,7 +153,18 @@ public sealed class TestHttpServer : IDisposable
         sb.Append("\r\n");
         var headBytes = Encoding.ASCII.GetBytes(sb.ToString());
         await stream.WriteAsync(headBytes);
-        await stream.WriteAsync(response.Body);
+        if (response.Chunked)
+        {
+            var chunkHead = Encoding.ASCII.GetBytes($"{response.Body.Length:X}\r\n");
+            await stream.WriteAsync(chunkHead);
+            await stream.WriteAsync(response.Body);
+            await stream.WriteAsync(Encoding.ASCII.GetBytes("\r\n0\r\n\r\n"));
+        }
+        else
+        {
+            await stream.WriteAsync(response.Body);
+        }
+
         await stream.FlushAsync();
     }
 
