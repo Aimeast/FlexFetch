@@ -8,7 +8,7 @@ public sealed class YtdlpServiceTests
     [TestMethod]
     public void YtDlpDownloadUrl_PerPlatform()
     {
-        const string base_ = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp";
+        const string base_ = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp";
 
         Assert.AreEqual(base_ + ".exe", YtdlpService.YtDlpDownloadUrl(isWindows: true, isMacOS: false));
         Assert.AreEqual(base_ + "_macos", YtdlpService.YtDlpDownloadUrl(isWindows: false, isMacOS: true));

@@ -36,7 +36,7 @@ public sealed class PotProviderService
     private readonly ILogger _log;
     private readonly SemaphoreSlim _installLock = new(1, 1);
     private readonly Func<System.Diagnostics.ProcessStartInfo, CancellationToken, Task>? _warmUpRunner;
-    private int _warmUpDone;
+    private string? _warmUpIdentity;
 
     public PotProviderService(
         YtdlpService ytdlp,
@@ -152,13 +152,24 @@ public sealed class PotProviderService
     /// timeout (getpot_bgutil_script._GET_SCRIPT_VSN_TIMEOUT); a cold deno
     /// on a low-power host exceeds it, the probe then reports the provider
     /// unavailable and YouTube loses its PO token even though every
-    /// component is fine. Runs once per process on success - a failed run
-    /// is retried by the next supervisor round. Start, finish and failure
-    /// are all logged so the warm-up is visible in the boot log.
+    /// component is fine. Memoized on the deno binary's identity: the
+    /// auto-upgrade replaces the binary mid-process and deno's compile
+    /// cache is keyed by its version, so a replaced binary re-warms on the
+    /// next supervisor round (without this, the once-per-process memo from
+    /// the boot run would leave every later script spawn cold until
+    /// restart). A failed run is retried by the next round too. Start,
+    /// finish and failure are all logged so the warm-up is visible in the
+    /// boot log.
     /// </summary>
     public async Task WarmUpDenoAsync(CancellationToken cancellationToken = default)
     {
-        if (Volatile.Read(ref _warmUpDone) == 1 || !IsServerInstalled || !IsDenoInstalled)
+        if (!IsServerInstalled || !IsDenoInstalled)
+        {
+            return;
+        }
+
+        var identity = DenoIdentity();
+        if (identity is not null && _warmUpIdentity == identity)
         {
             return;
         }
@@ -178,7 +189,7 @@ public sealed class PotProviderService
                 await RunWarmUpProcessAsync(psi, cancellationToken);
             }
 
-            Volatile.Write(ref _warmUpDone, 1);
+            _warmUpIdentity = identity;
             _log.Information("Deno pre-warm finished in {Seconds:F1}s", started.Elapsed.TotalSeconds);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -190,6 +201,23 @@ public sealed class PotProviderService
             _log.Warning("Deno pre-warm failed after {Seconds:F1}s: {Message}",
                 started.Elapsed.TotalSeconds, ex.Message);
             throw;
+        }
+    }
+
+    /// <summary>An identity stamp of the installed deno binary (last-write
+    /// time and length): the auto-upgrade replaces the file in place, which
+    /// shows up here. Null when the binary cannot be stat'ed - the warm-up
+    /// then runs unconditionally and records nothing.</summary>
+    private string? DenoIdentity()
+    {
+        try
+        {
+            var info = new FileInfo(DenoPath);
+            return info.Exists ? $"{info.LastWriteTimeUtc:O}|{info.Length}" : null;
+        }
+        catch (Exception)
+        {
+            return null;
         }
     }
 

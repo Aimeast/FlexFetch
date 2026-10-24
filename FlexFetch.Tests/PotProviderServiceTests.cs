@@ -84,11 +84,11 @@ public sealed class PotProviderServiceTests
     }
 
     [TestMethod]
-    public async Task WarmUp_RunsPluginProbeCommand_OncePerProcess()
+    public async Task WarmUp_RunsPluginProbeCommand_AndMemoizesWhileDenoUnchanged()
     {
         // The warm-up must mirror the plugin's script-deno probe (the
-        // command whose 15s budget cold deno starts exceed), and run only
-        // once per process on success.
+        // command whose 15s budget cold deno starts exceed), and is skipped
+        // while the deno binary stays the same.
         var server = ScaffoldInstalled();
 
         var runs = new List<System.Diagnostics.ProcessStartInfo>();
@@ -101,7 +101,7 @@ public sealed class PotProviderServiceTests
         await service.WarmUpDenoAsync();
         await service.WarmUpDenoAsync();
 
-        Assert.AreEqual(1, runs.Count, "a successful warm-up is memoized for the process lifetime");
+        Assert.AreEqual(1, runs.Count, "a successful warm-up is memoized on the deno binary's identity");
         var psi = runs[0];
         StringAssert.StartsWith(Path.GetFileName(psi.FileName), "deno");
         CollectionAssert.AreEqual(
@@ -125,6 +125,30 @@ public sealed class PotProviderServiceTests
         Assert.AreEqual("1", psi.Environment["DENO_NO_PROMPT"]);
         Assert.AreEqual("1", psi.Environment["DENO_NO_UPDATE_CHECK"]);
         Assert.AreEqual("false", psi.Environment["FORCE_COLOR"]);
+    }
+
+    [TestMethod]
+    public async Task WarmUp_ReRunsWhenDenoBinaryChanges()
+    {
+        // The auto-upgrade replaces the deno binary mid-process and deno's
+        // compile cache is keyed by its version: without a re-warm the next
+        // plugin probe hits a cold deno and exceeds its 15s budget.
+        ScaffoldInstalled();
+        var denoPath = Path.Combine(
+            _dataDir, "components", OperatingSystem.IsWindows() ? "deno.exe" : "deno");
+
+        var runs = new List<System.Diagnostics.ProcessStartInfo>();
+        var service = CreateService((psi, _) =>
+        {
+            runs.Add(psi);
+            return Task.CompletedTask;
+        });
+
+        await service.WarmUpDenoAsync();
+        File.WriteAllText(denoPath, "upgraded");
+        await service.WarmUpDenoAsync();
+
+        Assert.AreEqual(2, runs.Count, "a replaced deno binary invalidates the warm-up memo");
     }
 
     [TestMethod]

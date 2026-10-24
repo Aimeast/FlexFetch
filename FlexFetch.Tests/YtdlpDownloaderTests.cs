@@ -168,6 +168,12 @@ public sealed class YtdlpDownloaderTests
             yt-dlp is up to date (stable@2026.08.19 from yt-dlp/yt-dlp)
             """;
         Assert.AreEqual("2026.08.19", YtdlpService.ExtractYtdlpUpToDateVersion(output));
+        // The nightly channel verdict carries its own prefix and a
+        // date-plus-time version.
+        Assert.AreEqual(
+            "2026.10.10.233141",
+            YtdlpService.ExtractYtdlpUpToDateVersion(
+                "yt-dlp is up to date (nightly@2026.10.10.233141) from yt-dlp-nightly-builds"));
         Assert.IsNull(YtdlpService.ExtractYtdlpUpToDateVersion(
             "Latest version: stable@2026.08.19 from yt-dlp/yt-dlp\nUpdated yt-dlp to stable@2026.08.19"),
             "an upgrade run is not a routine no-op and keeps the full output");

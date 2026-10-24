@@ -484,24 +484,27 @@ public sealed class YtdlpService
         await upgrade();
     }
 
-    /// <summary>Upgrades yt-dlp via its native self-update (-U), through the
-    /// proxy when configured. The daily verdict uses the uniform up-to-date
-    /// line; the tool's own output stays at Debug (and at Information when
-    /// it is NOT a routine no-op - upgrades and annotations need detail).</summary>
+    /// <summary>Upgrades yt-dlp via its native self-update pinned to the
+    /// nightly channel (--update-to nightly), so a binary that predates the
+    /// channel switch flips over on the next round. Runs through the proxy
+    /// when configured. The daily verdict uses the uniform up-to-date line;
+    /// the tool's own output stays at Debug (and at Information when it is
+    /// NOT a routine no-op - upgrades and annotations need detail).</summary>
     public async Task UpgradeYtDlpAsync(CancellationToken cancellationToken = default)
     {
         await _installLock.WaitAsync(cancellationToken);
         try
         {
-            var output = await RunComponentWithOutputAsync(BinaryPath, BuildArgs("-U"), cancellationToken);
+            var output = await RunComponentWithOutputAsync(
+                BinaryPath, BuildArgs("--update-to nightly"), cancellationToken);
             if (ExtractYtdlpUpToDateVersion(output) is { } version)
             {
-                _log.Debug("yt-dlp -U output: {Output}", output.Trim());
+                _log.Debug("yt-dlp --update-to nightly output: {Output}", output.Trim());
                 _log.Information("yt-dlp is up to date ({Version})", version);
             }
             else
             {
-                _log.Information("yt-dlp -U output: {Output}", output.Trim());
+                _log.Information("yt-dlp --update-to nightly output: {Output}", output.Trim());
             }
 
             _ytdlpVersion = null; // the self-update may have changed the version
@@ -710,9 +713,9 @@ public sealed class YtdlpService
         System.Text.RegularExpressions.Regex.Replace(text, "\x1B\\[[0-9;]*[A-Za-z]", string.Empty);
 
     /// <summary>Extracts the version from yt-dlp's self-update verdict
-    /// ("yt-dlp is up to date (stable@2026.08.19 from ...)"), or null when
-    /// the output is not a routine no-op - upgrades and annotations need
-    /// the full output at full level instead.</summary>
+    /// ("yt-dlp is up to date (nightly@2026.10.10.233141 from ...)"), or
+    /// null when the output is not a routine no-op - upgrades and
+    /// annotations need the full output at full level instead.</summary>
     public static string? ExtractYtdlpUpToDateVersion(string output)
     {
         var match = System.Text.RegularExpressions.Regex.Match(
@@ -861,13 +864,15 @@ public sealed class YtdlpService
     }
 
     /// <summary>
-    /// yt-dlp release download URL per platform. Linux uses the standalone
-    /// PyInstaller build: the bare "yt-dlp" asset is a python zipapp that
-    /// needs a system python, which slim containers lack.
+    /// yt-dlp nightly download URL per platform. Nightly builds carry the
+    /// newest extractor fixes; the assets keep the stable repo's names.
+    /// Linux uses the standalone PyInstaller build: the bare "yt-dlp" asset
+    /// is a python zipapp that needs a system python, which slim containers
+    /// lack.
     /// </summary>
     public static string YtDlpDownloadUrl(bool isWindows, bool isMacOS)
     {
-        const string baseUrl = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp";
+        const string baseUrl = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp";
         if (isWindows)
         {
             return baseUrl + ".exe";
