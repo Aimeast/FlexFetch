@@ -448,6 +448,15 @@ public sealed class TaskService : IDisposable
             AggregateParent(parentId);
         }
 
+        // A virtual parent whose children all finished before the crash
+        // never reached its own aggregation write. Re-aggregate every
+        // virtual parent, not only those with recovered children, so none
+        // can stay stuck in Running forever.
+        foreach (var parent in _tasks.GetAll().Where(t => t.IsVirtual))
+        {
+            AggregateParent(parent.Id);
+        }
+
         return recoveredCount;
     }
 
@@ -543,6 +552,17 @@ public sealed class TaskService : IDisposable
         var children = _tasks.GetChildren(parentId);
         if (children.Count == 0)
         {
+            // Every child was deleted individually. Leaving the parent in
+            // Running would strand it forever (a Running task cannot be
+            // retried); surface the state instead.
+            if (parent.IsVirtual
+                && parent.Status is TaskStatus.Running or TaskStatus.Queued or TaskStatus.Waiting)
+            {
+                parent.Status = TaskStatus.Failed;
+                parent.ErrorMessage = "All child tasks were removed";
+                _tasks.Update(parent);
+            }
+
             return;
         }
 
@@ -618,8 +638,11 @@ public sealed class TaskService : IDisposable
             {
                 while (_queue.Reader.TryRead(out var task))
                 {
-                    Interlocked.Decrement(ref _queuedCount);
                     await _concurrency.WaitAsync(_shutdown.Token).ConfigureAwait(false);
+                    // Count the task queued until it actually owns a slot:
+                    // while it waits behind a full concurrency limit it is
+                    // still queued, not running.
+                    Interlocked.Decrement(ref _queuedCount);
                     _activeProcesses[task.Id] = ProcessAsync(task);
                 }
             }
@@ -634,168 +657,199 @@ public sealed class TaskService : IDisposable
     {
         try
         {
-            await ExecuteWithRetryAsync(task);
+            await ExecuteOnceAsync(task);
         }
         finally
         {
             _activeProcesses.TryRemove(task.Id, out _);
             _concurrency.Release();
-            // The run is over (completed, failed or skipped): the id may be
-            // queued again by a later retry.
+            // The run is over (completed, failed, skipped or scheduled for a
+            // retry): the id may be queued again by a later retry.
             _enqueued.TryRemove(task.Id, out _);
         }
     }
 
-    private async Task ExecuteWithRetryAsync(TaskItem task)
+    private async Task ExecuteOnceAsync(TaskItem task)
     {
-        var maxRetries = GetMaxRetries();
-        var attempt = 0;
-
-        while (true)
+        // A task deleted while queued stays in the in-memory channel (a
+        // channel cannot drop individual items). Its record is gone - skip
+        // it instead of re-downloading an invisible zombie. A record already
+        // completed means this entry is a duplicate (a leftover from before
+        // enqueue dedup, or written by an older build): running it would
+        // download again and its stale in-memory copy would rewrite the
+        // record over the fresh Completed state.
+        var current = _tasks.GetById(task.Id);
+        if (current is null)
         {
-            attempt++;
-            // A task deleted while queued stays in the in-memory channel (a
-            // channel cannot drop individual items). Its record is gone -
-            // skip it instead of re-downloading an invisible zombie. A record
-            // already completed means this entry is a duplicate (a leftover
-            // from before enqueue dedup, or written by an older build):
-            // running it would download again and its stale in-memory copy
-            // would rewrite the record over the fresh Completed state.
-            var current = _tasks.GetById(task.Id);
-            if (current is null)
+            _log.Information("Task {TaskId} was deleted while queued; skipping", task.Id);
+            return;
+        }
+
+        if (current.Status == TaskStatus.Completed)
+        {
+            _log.Information("Task {TaskId} is already completed; skipping duplicate queue entry", task.Id);
+            return;
+        }
+
+        var maxRetries = GetMaxRetries();
+        var attempt = task.Attempts + 1;
+        task.Attempts = attempt;
+        task.Status = TaskStatus.Running;
+        task.ErrorMessage = null;
+        task.StartedAt ??= DateTime.UtcNow;
+        _tasks.Update(task);
+
+        var cts = new CancellationTokenSource();
+        _running[task.Id] = cts;
+
+        try
+        {
+            var result = await _executor.ExecuteAsync(task, p => UpdateProgress(task, p), cts.Token);
+            if (result == TaskExecutionResult.Expanded)
             {
-                _log.Information("Task {TaskId} was deleted while queued; skipping", task.Id);
+                // The parent became a virtual aggregation container;
+                // keep it Running until its children finish.
+                task.IsVirtual = true;
+                task.Status = TaskStatus.Running;
+                task.Progress = 0;
+                _tasks.Update(task);
+                _log.Information("Task {TaskId} expanded into child tasks", task.Id);
                 return;
             }
 
-            if (current.Status == TaskStatus.Completed)
+            task.Status = TaskStatus.Completed;
+            task.Progress = 100;
+            task.CompletedAt = DateTime.UtcNow;
+            task.ErrorMessage = null;
+            _tasks.Update(task);
+            _log.Information("Task {TaskId} completed", task.Id);
+            if (task.ParentId is not null)
             {
-                _log.Information("Task {TaskId} is already completed; skipping duplicate queue entry", task.Id);
+                AggregateParent(task.ParentId);
+            }
+            return;
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested || _shutdown.IsCancellationRequested)
+        {
+            // The task was cancelled: either deleted (it no longer exists
+            // in the store - write nothing) or the service is shutting
+            // down (Dispose cancelled the work; status stays Running so
+            // a restart's RecoverPending re-queues it).
+            if (_tasks.GetById(task.Id) is null)
+            {
                 return;
             }
 
-            task.Attempts = attempt;
             task.Status = TaskStatus.Running;
             task.ErrorMessage = null;
-            task.StartedAt ??= DateTime.UtcNow;
             _tasks.Update(task);
+            _log.Information("Task {TaskId} interrupted, will recover after restart", task.Id);
+            if (task.ParentId is not null)
+            {
+                AggregateParent(task.ParentId);
+            }
+            return;
+        }
+        catch (OperationCanceledException ex)
+        {
+            // HttpClient timeouts surface as TaskCanceledException, not as
+            // our own cancellation. Treating them as a shutdown left the
+            // task Running forever; they are transient failures.
+            var message = string.IsNullOrWhiteSpace(ex.Message)
+                ? "the operation timed out"
+                : ex.Message;
+            _log.Warning(ex, "Task {TaskId} attempt {Attempt} timed out", task.Id, attempt);
+            ScheduleRetry(task, $"Download timed out: {message}", attempt, maxRetries);
+            return;
+        }
+        catch (AuthRequiredException ex)
+        {
+            // Authentication/restriction errors are deterministic: cookies
+            // were already attached (or were unavailable), so retrying the
+            // whole task will not help. Fail immediately.
+            task.ErrorMessage = ex.Message;
+            task.Status = TaskStatus.Failed;
+            _tasks.Update(task);
+            _log.Warning(ex, "Task {TaskId} failed with auth/restriction error", task.Id);
+            if (task.ParentId is not null)
+            {
+                AggregateParent(task.ParentId);
+            }
+            return;
+        }
+        catch (RetryableException ex)
+        {
+            // Transient failure (timeout, connection, 5xx, rate limit):
+            // retry up to maxRetries with backoff. The retry re-enters the
+            // global queue after the delay, so it does not hold a
+            // concurrency slot while it waits.
+            _log.Warning(ex, "Task {TaskId} attempt {Attempt} failed (retryable)", task.Id, attempt);
+            ScheduleRetry(task, ex.Message, attempt, maxRetries);
+            return;
+        }
+        catch (Exception ex)
+        {
+            // Deterministic error (bad URL, unsupported format, 4xx):
+            // fail immediately without automatic retry.
+            task.ErrorMessage = ex.Message;
+            task.Status = TaskStatus.Failed;
+            _tasks.Update(task);
+            _log.Warning(ex, "Task {TaskId} failed (not retried)", task.Id);
+            if (task.ParentId is not null)
+            {
+                AggregateParent(task.ParentId);
+            }
+            return;
+        }
+        finally
+        {
+            _running.TryRemove(task.Id, out _);
+            cts.Dispose();
+        }
+    }
 
-            var cts = new CancellationTokenSource();
-            _running[task.Id] = cts;
+    /// <summary>
+    /// Marks a transient failure: either fails the task (retries exhausted)
+    /// or requeues it after the backoff delay. Requeueing from a timer means
+    /// the task gives up its concurrency slot while it waits.
+    /// </summary>
+    private void ScheduleRetry(TaskItem task, string error, int attempt, int maxRetries)
+    {
+        task.ErrorMessage = error;
+        if (attempt > maxRetries)
+        {
+            task.Status = TaskStatus.Failed;
+            _tasks.Update(task);
+            _log.Warning("Task {TaskId} failed after {Attempts} attempts", task.Id, attempt);
+            if (task.ParentId is not null)
+            {
+                AggregateParent(task.ParentId);
+            }
 
+            return;
+        }
+
+        task.Status = TaskStatus.Queued;
+        _tasks.Update(task);
+
+        var delay = GetBackoffDelay(attempt);
+        var token = _shutdown.Token;
+        _ = Task.Run(async () =>
+        {
             try
             {
-                var result = await _executor.ExecuteAsync(task, p => UpdateProgress(task, p), cts.Token);
-                if (result == TaskExecutionResult.Expanded)
-                {
-                    // The parent became a virtual aggregation container;
-                    // keep it Running until its children finish.
-                    task.IsVirtual = true;
-                    task.Status = TaskStatus.Running;
-                    task.Progress = 0;
-                    _tasks.Update(task);
-                    _log.Information("Task {TaskId} expanded into child tasks", task.Id);
-                    return;
-                }
-
-                task.Status = TaskStatus.Completed;
-                task.Progress = 100;
-                task.CompletedAt = DateTime.UtcNow;
-                task.ErrorMessage = null;
-                _tasks.Update(task);
-                _log.Information("Task {TaskId} completed", task.Id);
-                if (task.ParentId is not null)
-                {
-                    AggregateParent(task.ParentId);
-                }
-                return;
+                await Task.Delay(delay, token);
             }
             catch (OperationCanceledException)
             {
-                // The task was cancelled: either deleted (it no longer exists
-                // in the store - write nothing) or the service is shutting
-                // down (Dispose cancelled the work; status stays Running so
-                // a restart's RecoverPending re-queues it).
-                if (_tasks.GetById(task.Id) is null)
-                {
-                    return;
-                }
+                return; // shutting down; the task stays Queued for the next start
+            }
 
-                task.Status = TaskStatus.Running;
-                task.ErrorMessage = null;
-                _tasks.Update(task);
-                _log.Information("Task {TaskId} interrupted, will recover after restart", task.Id);
-                if (task.ParentId is not null)
-                {
-                    AggregateParent(task.ParentId);
-                }
-                return;
-            }
-            catch (AuthRequiredException ex)
-            {
-                // Authentication/restriction errors are deterministic: cookies
-                // were already attached (or were unavailable), so retrying the
-                // whole task will not help. Fail immediately.
-                task.ErrorMessage = ex.Message;
-                task.Status = TaskStatus.Failed;
-                _tasks.Update(task);
-                _log.Warning(ex, "Task {TaskId} failed with auth/restriction error", task.Id);
-                if (task.ParentId is not null)
-                {
-                    AggregateParent(task.ParentId);
-                }
-                return;
-            }
-            catch (RetryableException ex)
-            {
-                // Transient failure (timeout, connection, 5xx, rate limit):
-                // retry up to maxRetries with backoff.
-                task.ErrorMessage = ex.Message;
-                _log.Warning(ex, "Task {TaskId} attempt {Attempt} failed (retryable)", task.Id, attempt);
-
-                if (attempt <= maxRetries)
-                {
-                    task.Status = TaskStatus.Queued;
-                    _tasks.Update(task);
-                    try
-                    {
-                        await Task.Delay(GetBackoffDelay(attempt), _shutdown.Token);
-                    }
-                    catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
-                    {
-                        return; // shutting down; task stays queued for next start
-                    }
-                    continue; // retry
-                }
-
-                task.Status = TaskStatus.Failed;
-                _tasks.Update(task);
-                if (task.ParentId is not null)
-                {
-                    AggregateParent(task.ParentId);
-                }
-                return;
-            }
-            catch (Exception ex)
-            {
-                // Deterministic error (bad URL, unsupported format, 4xx):
-                // fail immediately without automatic retry.
-                task.ErrorMessage = ex.Message;
-                task.Status = TaskStatus.Failed;
-                _tasks.Update(task);
-                _log.Warning(ex, "Task {TaskId} failed (not retried)", task.Id);
-                if (task.ParentId is not null)
-                {
-                    AggregateParent(task.ParentId);
-                }
-                return;
-            }
-            finally
-            {
-                _running.TryRemove(task.Id, out _);
-                cts.Dispose();
-            }
-        }
+            // The enqueue marker of the finished run is already released
+            // (ProcessAsync's finally runs immediately, while the minimum
+            // backoff is two seconds).
+            TryEnqueue(task);
+        });
     }
 
     /// <summary>

@@ -116,6 +116,22 @@ public sealed class TaskServiceTests
     }
 
     [TestMethod]
+    public async Task Submit_InternalTimeout_FailsInsteadOfStayingRunning()
+    {
+        // HttpClient timeouts surface as TaskCanceledException while our
+        // tokens stay live; they are transient failures, not a shutdown.
+        _config!.Set(ConfigKeys.MaxRetries, "0");
+        _executor!.Handler = (_, _, _) => throw new TaskCanceledException("HttpClient timeout");
+
+        var id = _service!.Submit("user-1", "https://example.com/slow.bin");
+
+        await WaitForStatusAsync(id, TaskStatus.Failed);
+        var task = _service.GetById(id)!;
+        Assert.AreEqual(1, task.Attempts);
+        StringAssert.Contains(task.ErrorMessage, "timed out");
+    }
+
+    [TestMethod]
     public async Task Submit_FailedTask_RetriesUpToLimitThenFails()
     {
         _config!.Set(ConfigKeys.MaxRetries, "2");
@@ -182,6 +198,74 @@ public sealed class TaskServiceTests
         await Task.WhenAll(ids.Select(id => WaitForStatusAsync(id, TaskStatus.Completed)));
 
         Assert.IsLessThanOrEqualTo(maxActive, 2);
+    }
+
+    [TestMethod]
+    public async Task QueuedCount_IncludesTasksWaitingForASlot()
+    {
+        _config!.Set(ConfigKeys.MaxConcurrency, "1");
+        var started = new TaskCompletionSource();
+        var release = new TaskCompletionSource();
+        _executor!.Handler = async (_, _, ct) =>
+        {
+            started.TrySetResult();
+            await release.Task.WaitAsync(ct);
+        };
+
+        var first = _service!.Submit("user-1", "https://example.com/first.bin");
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        _service.Submit("user-1", "https://example.com/second.bin");
+        _service.Submit("user-1", "https://example.com/third.bin");
+
+        for (var i = 0; i < 100 && !(_service.RunningCount == 1 && _service.QueuedCount == 2); i++)
+        {
+            await Task.Delay(20);
+        }
+
+        Assert.AreEqual(1, _service.RunningCount);
+        Assert.AreEqual(2, _service.QueuedCount, "tasks behind the concurrency limit are still queued");
+
+        release.SetResult();
+        await WaitForStatusAsync(first, TaskStatus.Completed);
+    }
+
+    [TestMethod]
+    public async Task Retry_BackoffDoesNotHoldAConcurrencySlot()
+    {
+        // A retryable failure releases the slot while its backoff runs, so
+        // an unrelated queued task can start immediately instead of waiting
+        // out the retry delay.
+        _config!.Set(ConfigKeys.MaxConcurrency, "1");
+        _config.Set(ConfigKeys.MaxRetries, "1");
+        var firstAttempt = new TaskCompletionSource();
+        var otherRan = new TaskCompletionSource();
+        var attempt = 0;
+        _executor!.Handler = (task, _, _) =>
+        {
+            if (task.Url.Contains("flaky", StringComparison.Ordinal))
+            {
+                if (Interlocked.Increment(ref attempt) == 1)
+                {
+                    firstAttempt.TrySetResult();
+                    throw new RetryableException("try again");
+                }
+
+                return Task.CompletedTask;
+            }
+
+            otherRan.TrySetResult();
+            return Task.CompletedTask;
+        };
+
+        var flaky = _service!.Submit("user-1", "https://example.com/flaky.bin");
+        await firstAttempt.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        _service.Submit("user-1", "https://example.com/other.bin");
+
+        // The retry backoff is two seconds; the unrelated task must start
+        // well before it expires.
+        await otherRan.Task.WaitAsync(TimeSpan.FromSeconds(1.5));
+        await WaitForStatusAsync(flaky, TaskStatus.Completed);
+        Assert.AreEqual(2, _service.GetById(flaky)!.Attempts);
     }
 
     [TestMethod]
@@ -279,6 +363,34 @@ public sealed class TaskServiceTests
         _service!.RecoverPending();
 
         Assert.AreEqual(TaskStatus.Waiting, _service.GetById(parent.Id)!.Status);
+    }
+
+    [TestMethod]
+    public void RecoverPending_AggregatesExpandedParentAfterCrash()
+    {
+        // All children finished before the crash, but the parent's own
+        // aggregation write never happened. Recovery must complete it
+        // instead of leaving a phantom Running task.
+        var parent = new TaskItem
+        {
+            OwnerUserId = "user-1",
+            Url = "https://example.com/list",
+            Status = TaskStatus.Running,
+            IsVirtual = true,
+        };
+        _tasks!.Insert(parent);
+        _tasks.Insert(new TaskItem
+        {
+            OwnerUserId = "user-1",
+            Url = "https://example.com/a.mp4",
+            ParentId = parent.Id,
+            Status = TaskStatus.Completed,
+            Progress = 100,
+        });
+
+        Assert.AreEqual(0, _service!.RecoverPending());
+
+        Assert.AreEqual(TaskStatus.Completed, _service.GetById(parent.Id)!.Status);
     }
 
     [TestMethod]

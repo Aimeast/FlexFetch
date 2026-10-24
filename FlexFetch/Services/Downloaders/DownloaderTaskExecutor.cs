@@ -85,14 +85,35 @@ public sealed class DownloaderTaskExecutor : ITaskExecutor
                 // The title names the storage folder (files/{id} {title prefix});
                 // the folder is stamped once and never renamed afterwards.
                 task.Title ??= analysis.Title;
-                task.StorageFolder ??= ResolveStorageFolder(task, analysis);
+                if (task.StorageFolder is null)
+                {
+                    task.StorageFolder = ResolveStorageFolder(task, analysis);
+                    // Persist the folder before expansion: children carry it
+                    // in their own records, so a crash after their insert
+                    // must not leave the parent without it (its delete and
+                    // share paths would then look in the wrong directory).
+                    _tasks.Update(task);
+                }
+
                 _log.Information("Task {TaskId}: using downloader {Type}", task.Id, downloader.Type);
 
                 if (analysis.Children.Count > 0)
                 {
-                    foreach (var child in analysis.Children)
+                    // Expansion is not idempotent by construction: a crash
+                    // after the first child insert but before the parent was
+                    // marked virtual makes recovery re-run the parent. The
+                    // existing children are the expansion result; reusing
+                    // them avoids a second set of tasks (and downloads).
+                    if (_tasks.GetChildren(task.Id).Count == 0)
                     {
-                        _submitChild(task, child, analysis.Referrer);
+                        foreach (var child in analysis.Children)
+                        {
+                            _submitChild(task, child, analysis.Referrer);
+                        }
+                    }
+                    else
+                    {
+                        _log.Information("Task {TaskId} already has child tasks; skipping duplicate expansion", task.Id);
                     }
 
                     return TaskExecutionResult.Expanded;

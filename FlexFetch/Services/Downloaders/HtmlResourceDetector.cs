@@ -39,7 +39,7 @@ public sealed partial class HtmlResourceDetector : IDownloader
         using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(60) };
         client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
 
-        var page = await client.GetStringAsync(pageUrl, cancellationToken);
+        var page = await GetPageAsync(client, pageUrl, url, cancellationToken);
         var title = TitleRegex().Match(page).Groups[1].Value.Trim();
 
         var mediaUrls = new List<string>();
@@ -83,6 +83,23 @@ public sealed partial class HtmlResourceDetector : IDownloader
     /// <summary>Html analysis always expands children; nothing to download here.</summary>
     public Task DownloadAsync(TaskItem task, AnalysisResult analysis, Action<double> progress, CancellationToken cancellationToken) =>
         throw new InvalidOperationException("Html resources are expanded into child tasks, nothing to download directly");
+
+    private static async Task<string> GetPageAsync(
+        HttpClient client,
+        Uri pageUrl,
+        string displayUrl,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await client.GetStringAsync(pageUrl, cancellationToken);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // An HttpClient timeout is transient, not a shutdown.
+            throw new RetryableException($"Timed out fetching {displayUrl}");
+        }
+    }
 
     [GeneratedRegex(@"<title[^>]*>([^<]*)</title>", RegexOptions.IgnoreCase)]
     private static partial Regex TitleRegex();

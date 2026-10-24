@@ -125,6 +125,10 @@ public static class DirectLinkDetector
                 response.Content.Headers.ContentType?.MediaType,
                 string.IsNullOrWhiteSpace(name) ? null : name);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or OperationCanceledException)
         {
             return (null, null);

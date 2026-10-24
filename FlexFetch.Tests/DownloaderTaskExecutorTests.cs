@@ -284,11 +284,60 @@ public sealed class DownloaderTaskExecutorTests
             ProbeNone);
 
         var parent = new TaskItem { OwnerUserId = "user-1", Url = "https://example.com/list" };
+        _tasks!.Insert(parent);
         var result = await executor.ExecuteAsync(parent, _ => { }, CancellationToken.None);
 
         Assert.AreEqual(TaskExecutionResult.Expanded, result);
         Assert.AreEqual(StorageService.BuildFolderName(parent.Id, "parent"), parent.StorageFolder);
         Assert.AreEqual(parent.StorageFolder, capturedFolder);
+        Assert.AreEqual(parent.StorageFolder, _tasks.GetById(parent.Id)!.StorageFolder,
+            "the folder must be persisted before expansion so recovery keeps it");
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_ExistingChildren_DoesNotExpandAgain()
+    {
+        // A crash can leave children behind before the parent was marked
+        // virtual. Re-analysis on recovery must reuse them instead of
+        // creating a second set.
+        var parent = new TaskItem
+        {
+            OwnerUserId = "user-1",
+            Url = "https://example.com/list",
+            StorageFolder = "existing-folder",
+        };
+        _tasks!.Insert(parent);
+        _tasks.Insert(new TaskItem
+        {
+            OwnerUserId = "user-1",
+            Url = "https://example.com/c1",
+            ParentId = parent.Id,
+            StorageFolder = parent.StorageFolder,
+        });
+        var list = new FakeDownloader("List")
+        {
+            Title = "parent",
+            Children = [new MediaChild { Url = "https://example.com/c1", Title = "c1" }],
+        };
+        var submitted = 0;
+        var executor = new DownloaderTaskExecutor(
+            new DownloaderFactory(new IDownloader[] { list, new FakeDownloader("Generic") }),
+            new DirectProxyService(),
+            _tasks,
+            _storage!,
+            Log,
+            (_, _, _) =>
+            {
+                submitted++;
+                return "new-child";
+            },
+            ProbeNone);
+
+        var result = await executor.ExecuteAsync(parent, _ => { }, CancellationToken.None);
+
+        Assert.AreEqual(TaskExecutionResult.Expanded, result);
+        Assert.AreEqual(0, submitted);
+        Assert.AreEqual(1, _tasks.GetChildren(parent.Id).Count);
     }
 
     [TestMethod]

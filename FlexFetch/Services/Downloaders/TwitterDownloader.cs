@@ -741,7 +741,15 @@ public sealed partial class TwitterDownloader : IDownloader
             client.DefaultRequestHeaders.Referrer = new Uri("https://x.com/");
         }
 
-        return await client.GetStringAsync(uri, cancellationToken);
+        try
+        {
+            return await client.GetStringAsync(uri, cancellationToken);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // An HttpClient timeout is transient, not a shutdown.
+            throw new RetryableException($"Timed out fetching {url}");
+        }
     }
 
     private static int? ParseBitrate(string value) => int.TryParse(value, out var bitrate) ? bitrate : null;
