@@ -1,7 +1,9 @@
 ﻿using System.Net;
 using System.Net.Http.Json;
 using FlexFetch.Config;
+using FlexFetch.Data;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace FlexFetch.Tests;
 
@@ -28,8 +30,17 @@ public sealed class SessionApiTests
         }
     }
 
-    private static async Task LoginAdminAsync(HttpClient client)
+    private static async Task LoginAdminAsync(IServiceProvider services, HttpClient client)
     {
+        // The initial admin is created after the host starts; wait for the
+        // record before spending a login attempt (and the auth rate limit).
+        var users = services.GetRequiredService<IUserRepository>();
+        for (var i = 0; i < 100 && users.GetByUserName("admin") is null; i++)
+        {
+            await Task.Delay(50);
+        }
+
+        Assert.IsNotNull(users.GetByUserName("admin"), "the seeded admin was not created in time");
         var login = await client.PostAsJsonAsync("/api/auth/login", new { userName = "admin", password = "admin-pass-1" });
         Assert.AreEqual(HttpStatusCode.OK, login.StatusCode, "the seeded admin must accept the initial password");
     }
@@ -54,7 +65,7 @@ public sealed class SessionApiTests
     {
         using var factory = CreateFactory();
         using var client = factory.CreateClient();
-        await LoginAdminAsync(client);
+        await LoginAdminAsync(factory.Services, client);
 
         var status = await client.GetAsync("/api/session/youtube/status");
         Assert.AreEqual(HttpStatusCode.OK, status.StatusCode);
@@ -76,7 +87,7 @@ public sealed class SessionApiTests
     {
         using var factory = CreateFactory();
         using var client = factory.CreateClient();
-        await LoginAdminAsync(client);
+        await LoginAdminAsync(factory.Services, client);
 
         var response = await client.PostAsJsonAsync("/api/session/youtube/import", new { text = "" });
         Assert.AreEqual(HttpStatusCode.BadRequest, response.StatusCode);
@@ -87,7 +98,7 @@ public sealed class SessionApiTests
     {
         using var factory = CreateFactory();
         using var client = factory.CreateClient();
-        await LoginAdminAsync(client);
+        await LoginAdminAsync(factory.Services, client);
 
         var status = await client.GetAsync("/api/session/twitter/status");
         Assert.AreEqual(HttpStatusCode.OK, status.StatusCode);
@@ -103,7 +114,7 @@ public sealed class SessionApiTests
     {
         using var factory = CreateFactory();
         using var client = factory.CreateClient();
-        await LoginAdminAsync(client);
+        await LoginAdminAsync(factory.Services, client);
 
         foreach (var legacy in new[] { "/api/session/import", "/api/session/canary", "/api/session/pot-status", "/api/session/diagnose" })
         {

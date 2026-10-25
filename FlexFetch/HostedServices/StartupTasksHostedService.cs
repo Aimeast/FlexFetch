@@ -14,6 +14,20 @@ namespace FlexFetch.HostedServices;
 /// components (gated by ops.autoInstallDeps). The service completes after
 /// running, so it is never a periodic worker.
 /// </summary>
+/// <summary>Inputs of the one-shot startup sequence; a record keeps the
+/// static, testable entry point readable instead of a ten-parameter list.</summary>
+public sealed record StartupSequenceContext(
+    Serilog.ILogger Log,
+    CancellationToken StoppingToken,
+    Func<int> RecoverPending,
+    Func<int> ReconcileFileSizes,
+    Func<int> ReleaseWaitingTasks,
+    IReadOnlyList<string> ReadyComponents,
+    IReadOnlyList<string> MissingComponents,
+    bool AutoInstallEnabled,
+    Func<Task> InstallMissingComponents,
+    Action SignalComponentPlanLogged);
+
 public sealed class StartupTasksHostedService : BackgroundService
 {
     /// <summary>Runs the whole startup sequence with the pieces injected, so
@@ -25,18 +39,19 @@ public sealed class StartupTasksHostedService : BackgroundService
     /// proxy - a stuck Firefox download once kept recovered tasks invisible
     /// in Running for the whole container lifetime); the Waiting state makes
     /// that window honest in the UI instead.</summary>
-    public static async Task RunStartupSequenceAsync(
-        Serilog.ILogger log,
-        CancellationToken stoppingToken,
-        Func<int> recoverPending,
-        Func<int> reconcileFileNames,
-        Func<int> releaseWaitingTasks,
-        IReadOnlyList<string> readyComponents,
-        IReadOnlyList<string> missingComponents,
-        bool autoInstallEnabled,
-        Func<Task> installMissingComponents,
-        Action signalComponentPlanLogged)
+    public static async Task RunStartupSequenceAsync(StartupSequenceContext context)
     {
+        var log = context.Log;
+        var stoppingToken = context.StoppingToken;
+        var recoverPending = context.RecoverPending;
+        var reconcileFileSizes = context.ReconcileFileSizes;
+        var releaseWaitingTasks = context.ReleaseWaitingTasks;
+        var readyComponents = context.ReadyComponents;
+        var missingComponents = context.MissingComponents;
+        var autoInstallEnabled = context.AutoInstallEnabled;
+        var installMissingComponents = context.InstallMissingComponents;
+        var signalComponentPlanLogged = context.SignalComponentPlanLogged;
+
         // 1. Recovery marks orphans Waiting: visible immediately, executed
         //    only by the release at the end of the sequence.
         var recovered = recoverPending();
@@ -45,7 +60,7 @@ public sealed class StartupTasksHostedService : BackgroundService
         // 2. Adopt on-disk file sizes for completed tasks whose recorded
         //    size mismatches (e.g. lost in a download-report encoding
         //    mismatch) - the disk file is the source of truth.
-        var reconciled = reconcileFileNames();
+        var reconciled = reconcileFileSizes();
         log.Information("Reconciled {Count} completed task file sizes from disk", reconciled);
 
         // 3. Component plan: one line for ready components (skipped), one
@@ -114,7 +129,6 @@ public sealed class StartupTasksHostedService : BackgroundService
     private readonly IHostApplicationLifetime _lifetime;
     private readonly IConfiguration _config;
     private readonly UserService _userService;
-    private readonly IConfiguration _appConfig;
     private readonly IWebHostEnvironment _environment;
     private readonly TaskService _taskService;
     private readonly YtdlpService _ytdlp;
@@ -134,7 +148,6 @@ public sealed class StartupTasksHostedService : BackgroundService
         IHostApplicationLifetime lifetime,
         IConfiguration config,
         UserService userService,
-        IConfiguration appConfig,
         IWebHostEnvironment environment,
         TaskService taskService,
         YtdlpService ytdlp,
@@ -144,7 +157,6 @@ public sealed class StartupTasksHostedService : BackgroundService
         _lifetime = lifetime;
         _config = config;
         _userService = userService;
-        _appConfig = appConfig;
         _environment = environment;
         _taskService = taskService;
         _ytdlp = ytdlp;
@@ -182,7 +194,7 @@ public sealed class StartupTasksHostedService : BackgroundService
         // 1. Create the initial admin when the database has no users yet
         //    (admin is always the first account).
         var initialAdminPassword = _userService.EnsureInitialAdmin(
-            _appConfig["Admin:InitialPassword"], _environment.IsDevelopment());
+            _config["Admin:InitialPassword"], _environment.IsDevelopment());
         if (initialAdminPassword is not null)
         {
             if (_environment.IsDevelopment())
@@ -217,16 +229,16 @@ public sealed class StartupTasksHostedService : BackgroundService
         // each has its own check/marker so any mismatch triggers a reinstall.
         if (_browser.IsFirefoxReady()) ready.Add("firefox"); else toInstall.Add("firefox");
 
-        await RunStartupSequenceAsync(
+        await RunStartupSequenceAsync(new StartupSequenceContext(
             _log,
             stoppingToken,
-            recoverPending: () => _taskService.RecoverPending(),
-            reconcileFileNames: () => _taskService.ReconcileFileNames(),
-            releaseWaitingTasks: () => _taskService.ReleaseWaitingTasks(),
-            readyComponents: ready,
-            missingComponents: toInstall,
-            autoInstallEnabled: bool.TryParse(Get(ConfigKeys.AutoInstallDeps), out var autoInstall) && autoInstall,
-            installMissingComponents: async () =>
+            RecoverPending: () => _taskService.RecoverPending(),
+            ReconcileFileSizes: () => _taskService.ReconcileFileSizes(),
+            ReleaseWaitingTasks: () => _taskService.ReleaseWaitingTasks(),
+            ReadyComponents: ready,
+            MissingComponents: toInstall,
+            AutoInstallEnabled: bool.TryParse(Get(ConfigKeys.AutoInstallDeps), out var autoInstall) && autoInstall,
+            InstallMissingComponents: async () =>
             {
                 // yt-dlp/deno/ffmpeg: only missing ones are installed (installed are silent).
                 if (!_ytdlp.IsYtDlpInstalled() || !_ytdlp.IsDenoInstalled() || !_ytdlp.IsFfmpegInstalled())
@@ -242,7 +254,7 @@ public sealed class StartupTasksHostedService : BackgroundService
                     await _browser.EnsureInstalledAsync(stoppingToken);
                 }
             },
-            signalComponentPlanLogged: SignalComponentPlanLogged);
+            SignalComponentPlanLogged: SignalComponentPlanLogged));
     }
 
     private string Get(string key) => ConfigRegistry.From(_config, key);

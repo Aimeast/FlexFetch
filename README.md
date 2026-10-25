@@ -1,4 +1,4 @@
-﻿# FlexFetch
+# FlexFetch
 
 FlexFetch: The Flexible, Plugin-based Media Downloader.
 
@@ -15,7 +15,7 @@ A self-hosted web download service: paste a resource link and the server handles
 - Share completed downloads via unguessable random links (read-only for visitors)
 - Simple account system (user / admin) with clear permission levels, self-service password change, and per-browser anonymous guest sessions when anonymous access is on
 - Global proxy with composable route rules: domain-suffix and CIDR matchers, a per-rule action and a default action
-- Self-installing external components: yt-dlp, ffmpeg, deno, Node.js and a Playwright-managed Firefox are installed at startup when missing and auto-upgraded on schedule
+- Self-installing external components: yt-dlp, ffmpeg, deno and a Playwright-managed Firefox are installed at startup when missing and auto-upgraded on schedule
 - One codebase deployed on Windows / Linux / Docker
 
 ## Downloader selection
@@ -25,7 +25,7 @@ Downloader plugins are self-discovered via reflection - adding a new `IDownloade
 ## Requirements
 
 - .NET 10 SDK
-- Everything external (yt-dlp, ffmpeg, deno, Node.js, Playwright Firefox) is self-installed at startup when missing; a pre-provided installation is reused
+- Everything external (yt-dlp, ffmpeg, deno, Playwright Firefox) is self-installed at startup when missing; a pre-provided installation is reused
 
 ## Build and test
 
@@ -65,7 +65,7 @@ The command swaps the stored hash in place - the user id is kept, so task owners
 
 ## Usage
 
-1. **Wait for the first-start component install.** On a fresh deployment the app installs missing components (yt-dlp, ffmpeg, deno, Node.js, Playwright Firefox) right after startup. Watch the log: `Installing missing components: ...` followed by `All components ready: ...`. On a fresh machine this downloads a few hundred megabytes and can take several minutes (installs go through the configured proxy) - do not submit downloads before it finishes. The System page lists the detected component versions once ready. Disabling `ops.autoInstallDeps` skips the install entirely (the log says what is missing).
+1. **Wait for the first-start component install.** On a fresh deployment the app installs missing components (yt-dlp, ffmpeg, deno, Playwright Firefox) right after startup. Watch the log: `Installing missing components: ...` followed by `All components ready: ...`. On a fresh machine this downloads a few hundred megabytes and can take several minutes (installs go through the configured proxy) - do not submit downloads before it finishes. The System page lists the detected component versions once ready. Disabling `ops.autoInstallDeps` skips the install entirely (the log says what is missing).
 2. **Sign in.** Open the web UI and sign in as `admin` with the initial password (printed to the console on a production install, `admin` in Development), then change it on the Account page. Others can register from the sign-in view and are activated by an admin; with anonymous access on (the default), a browser without an account can also submit downloads as a guest - its tasks stay private to that browser.
 3. **Submit a download.** Paste a link into the form on the Tasks page and submit. The task list shows live progress; the finished file downloads from the task row, and a failed task can be retried from there.
 4. **Optional setup (admin).** On the Session page, paste cookie text to import a login session for sites that need one (signed-in content, flagged-IP postures). From a finished task's row on the Tasks page, create an unguessable read-only share link for visitors. Proxy and route rules are edited in `appsettings.json` inside the data directory (see Configuration).
@@ -117,6 +117,7 @@ deploy/                    # deploy.ps1, Dockerfile, compose.yaml, appsettings.d
 | GET/POST/DELETE | /api/users/pending · /{id}/approve · /{id}/disable · /{id} | admin |
 | GET/POST/DELETE | /api/tasks · /{id}/retry · /{id}/share · /{id}/file · /{id} | signed-in or guest |
 | GET | /api/share/{token} · /api/share/{token}/file | public (read-only) |
-| POST/GET | /api/session/import · /export · /export/status · /canary · /pot-status · /diagnose | admin |
+| POST/GET/DELETE | /api/session/youtube/import · /export · /status · /canary · /pot-status · /diagnose | admin |
+| POST/GET/DELETE | /api/session/twitter/import · /status · /check · (DELETE /api/session/twitter) | admin |
 | GET | /api/system/info | signed-in |
 | POST/GET | /api/system/shutdown · /upgrade · /upgrade/status | admin |

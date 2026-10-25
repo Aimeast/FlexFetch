@@ -188,36 +188,8 @@ public sealed class TwitterSessionStore
     /// Merges the incoming cookies over the existing ones by (name, domain)
     /// key; expired cookies are dropped. Same semantics as the YouTube jar.
     /// </summary>
-    public static IReadOnlyList<CookieItem> Merge(IReadOnlyList<CookieItem> existing, IReadOnlyList<CookieItem> incoming)
-    {
-        var map = new Dictionary<(string Name, string Domain), CookieItem>();
-        foreach (var c in existing)
-        {
-            if (!IsExpired(c))
-            {
-                map[Key(c)] = c;
-            }
-        }
-
-        foreach (var c in incoming)
-        {
-            if (IsExpired(c))
-            {
-                map.Remove(Key(c));
-                continue;
-            }
-
-            map[Key(c)] = c;
-        }
-
-        return map.Values.ToList();
-    }
-
-    private static (string, string) Key(CookieItem c) =>
-        (c.Name, (c.Domain ?? string.Empty).TrimStart('.').ToLowerInvariant());
-
-    private static bool IsExpired(CookieItem c) =>
-        c.ExpiresAt is not null && c.ExpiresAt.Value.ToUniversalTime() <= DateTime.UtcNow;
+    public static IReadOnlyList<CookieItem> Merge(IReadOnlyList<CookieItem> existing, IReadOnlyList<CookieItem> incoming) =>
+        CookieJar.Merge(existing, incoming);
 
     /// <summary>
     /// Extracts a cookie value from raw Set-Cookie header lines (the handlers

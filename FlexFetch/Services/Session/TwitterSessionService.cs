@@ -33,10 +33,9 @@ public sealed partial class TwitterSessionService
     private readonly TwitterSessionStore _store;
     private readonly IProxyService _proxy;
     private readonly ILogger _log;
-    private readonly SemaphoreSlim _gate = new(1, 1);
 
-    /// <summary>Injectable HTTP runner (tests); defaults to a proxied GET
-    /// that returns the (unconsumed) response. The handler must keep
+    /// <summary>Injectable HTTP runner (tests); the production default
+    /// buffers the response before returning it. The handler must keep
     /// UseCookies=false so Set-Cookie stays visible in the headers.</summary>
     private readonly Func<string, IReadOnlyDictionary<string, string>?, CancellationToken, Task<HttpResponseMessage>> _send;
 

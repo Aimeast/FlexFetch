@@ -122,12 +122,6 @@ public static class FileMime
             || mime.StartsWith("audio/", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
-    /// True when the file is mapped to a playable video/audio type (the
-    /// browser can play it inline); everything else downloads.
-    /// </summary>
-    public static bool IsMedia(string? fileName) => IsMediaMime(For(fileName));
-
-    /// <summary>
     /// Builds the Content-Disposition header for a media file that is played
     /// inline but must still carry its real name for the browser's "save
     /// link as": <c>inline; filename=...; filename*=utf-8''...</c> (RFC 5987

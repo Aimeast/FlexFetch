@@ -42,7 +42,20 @@ public sealed class TaskServiceTests
         _store?.Dispose();
         if (_dir is not null && Directory.Exists(_dir))
         {
-            Directory.Delete(_dir, recursive: true);
+            // Windows can keep the LiteDB handle briefly after disposal;
+            // a short retry avoids a flaky test cleanup.
+            for (var attempt = 0; attempt < 20; attempt++)
+            {
+                try
+                {
+                    Directory.Delete(_dir, recursive: true);
+                    break;
+                }
+                catch (IOException) when (attempt < 19)
+                {
+                    Thread.Sleep(50);
+                }
+            }
         }
     }
 
@@ -580,7 +593,7 @@ public sealed class TaskServiceTests
     }
 
     [TestMethod]
-    public void ReconcileFileNames_FixesFileSizeFromDisk()
+    public void ReconcileFileSizes_FixesFileSizeFromDisk()
     {
         // In the group layout the recorded name IS the disk name inside the
         // group folder; reconciliation only adopts the on-disk size when the
@@ -609,7 +622,7 @@ public sealed class TaskServiceTests
         Directory.CreateDirectory(dir);
         File.WriteAllText(Path.Combine(dir, "clip.bin"), "abc");
 
-        var fixedCount = _service!.ReconcileFileNames();
+        var fixedCount = _service!.ReconcileFileSizes();
 
         Assert.AreEqual(1, fixedCount);
         Assert.AreEqual(3, _tasks.GetById(sized.Id)!.FileSize);

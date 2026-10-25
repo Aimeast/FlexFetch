@@ -3,8 +3,9 @@
 namespace FlexFetch.Entities;
 
 /// <summary>
-/// A download task. Owned by a user; files are organized by task ID
-/// (files/{taskId}/...). Parent tasks (e.g. playlists) aggregate children.
+/// A download task. Owned by a user; root tasks own a group folder under
+/// files/ and children store their files in the same folder. Parent tasks
+/// (e.g. playlists) aggregate children.
 /// </summary>
 public sealed class TaskItem
 {

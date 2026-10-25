@@ -38,7 +38,6 @@ public sealed class StartupTasksHostedServiceTests
                 lifetime,
                 config,
                 new UserService(new UserRepository(store), config),
-                config,
                 new FakeEnvironment(),
                 new TaskService(
                     new TaskRepository(store), new ShareRepository(store), store, config,
@@ -88,23 +87,23 @@ public sealed class StartupTasksHostedServiceTests
         var installEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var run = StartupTasksHostedService.RunStartupSequenceAsync(
+        var run = StartupTasksHostedService.RunStartupSequenceAsync(new StartupSequenceContext(
             TestLog.Instance,
             CancellationToken.None,
-            recoverPending: () => { steps.Add("recover"); return 1; },
-            reconcileFileNames: () => { steps.Add("reconcile"); return 0; },
-            releaseWaitingTasks: () => { steps.Add("release"); return 0; },
-            readyComponents: new[] { "yt-dlp", "deno", "ffmpeg" },
-            missingComponents: new[] { "firefox" },
-            autoInstallEnabled: true,
-            installMissingComponents: async () =>
+            RecoverPending: () => { steps.Add("recover"); return 1; },
+            ReconcileFileSizes: () => { steps.Add("reconcile"); return 0; },
+            ReleaseWaitingTasks: () => { steps.Add("release"); return 0; },
+            ReadyComponents: new[] { "yt-dlp", "deno", "ffmpeg" },
+            MissingComponents: new[] { "firefox" },
+            AutoInstallEnabled: true,
+            InstallMissingComponents: async () =>
             {
                 steps.Add("install-start");
                 installEntered.TrySetResult();
                 await release.Task;
                 steps.Add("install-done");
             },
-            signalComponentPlanLogged: () => steps.Add("signal"));
+            SignalComponentPlanLogged: () => steps.Add("signal")));
 
         await installEntered.Task;
         Assert.AreEqual("recover", steps[0], "recovery must run while the install is still going");
@@ -124,21 +123,21 @@ public sealed class StartupTasksHostedServiceTests
         var steps = new List<string>();
         var installRan = false;
 
-        await StartupTasksHostedService.RunStartupSequenceAsync(
+        await StartupTasksHostedService.RunStartupSequenceAsync(new StartupSequenceContext(
             TestLog.Instance,
             CancellationToken.None,
-            recoverPending: () => { steps.Add("recover"); return 1; },
-            reconcileFileNames: () => { steps.Add("reconcile"); return 0; },
-            releaseWaitingTasks: () => { steps.Add("release"); return 0; },
-            readyComponents: new[] { "yt-dlp", "deno", "ffmpeg" },
-            missingComponents: new[] { "firefox" },
-            autoInstallEnabled: false,
-            installMissingComponents: () =>
+            RecoverPending: () => { steps.Add("recover"); return 1; },
+            ReconcileFileSizes: () => { steps.Add("reconcile"); return 0; },
+            ReleaseWaitingTasks: () => { steps.Add("release"); return 0; },
+            ReadyComponents: new[] { "yt-dlp", "deno", "ffmpeg" },
+            MissingComponents: new[] { "firefox" },
+            AutoInstallEnabled: false,
+            InstallMissingComponents: () =>
             {
                 installRan = true;
                 return Task.CompletedTask;
             },
-            signalComponentPlanLogged: () => steps.Add("signal"));
+            SignalComponentPlanLogged: () => steps.Add("signal")));
 
         Assert.IsTrue(steps.Contains("recover"), "a disabled install must not skip recovery");
         Assert.IsFalse(installRan);
@@ -151,21 +150,21 @@ public sealed class StartupTasksHostedServiceTests
     {
         var steps = new List<string>();
 
-        await StartupTasksHostedService.RunStartupSequenceAsync(
+        await StartupTasksHostedService.RunStartupSequenceAsync(new StartupSequenceContext(
             TestLog.Instance,
             CancellationToken.None,
-            recoverPending: () => { steps.Add("recover"); return 1; },
-            reconcileFileNames: () => { steps.Add("reconcile"); return 0; },
-            releaseWaitingTasks: () => { steps.Add("release"); return 0; },
-            readyComponents: Array.Empty<string>(),
-            missingComponents: new[] { "yt-dlp" },
-            autoInstallEnabled: true,
-            installMissingComponents: () =>
+            RecoverPending: () => { steps.Add("recover"); return 1; },
+            ReconcileFileSizes: () => { steps.Add("reconcile"); return 0; },
+            ReleaseWaitingTasks: () => { steps.Add("release"); return 0; },
+            ReadyComponents: Array.Empty<string>(),
+            MissingComponents: new[] { "yt-dlp" },
+            AutoInstallEnabled: true,
+            InstallMissingComponents: () =>
             {
                 steps.Add("install");
                 throw new InvalidOperationException("boom");
             },
-            signalComponentPlanLogged: () => steps.Add("signal"));
+            SignalComponentPlanLogged: () => steps.Add("signal")));
 
         Assert.AreEqual("recover", steps[0]);
         Assert.IsTrue(steps.Contains("install"));
@@ -181,17 +180,17 @@ public sealed class StartupTasksHostedServiceTests
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
-        await StartupTasksHostedService.RunStartupSequenceAsync(
+        await StartupTasksHostedService.RunStartupSequenceAsync(new StartupSequenceContext(
             TestLog.Instance,
             cts.Token,
-            recoverPending: () => { steps.Add("recover"); return 1; },
-            reconcileFileNames: () => { steps.Add("reconcile"); return 0; },
-            releaseWaitingTasks: () => { steps.Add("release"); return 0; },
-            readyComponents: Array.Empty<string>(),
-            missingComponents: new[] { "yt-dlp" },
-            autoInstallEnabled: true,
-            installMissingComponents: () => throw new OperationCanceledException(cts.Token),
-            signalComponentPlanLogged: () => steps.Add("signal"));
+            RecoverPending: () => { steps.Add("recover"); return 1; },
+            ReconcileFileSizes: () => { steps.Add("reconcile"); return 0; },
+            ReleaseWaitingTasks: () => { steps.Add("release"); return 0; },
+            ReadyComponents: Array.Empty<string>(),
+            MissingComponents: new[] { "yt-dlp" },
+            AutoInstallEnabled: true,
+            InstallMissingComponents: () => throw new OperationCanceledException(cts.Token),
+            SignalComponentPlanLogged: () => steps.Add("signal")));
 
         Assert.AreEqual("recover", steps[0]);
         CollectionAssert.DoesNotContain(steps, "release");
@@ -202,21 +201,21 @@ public sealed class StartupTasksHostedServiceTests
     {
         var steps = new List<string>();
 
-        await StartupTasksHostedService.RunStartupSequenceAsync(
+        await StartupTasksHostedService.RunStartupSequenceAsync(new StartupSequenceContext(
             TestLog.Instance,
             CancellationToken.None,
-            recoverPending: () => { steps.Add("recover"); return 1; },
-            reconcileFileNames: () => { steps.Add("reconcile"); return 0; },
-            releaseWaitingTasks: () => { steps.Add("release"); return 0; },
-            readyComponents: new[] { "yt-dlp", "deno", "ffmpeg", "firefox" },
-            missingComponents: Array.Empty<string>(),
-            autoInstallEnabled: true,
-            installMissingComponents: () =>
+            RecoverPending: () => { steps.Add("recover"); return 1; },
+            ReconcileFileSizes: () => { steps.Add("reconcile"); return 0; },
+            ReleaseWaitingTasks: () => { steps.Add("release"); return 0; },
+            ReadyComponents: new[] { "yt-dlp", "deno", "ffmpeg", "firefox" },
+            MissingComponents: Array.Empty<string>(),
+            AutoInstallEnabled: true,
+            InstallMissingComponents: () =>
             {
                 steps.Add("install");
                 return Task.CompletedTask;
             },
-            signalComponentPlanLogged: () => steps.Add("signal"));
+            SignalComponentPlanLogged: () => steps.Add("signal")));
 
         Assert.AreEqual("recover", steps[0]);
         Assert.IsFalse(steps.Contains("install"));

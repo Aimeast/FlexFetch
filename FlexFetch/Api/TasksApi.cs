@@ -93,36 +93,8 @@ public static class TasksApi
             {
                 return Results.NotFound();
             }
-            if (task.Status != TaskStatus.Completed || string.IsNullOrEmpty(task.FileName))
-            {
-                return Results.Conflict(new { error = "Task is not completed yet" });
-            }
 
-            var path = storage.GetTaskFilePath(task, task.FileName);
-            if (!File.Exists(path))
-            {
-                return Results.NotFound();
-            }
-
-            var stream = File.OpenRead(path);
-            // The MIME the server declared at download time wins (clients
-            // cannot misparse the payload); extension mapping is the
-            // fallback for legacy records. Media plays inline with a
-            // disposition carrying the real name (RFC 6266 - inline
-            // filenames never influence rendering) and uses that same name
-            // for "save link as"; other types keep the attachment name and
-            // download.
-            var mime = task.ContentType ?? FileMime.For(task.FileName);
-            if (FileMime.IsMediaMime(mime))
-            {
-                var disposition = FileMime.InlineDispositionFor(task.FileName);
-                if (disposition is not null)
-                {
-                    ctx.Response.Headers.ContentDisposition = disposition;
-                }
-                return Results.File(stream, mime, enableRangeProcessing: true);
-            }
-            return Results.File(stream, mime, task.FileName, enableRangeProcessing: true);
+            return StoredFileResponder.Respond(task, storage, ctx.Request);
         });
 
         group.MapPost("/{id}/share", (string id, TaskService tasks, IShareRepository shares, IConfiguration config, GuestSessionService guests, HttpContext ctx) =>

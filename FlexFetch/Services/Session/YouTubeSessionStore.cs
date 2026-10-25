@@ -302,34 +302,6 @@ public sealed class YouTubeSessionStore
     /// DIFFERENT cookie and is never merged across domains; the incoming
     /// value wins within its own key. Expired cookies are dropped.
     /// </summary>
-    public static IReadOnlyList<CookieItem> Merge(IReadOnlyList<CookieItem> existing, IReadOnlyList<CookieItem> incoming)
-    {
-        var map = new Dictionary<(string Name, string Domain), CookieItem>();
-        foreach (var c in existing)
-        {
-            if (!IsExpired(c))
-            {
-                map[Key(c)] = c;
-            }
-        }
-
-        foreach (var c in incoming)
-        {
-            if (IsExpired(c))
-            {
-                map.Remove(Key(c));
-                continue;
-            }
-
-            map[Key(c)] = c;
-        }
-
-        return map.Values.ToList();
-    }
-
-    private static (string, string) Key(CookieItem c) =>
-        (c.Name, (c.Domain ?? string.Empty).TrimStart('.').ToLowerInvariant());
-
-    private static bool IsExpired(CookieItem c) =>
-        c.ExpiresAt is not null && c.ExpiresAt.Value.ToUniversalTime() <= DateTime.UtcNow;
+    public static IReadOnlyList<CookieItem> Merge(IReadOnlyList<CookieItem> existing, IReadOnlyList<CookieItem> incoming) =>
+        CookieJar.Merge(existing, incoming);
 }

@@ -1,8 +1,6 @@
-﻿using System.Net.Http.Headers;
-using FlexFetch.Data;
+﻿using FlexFetch.Data;
 using FlexFetch.Entities;
 using FlexFetch.Services;
-using TaskStatus = FlexFetch.Enums.TaskStatus;
 
 namespace FlexFetch.Api;
 
@@ -85,37 +83,8 @@ public static class ShareApi
             {
                 return Results.NotFound();
             }
-            if (task.Status != TaskStatus.Completed)
-            {
-                return Results.Conflict(new { error = "Task is not completed yet" });
-            }
-            if (string.IsNullOrEmpty(task.FileName))
-            {
-                return Results.NotFound();
-            }
 
-            var path = storage.GetTaskFilePath(task, task.FileName);
-            if (!File.Exists(path))
-            {
-                return Results.NotFound();
-            }
-
-            var stream = File.OpenRead(path);
-            // Same contract as the tasks file endpoint: the server-declared
-            // MIME wins over extension mapping, media plays inline with a
-            // disposition carrying the real name, other types keep the
-            // attachment name and download.
-            var mime = task.ContentType ?? FileMime.For(task.FileName);
-            if (FileMime.IsMediaMime(mime))
-            {
-                var disposition = FileMime.InlineDispositionFor(task.FileName);
-                if (disposition is not null)
-                {
-                    request.HttpContext.Response.Headers.ContentDisposition = disposition;
-                }
-                return Results.File(stream, mime, enableRangeProcessing: true);
-            }
-            return Results.File(stream, mime, task.FileName, enableRangeProcessing: true);
+            return StoredFileResponder.Respond(task, storage, request);
         });
     }
 

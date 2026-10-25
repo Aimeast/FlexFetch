@@ -507,7 +507,7 @@ public sealed class TaskService : IDisposable
     /// group layout: the recorded name IS the disk name inside the group
     /// folder. Runs at startup, before the queue resumes.
     /// </summary>
-    public int ReconcileFileNames()
+    public int ReconcileFileSizes()
     {
         var fixedCount = 0;
         foreach (var task in _tasks.GetByStatus(TaskStatus.Completed))
@@ -723,10 +723,7 @@ public sealed class TaskService : IDisposable
             task.ErrorMessage = null;
             _tasks.Update(task);
             _log.Information("Task {TaskId} completed", task.Id);
-            if (task.ParentId is not null)
-            {
-                AggregateParent(task.ParentId);
-            }
+            NotifyParent(task);
             return;
         }
         catch (OperationCanceledException) when (cts.IsCancellationRequested || _shutdown.IsCancellationRequested)
@@ -744,10 +741,7 @@ public sealed class TaskService : IDisposable
             task.ErrorMessage = null;
             _tasks.Update(task);
             _log.Information("Task {TaskId} interrupted, will recover after restart", task.Id);
-            if (task.ParentId is not null)
-            {
-                AggregateParent(task.ParentId);
-            }
+            NotifyParent(task);
             return;
         }
         catch (OperationCanceledException ex)
@@ -767,14 +761,7 @@ public sealed class TaskService : IDisposable
             // Authentication/restriction errors are deterministic: cookies
             // were already attached (or were unavailable), so retrying the
             // whole task will not help. Fail immediately.
-            task.ErrorMessage = ex.Message;
-            task.Status = TaskStatus.Failed;
-            _tasks.Update(task);
-            _log.Warning(ex, "Task {TaskId} failed with auth/restriction error", task.Id);
-            if (task.ParentId is not null)
-            {
-                AggregateParent(task.ParentId);
-            }
+            FailTask(task, ex, "Task failed with auth/restriction error");
             return;
         }
         catch (RetryableException ex)
@@ -791,20 +778,30 @@ public sealed class TaskService : IDisposable
         {
             // Deterministic error (bad URL, unsupported format, 4xx):
             // fail immediately without automatic retry.
-            task.ErrorMessage = ex.Message;
-            task.Status = TaskStatus.Failed;
-            _tasks.Update(task);
-            _log.Warning(ex, "Task {TaskId} failed (not retried)", task.Id);
-            if (task.ParentId is not null)
-            {
-                AggregateParent(task.ParentId);
-            }
+            FailTask(task, ex, "Task failed (not retried)");
             return;
         }
         finally
         {
             _running.TryRemove(task.Id, out _);
             cts.Dispose();
+        }
+    }
+
+    private void FailTask(TaskItem task, Exception ex, string logMessage)
+    {
+        task.ErrorMessage = ex.Message;
+        task.Status = TaskStatus.Failed;
+        _tasks.Update(task);
+        _log.Warning(ex, "{Reason} for task {TaskId}", logMessage, task.Id);
+        NotifyParent(task);
+    }
+
+    private void NotifyParent(TaskItem task)
+    {
+        if (task.ParentId is not null)
+        {
+            AggregateParent(task.ParentId);
         }
     }
 
