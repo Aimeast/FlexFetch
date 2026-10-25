@@ -168,6 +168,17 @@ public sealed class StartupTasksHostedService : BackgroundService
             return; // shutting down before startup finished
         }
 
+        // Surface invalid editable settings once at startup. Consumers fall
+        // back to their defaults, but a typo should not stay invisible.
+        foreach (var item in ConfigRegistry.All)
+        {
+            var problem = ConfigRegistry.Validate(item.Key, ConfigRegistry.From(_config, item.Key));
+            if (problem is not null)
+            {
+                _log.Warning("Configuration {Key} is invalid: {Problem}", item.Key, problem);
+            }
+        }
+
         // 1. Create the initial admin when the database has no users yet
         //    (admin is always the first account).
         var initialAdminPassword = _userService.EnsureInitialAdmin(

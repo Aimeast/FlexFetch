@@ -168,6 +168,7 @@ public sealed class YouTubeSessionStore
         Directory.CreateDirectory(CopyDirectory);
         var copyPath = Path.Combine(CopyDirectory, $"session-{Guid.NewGuid():N}.txt");
         File.WriteAllText(copyPath, CookieFile.BuildContent(file.Cookies));
+        SessionFileStore.RestrictPermissions(copyPath);
         return copyPath;
     }
 

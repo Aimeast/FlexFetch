@@ -65,6 +65,21 @@ public sealed partial class CleanupHostedService : IntervalHostedService
             _shares.Delete(share.Token);
         }
 
+        // Plaintext session copies are normally deleted by their consumer; a
+        // crash can leave them behind. Anything older than a day cannot
+        // belong to a running yt-dlp/probe and must not stay in plaintext.
+        var copyDir = Path.Combine(_storage.DataDir, "session", "copies");
+        if (Directory.Exists(copyDir))
+        {
+            foreach (var file in Directory.EnumerateFiles(copyDir))
+            {
+                if (File.GetLastWriteTimeUtc(file) < now.AddDays(-1))
+                {
+                    TryDeleteFile(file);
+                }
+            }
+        }
+
         // Orphaned group folders: "{taskId} {title prefix}" directories whose
         // root task no longer exists (the task id is the leading token; ids
         // never contain spaces).

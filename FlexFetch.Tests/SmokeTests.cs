@@ -15,6 +15,8 @@ public sealed class SmokeTests
         var response = await client.GetAsync("/");
 
         Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+        Assert.AreEqual("nosniff", response.Headers.GetValues("X-Content-Type-Options").Single());
+        Assert.AreEqual("DENY", response.Headers.GetValues("X-Frame-Options").Single());
         var body = await response.Content.ReadAsStringAsync();
         StringAssert.Contains(body, "<!DOCTYPE html>");
         StringAssert.Contains(body, "<title>FlexFetch</title>");

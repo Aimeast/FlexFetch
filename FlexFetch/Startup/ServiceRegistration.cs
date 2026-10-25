@@ -1,4 +1,6 @@
-﻿using FlexFetch.Config;
+﻿using System.Security.Claims;
+using System.Threading.RateLimiting;
+using FlexFetch.Config;
 using FlexFetch.Data;
 using FlexFetch.Enums;
 using FlexFetch.HostedServices;
@@ -7,9 +9,11 @@ using FlexFetch.Services.Downloaders;
 using FlexFetch.Services.Routing;
 using FlexFetch.Services.Session;
 using FlexFetch.Services.Tasks;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.RateLimiting;
 using Serilog;
 using ILogger = Serilog.ILogger;
 
@@ -94,13 +98,46 @@ public static class ServiceRegistration
             .PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(dataDir, "keys")));
 
         // Server-side session cookie authentication.
-        var sessionHours = int.Parse(ConfigRegistry.From(config, ConfigKeys.SessionHours));
+        var sessionHours = ConfigRegistry.GetPositiveInt(config, ConfigKeys.SessionHours, 168);
         services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
             .AddCookie(options =>
             {
                 options.Cookie.Name = "FlexFetch.Auth";
                 options.ExpireTimeSpan = TimeSpan.FromHours(sessionHours);
                 options.SlidingExpiration = true;
+                // A cookie is a cached snapshot of the account. Re-check the
+                // store so a disabled/deleted user loses access immediately
+                // and a changed role takes effect on the next request.
+                options.Events.OnValidatePrincipal = async ctx =>
+                {
+                    var userId = ctx.Principal?.FindFirstValue(ClaimTypes.NameIdentifier);
+                    if (string.IsNullOrEmpty(userId))
+                    {
+                        return;
+                    }
+
+                    var users = ctx.HttpContext.RequestServices.GetRequiredService<IUserRepository>();
+                    var user = users.GetById(userId);
+                    if (user is null || user.Status != UserStatus.Active)
+                    {
+                        ctx.RejectPrincipal();
+                        await ctx.HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+                        return;
+                    }
+
+                    var role = user.Role.ToString();
+                    if (ctx.Principal!.IsInRole(role))
+                    {
+                        return;
+                    }
+
+                    var claims = ctx.Principal.Claims
+                        .Where(c => c.Type != ClaimTypes.Role)
+                        .Append(new Claim(ClaimTypes.Role, role));
+                    var identity = new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme);
+                    ctx.ReplacePrincipal(new ClaimsPrincipal(identity));
+                    ctx.ShouldRenew = true;
+                };
                 options.Events.OnRedirectToLogin = ctx =>
                 {
                     ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
@@ -118,6 +155,23 @@ public static class ServiceRegistration
             // visitors when account.allowAnonymous is enabled (shared guest pool).
             .AddPolicy("AppAccess", p => p.AddRequirements(new AppAccessRequirement()));
         services.AddSingleton<IAuthorizationHandler, AppAccessHandler>();
+
+        // Credential endpoints are cheap to hammer but expensive to verify
+        // (PBKDF2). Throttle them per client address; the limit is generous
+        // for a human and stops parallel guessing from one source.
+        services.AddRateLimiter(options =>
+        {
+            options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+            options.AddPolicy("auth", context => RateLimitPartition.GetFixedWindowLimiter(
+                partitionKey: context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                factory: _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = 20,
+                    Window = TimeSpan.FromMinutes(1),
+                    QueueLimit = 0,
+                    AutoReplenishment = true,
+                }));
+        });
 
         // Production: response compression + HTTPS redirection.
         services.AddResponseCompression(options => options.EnableForHttps = true);

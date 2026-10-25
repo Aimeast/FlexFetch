@@ -44,19 +44,30 @@ public sealed class GuestSessionService
         if (existing is not null)
         {
             _guests.Touch(existing, DateTime.UtcNow);
+            // Sliding expiry: the server session lives while it sees
+            // activity, so the browser cookie must be renewed on the same
+            // terms or an active guest loses their task list when the
+            // original MaxAge runs out.
+            AppendCookie(ctx, existing);
             return existing;
         }
 
-        var id = IdPrefix + RandomId.New();
+        var id = IdPrefix + RandomId.NewSecret();
         var now = DateTime.UtcNow;
         _guests.Insert(new GuestSession { Id = id, CreatedAt = now, LastActiveAt = now });
+        AppendCookie(ctx, id);
+        return id;
+    }
+
+    private void AppendCookie(HttpContext ctx, string id)
+    {
         ctx.Response.Cookies.Append(CookieName, id, new CookieOptions
         {
             HttpOnly = true,
             SameSite = SameSiteMode.Lax,
+            Secure = ctx.Request.IsHttps,
             MaxAge = IdleThreshold,
         });
-        return id;
     }
 
     /// <summary>

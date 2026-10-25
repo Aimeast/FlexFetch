@@ -11,6 +11,18 @@ public static class PipelineConfig
     public static void UseFlexFetchPipeline(this WebApplication app)
     {
         app.UseResponseCompression();
+
+        // Baseline response hardening for every surface (API and static
+        // pages). Inline scripts keep a strict CSP impractical, but these
+        // stop MIME sniffing and framing.
+        app.Use(async (context, next) =>
+        {
+            context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+            context.Response.Headers["X-Frame-Options"] = "DENY";
+            context.Response.Headers["Referrer-Policy"] = "same-origin";
+            await next(context);
+        });
+
         if (!app.Environment.IsDevelopment())
         {
             // http traffic redirects to the https endpoint actually bound by the
@@ -39,6 +51,7 @@ public static class PipelineConfig
 
         app.UseAuthentication();
         app.UseAuthorization();
+        app.UseRateLimiter();
 
         AuthApi.Map(app);
         UsersApi.Map(app);

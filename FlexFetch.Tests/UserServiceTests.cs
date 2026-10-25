@@ -50,6 +50,24 @@ public sealed class UserServiceTests
     }
 
     [TestMethod]
+    public void NullCredentials_AreRejected()
+    {
+        Assert.AreEqual(RegisterResult.InvalidInput, _service!.Register(null, "password1"));
+        Assert.AreEqual(RegisterResult.InvalidInput, _service.Register("alice", null));
+        Assert.AreEqual(LoginStatus.InvalidCredentials, _service.Login(null, "password1").Status);
+        Assert.AreEqual(LoginStatus.InvalidCredentials, _service.Login("alice", null).Status);
+        Assert.IsFalse(PasswordHasher.Verify(null, "1.salt.hash"));
+        Assert.IsFalse(PasswordHasher.Verify("password1", null));
+
+        Assert.AreEqual(RegisterResult.Success, _service.Register("alice", "password1"));
+        var user = _service.Login("alice", "password1").User!;
+        Assert.AreEqual(ChangePasswordResult.InvalidCredentials,
+            _service.ChangePassword(user.Id, null, "newpass1"));
+        Assert.AreEqual(ChangePasswordResult.InvalidInput,
+            _service.ChangePassword(user.Id, "password1", null));
+    }
+
+    [TestMethod]
     public void Register_OpenPolicy_ActivatesImmediately()
     {
         var result = _service!.Register("alice", "password1");

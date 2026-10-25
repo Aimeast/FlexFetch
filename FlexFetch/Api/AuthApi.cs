@@ -31,7 +31,7 @@ public static class AuthApi
                 RegisterResult.RegistrationClosed => Results.Forbid(),
                 _ => Results.BadRequest(new { error = "Invalid username or password" }),
             };
-        });
+        }).RequireRateLimiting("auth");
 
         group.MapPost("/login", async (LoginRequest req, UserService users, IConfiguration config, HttpContext ctx) =>
         {
@@ -60,7 +60,7 @@ public static class AuthApi
             {
                 IsPersistent = true,
                 ExpiresUtc = DateTimeOffset.UtcNow.AddHours(
-                    int.Parse(ConfigRegistry.From(config, ConfigKeys.SessionHours))),
+                    ConfigRegistry.GetPositiveInt(config, ConfigKeys.SessionHours, 168)),
             };
             await ctx.SignInAsync(
                 CookieAuthenticationDefaults.AuthenticationScheme,
@@ -68,7 +68,7 @@ public static class AuthApi
                 props);
 
             return Results.Ok(new { id = user.Id, userName = user.UserName, role = user.Role.ToString() });
-        });
+        }).RequireRateLimiting("auth");
 
         group.MapPost("/logout", async (HttpContext ctx) =>
         {
@@ -95,7 +95,7 @@ public static class AuthApi
                     new { error = "New password must be at least 5 characters" }),
                 _ => Results.Unauthorized(),
             };
-        }).RequireAuthorization();
+        }).RequireAuthorization().RequireRateLimiting("auth");
 
         // Public bootstrap info for the web UI: who is signed in and whether
         // anonymous guest access is enabled on this deployment.

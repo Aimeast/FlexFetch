@@ -53,14 +53,14 @@ public sealed class UserService
             ? policy
             : RegistrationPolicy.Open;
 
-    public RegisterResult Register(string userName, string password)
+    public RegisterResult Register(string? userName, string? password)
     {
         if (!IsValidUserName(userName) || !IsValidPassword(password))
         {
             return RegisterResult.InvalidInput;
         }
 
-        if (_users.GetByUserName(userName) is not null)
+        if (_users.GetByUserName(userName!) is not null)
         {
             return RegisterResult.UserNameTaken;
         }
@@ -73,8 +73,8 @@ public sealed class UserService
 
         var user = new User
         {
-            UserName = userName,
-            PasswordHash = PasswordHasher.Hash(password),
+            UserName = userName!,
+            PasswordHash = PasswordHasher.Hash(password!),
             Status = policy == RegistrationPolicy.Approval ? UserStatus.Pending : UserStatus.Active,
         };
         _users.Insert(user);
@@ -82,8 +82,13 @@ public sealed class UserService
         return user.Status == UserStatus.Pending ? RegisterResult.ApprovalPending : RegisterResult.Success;
     }
 
-    public LoginOutcome Login(string userName, string password)
+    public LoginOutcome Login(string? userName, string? password)
     {
+        if (string.IsNullOrEmpty(userName) || string.IsNullOrEmpty(password))
+        {
+            return new LoginOutcome(LoginStatus.InvalidCredentials, null);
+        }
+
         var user = _users.GetByUserName(userName);
         if (user is null || !PasswordHasher.Verify(password, user.PasswordHash))
         {
@@ -102,11 +107,13 @@ public sealed class UserService
 
     public User? GetById(string id) => _users.GetById(id);
 
+    public IReadOnlyList<User> GetAll() => _users.GetAll();
+
     /// <summary>
     /// Changes a user's own password: the current password must verify and
     /// the new one must satisfy the same rule as registration.
     /// </summary>
-    public ChangePasswordResult ChangePassword(string userId, string currentPassword, string newPassword)
+    public ChangePasswordResult ChangePassword(string userId, string? currentPassword, string? newPassword)
     {
         var user = _users.GetById(userId);
         if (user is null)
@@ -124,7 +131,7 @@ public sealed class UserService
             return ChangePasswordResult.InvalidInput;
         }
 
-        user.PasswordHash = PasswordHasher.Hash(newPassword);
+        user.PasswordHash = PasswordHasher.Hash(newPassword!);
         return _users.Update(user)
             ? ChangePasswordResult.Success
             : ChangePasswordResult.UserNotFound;
@@ -223,8 +230,8 @@ public sealed class UserService
 
     private string GetConfig(string key) => ConfigRegistry.From(_config, key);
 
-    private static bool IsValidUserName(string userName) =>
-        userName.Length is >= 3 and <= 32 && userName.All(char.IsLetterOrDigit);
+    private static bool IsValidUserName(string? userName) =>
+        userName is { Length: >= 3 and <= 32 } && userName.All(char.IsLetterOrDigit);
 
-    private static bool IsValidPassword(string password) => password.Length >= 5;
+    private static bool IsValidPassword(string? password) => password is { Length: >= 5 };
 }

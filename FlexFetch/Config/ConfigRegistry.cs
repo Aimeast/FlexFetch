@@ -28,6 +28,24 @@ public static class ConfigRegistry
     public static string From(IConfiguration configuration, string key) =>
         configuration[key.Replace('.', ':')] ?? GetDefault(key);
 
+    /// <summary>
+    /// Reads an integer configuration value, falling back when the value is
+    /// missing or not a number. The editable configuration file is user
+    /// input; a typo must not crash a request or startup.
+    /// </summary>
+    public static int GetInt(IConfiguration configuration, string key, int fallback) =>
+        int.TryParse(From(configuration, key), out var value) ? value : fallback;
+
+    /// <summary>
+    /// Reads a positive integer configuration value; zero/negative values
+    /// fall back like an unparseable one.
+    /// </summary>
+    public static int GetPositiveInt(IConfiguration configuration, string key, int fallback)
+    {
+        var value = GetInt(configuration, key, fallback);
+        return value > 0 ? value : fallback;
+    }
+
     /// <summary>Validates a value for the given key; returns an error message or null.</summary>
     public static string? Validate(string key, string value) =>
         Items.TryGetValue(key, out var item) ? item.Validator(value) : $"Unknown configuration key: {key}";

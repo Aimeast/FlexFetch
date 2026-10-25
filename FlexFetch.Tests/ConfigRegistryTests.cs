@@ -73,4 +73,23 @@ public sealed class ConfigRegistryTests
     {
         Assert.ThrowsExactly<KeyNotFoundException>(() => ConfigRegistry.Get("unknown.key"));
     }
+
+    [TestMethod]
+    public void GetInt_FallsBackForInvalidOrNonPositiveValues()
+    {
+        var config = new TestConfig();
+        Assert.AreEqual(168, ConfigRegistry.GetInt(config, ConfigKeys.SessionHours, 168));
+        Assert.AreEqual(168, ConfigRegistry.GetPositiveInt(config, ConfigKeys.SessionHours, 168));
+
+        config.Set(ConfigKeys.SessionHours, "not-a-number");
+        Assert.AreEqual(168, ConfigRegistry.GetInt(config, ConfigKeys.SessionHours, 168));
+        Assert.AreEqual(168, ConfigRegistry.GetPositiveInt(config, ConfigKeys.SessionHours, 168));
+
+        config.Set(ConfigKeys.SessionHours, "0");
+        Assert.AreEqual(0, ConfigRegistry.GetInt(config, ConfigKeys.SessionHours, 168));
+        Assert.AreEqual(168, ConfigRegistry.GetPositiveInt(config, ConfigKeys.SessionHours, 168));
+
+        config.Set(ConfigKeys.SessionHours, "12");
+        Assert.AreEqual(12, ConfigRegistry.GetPositiveInt(config, ConfigKeys.SessionHours, 168));
+    }
 }

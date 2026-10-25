@@ -73,6 +73,25 @@ public sealed class CleanupHostedServiceTests
     }
 
     [TestMethod]
+    public async Task Cleanup_RemovesStalePlaintextSessionCopies()
+    {
+        var copyDir = Path.Combine(_storage!.DataDir, "session", "copies");
+        Directory.CreateDirectory(copyDir);
+        var stale = Path.Combine(copyDir, "session-stale.txt");
+        var fresh = Path.Combine(copyDir, "session-fresh.txt");
+        File.WriteAllText(stale, "cookie");
+        File.WriteAllText(fresh, "cookie");
+        File.SetLastWriteTimeUtc(stale, DateTime.UtcNow.AddDays(-2));
+
+        using var taskService = new TaskService(_tasks!, _shares!, _store!, _config!, new NoopExecutor(), _storage, Log);
+        var service = CreateService(taskService);
+        await service.ExecuteOnceForTestAsync(CancellationToken.None);
+
+        Assert.IsFalse(File.Exists(stale), "a crashed run's plaintext copy must be swept");
+        Assert.IsTrue(File.Exists(fresh), "a recent copy may belong to a running yt-dlp/probe");
+    }
+
+    [TestMethod]
     public async Task Cleanup_DeletesOrphanedTaskFiles()
     {
         // A task that exists keeps its files.

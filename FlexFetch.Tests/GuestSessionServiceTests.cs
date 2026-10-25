@@ -54,15 +54,29 @@ public sealed class GuestSessionServiceTests
         Assert.Contains(id, setCookie);
         Assert.Contains("httponly", setCookie, StringComparison.OrdinalIgnoreCase);
 
-        // The same browser (cookie present) keeps the same session and the
-        // record is touched (activity tracking for the cleanup sweep); no
-        // new cookie is issued.
+        // The same browser (cookie present) keeps the same session, the
+        // record is touched (activity tracking for the cleanup sweep), and
+        // the cookie is renewed so its MaxAge follows the activity.
         var before = record!.LastActiveAt;
         var second = new DefaultHttpContext();
         second.Request.Headers["Cookie"] = CookieHeader + id;
         Assert.AreEqual(id, _service.GetOrCreateOwnerId(second));
-        Assert.DoesNotContain(id, second.Response.Headers["Set-Cookie"].ToString());
+        var renewed = second.Response.Headers["Set-Cookie"].ToString();
+        Assert.Contains(id, renewed);
+        Assert.Contains("max-age", renewed, StringComparison.OrdinalIgnoreCase);
         Assert.IsTrue(_guests.GetById(id)!.LastActiveAt >= before);
+    }
+
+    [TestMethod]
+    public void GetOrCreate_HttpsRequest_SetsSecureCookie()
+    {
+        var ctx = new DefaultHttpContext();
+        ctx.Request.Scheme = "https";
+
+        _service!.GetOrCreateOwnerId(ctx);
+
+        var setCookie = ctx.Response.Headers["Set-Cookie"].ToString();
+        Assert.Contains("secure", setCookie, StringComparison.OrdinalIgnoreCase);
     }
 
     [TestMethod]

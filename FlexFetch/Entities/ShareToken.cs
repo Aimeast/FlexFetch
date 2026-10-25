@@ -8,7 +8,7 @@ namespace FlexFetch.Entities;
 /// </summary>
 public sealed class ShareToken
 {
-    public string Token { get; set; } = RandomId.New();
+    public string Token { get; set; } = RandomId.NewSecret();
 
     public string TaskId { get; set; } = string.Empty;
 

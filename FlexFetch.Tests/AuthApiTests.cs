@@ -1,6 +1,9 @@
 ﻿using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
+using FlexFetch.Data;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace FlexFetch.Tests;
 
@@ -72,7 +75,7 @@ public sealed class AuthApiTests
 
         // Admin: role is Admin.
         using var adminClient = factory.CreateClient();
-        await adminClient.PostAsJsonAsync("/api/auth/login", new { userName = "admin", password = "admin-pass-1" });
+        await LoginAdminAsync(factory.Services, adminClient);
         var adminMe = await adminClient.GetAsync("/api/auth/me");
         Assert.AreEqual(HttpStatusCode.OK, adminMe.StatusCode);
         var adminBody = await adminMe.Content.ReadFromJsonAsync<LoginResponse>();
@@ -98,7 +101,7 @@ public sealed class AuthApiTests
 
         // Admin: 200.
         using var adminClient = factory.CreateClient();
-        await adminClient.PostAsJsonAsync("/api/auth/login", new { userName = "admin", password = "admin-pass-1" });
+        await LoginAdminAsync(factory.Services, adminClient);
         var asAdmin = await adminClient.GetAsync("/api/users/pending");
         Assert.AreEqual(HttpStatusCode.OK, asAdmin.StatusCode);
     }
@@ -115,7 +118,7 @@ public sealed class AuthApiTests
         await client.PostAsJsonAsync("/api/auth/register", new { userName = "dave", password = "password1" });
 
         using var adminClient = factory.CreateClient();
-        await adminClient.PostAsJsonAsync("/api/auth/login", new { userName = "admin", password = "admin-pass-1" });
+        await LoginAdminAsync(factory.Services, adminClient);
 
         // Admin sees pending list (empty in open policy) - 200.
         var pending = await adminClient.GetAsync("/api/users/pending");
@@ -132,6 +135,100 @@ public sealed class AuthApiTests
         // Disabled user cannot log in anymore.
         var blocked = await client.PostAsJsonAsync("/api/auth/login", new { userName = "dave", password = "password1" });
         Assert.AreEqual(HttpStatusCode.Forbidden, blocked.StatusCode);
+    }
+
+    [TestMethod]
+    public async Task DisabledUser_ExistingCookieIsRejectedImmediately()
+    {
+        using var factory = TestApp.CreateFactory(_dataDir!);
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/auth/register", new { userName = "frank", password = "password1" });
+        var login = await client.PostAsJsonAsync("/api/auth/login", new { userName = "frank", password = "password1" });
+        var body = await login.Content.ReadFromJsonAsync<LoginResponse>();
+        Assert.IsNotNull(body);
+        Assert.AreEqual(HttpStatusCode.OK, (await client.GetAsync("/api/auth/me")).StatusCode);
+
+        using var adminClient = factory.CreateClient();
+        await LoginAdminAsync(factory.Services, adminClient);
+        var disable = await adminClient.PostAsync($"/api/users/{body.Id}/disable", null);
+        Assert.AreEqual(HttpStatusCode.OK, disable.StatusCode);
+
+        // The cookie is a cached snapshot; the next request re-checks the
+        // store and rejects the disabled account.
+        var after = await client.GetAsync("/api/auth/me");
+        Assert.AreEqual(HttpStatusCode.Unauthorized, after.StatusCode);
+    }
+
+    [TestMethod]
+    public async Task DeleteUser_RemovesOwnedTasksAndInvalidatesSession()
+    {
+        using var factory = TestApp.CreateFactory(_dataDir!);
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/auth/register", new { userName = "grace", password = "password1" });
+        var login = await client.PostAsJsonAsync("/api/auth/login", new { userName = "grace", password = "password1" });
+        var body = await login.Content.ReadFromJsonAsync<LoginResponse>();
+        Assert.IsNotNull(body);
+
+        var submit = await client.PostAsJsonAsync("/api/tasks", new { url = "https://example.com/a.bin" });
+        Assert.AreEqual(HttpStatusCode.OK, submit.StatusCode);
+        var created = await submit.Content.ReadFromJsonAsync<JsonElement>();
+        var taskId = created.GetProperty("id").GetString();
+        Assert.IsNotNull(taskId);
+
+        using var adminClient = factory.CreateClient();
+        await LoginAdminAsync(factory.Services, adminClient);
+        var delete = await adminClient.DeleteAsync($"/api/users/{body.Id}");
+        Assert.AreEqual(HttpStatusCode.OK, delete.StatusCode);
+
+        var tasks = factory.Services.GetRequiredService<ITaskRepository>();
+        Assert.IsNull(tasks.GetById(taskId), "the deleted account's task groups must be removed");
+        Assert.AreEqual(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/auth/me")).StatusCode);
+    }
+
+    [TestMethod]
+    public async Task LastActiveAdmin_CannotBeDisabledOrDeleted()
+    {
+        using var factory = TestApp.CreateFactory(_dataDir!);
+        using var adminClient = factory.CreateClient();
+        var body = await LoginAdminAsync(factory.Services, adminClient);
+
+        var disable = await adminClient.PostAsync($"/api/users/{body.Id}/disable", null);
+        Assert.AreEqual(HttpStatusCode.Conflict, disable.StatusCode);
+
+        var delete = await adminClient.DeleteAsync($"/api/users/{body.Id}");
+        Assert.AreEqual(HttpStatusCode.Conflict, delete.StatusCode);
+    }
+
+    [TestMethod]
+    public async Task NullCredentials_ReturnClientErrors()
+    {
+        using var factory = TestApp.CreateFactory(_dataDir!);
+        using var client = factory.CreateClient();
+
+        var register = await client.PostAsJsonAsync(
+            "/api/auth/register", new { userName = (string?)null, password = "password1" });
+        Assert.AreEqual(HttpStatusCode.BadRequest, register.StatusCode);
+
+        var login = await client.PostAsJsonAsync(
+            "/api/auth/login", new { userName = (string?)null, password = "password1" });
+        Assert.AreEqual(HttpStatusCode.Unauthorized, login.StatusCode);
+    }
+
+    [TestMethod]
+    public async Task LoginAttempts_AreRateLimited()
+    {
+        using var factory = TestApp.CreateFactory(_dataDir!);
+        using var client = factory.CreateClient();
+        HttpStatusCode last = default;
+
+        for (var i = 0; i < 21; i++)
+        {
+            var response = await client.PostAsJsonAsync(
+                "/api/auth/login", new { userName = "nobody", password = "wrong" });
+            last = response.StatusCode;
+        }
+
+        Assert.AreEqual(HttpStatusCode.TooManyRequests, last);
     }
 
     [TestMethod]
@@ -262,6 +359,29 @@ public sealed class AuthApiTests
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// The initial admin is created by a hosted service after the host
+    /// starts, so a test can reach the first request before it exists. Wait
+    /// for the record (no credential check) and then log in once so retries
+    /// never consume the auth rate limit.
+    /// </summary>
+    private static async Task<LoginResponse> LoginAdminAsync(IServiceProvider services, HttpClient client)
+    {
+        var users = services.GetRequiredService<IUserRepository>();
+        for (var i = 0; i < 100 && users.GetByUserName("admin") is null; i++)
+        {
+            await Task.Delay(50);
+        }
+
+        Assert.IsNotNull(users.GetByUserName("admin"), "the initial admin account was not created in time");
+        var response = await client.PostAsJsonAsync(
+            "/api/auth/login", new { userName = "admin", password = "admin-pass-1" });
+        Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<LoginResponse>();
+        Assert.IsNotNull(body);
+        return body;
     }
 
     [TestMethod]

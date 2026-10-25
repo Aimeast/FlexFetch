@@ -18,6 +18,17 @@ public sealed class RandomIdTests
     }
 
     [TestMethod]
+    public void NewSecret_Returns128BitUrlSafeCharacters()
+    {
+        var secret = RandomId.NewSecret();
+
+        // 16 random bytes as unpadded URL-safe base64: 22 characters.
+        Assert.AreEqual(22, secret.Length);
+        StringAssert.Matches(secret, UrlSafeBase64);
+        Assert.AreNotEqual(secret, RandomId.NewSecret());
+    }
+
+    [TestMethod]
     public void New_IsUniqueAcrossManyGenerations()
     {
         const int count = 100_000;

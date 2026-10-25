@@ -204,7 +204,12 @@ public sealed class SessionFileStore
     private IDataProtector Protector(string site) =>
         _protectors.GetOrAdd(site.ToLowerInvariant(), s => _protection.CreateProtector("FlexFetch.SessionFiles." + s));
 
-    private static void RestrictPermissions(string path)
+    /// <summary>
+    /// Restricts a file holding session material to the process owner on
+    /// Unix. Plaintext jars (one-time yt-dlp copies, probe candidates) use
+    /// the same restriction as the encrypted store.
+    /// </summary>
+    internal static void RestrictPermissions(string path)
     {
         if (OperatingSystem.IsLinux())
         {

@@ -375,6 +375,7 @@ public sealed class YouTubeSessionExportService
         Directory.CreateDirectory(dir);
         var path = Path.Combine(dir, $"candidate-{Guid.NewGuid():N}.txt");
         File.WriteAllText(path, CookieFile.BuildContent(cookies));
+        SessionFileStore.RestrictPermissions(path);
         return path;
     }
 

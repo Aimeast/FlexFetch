@@ -167,6 +167,13 @@
             msgTimer = setTimeout(() => { msg.className = 'msg'; }, 5000);
         }
 
+        // Marks a trusted HTML fragment produced by this page's own badge
+        // helpers. fillKv escapes every other value: error details and probe
+        // output are remote-influenced text and must never be parsed as HTML.
+        function rawHtml(html) {
+            return { html: html };
+        }
+
         // Green for Ok, neutral gray for Unknown/informational (not an error),
         // red only for real unhealthy verdicts.
         function healthBadge(health) {
@@ -174,7 +181,7 @@
             const cls = h === 'Ok' ? 'badge ok'
                 : (h === 'Unknown' || h === 'WebBindingOnly') ? 'badge'
                 : 'badge err';
-            return '<span class="' + cls + '">' + esc(h) + '</span>';
+            return rawHtml('<span class="' + cls + '">' + esc(h) + '</span>');
         }
 
         // Matrix verdict color: green = that posture works; amber = a
@@ -205,7 +212,7 @@
         }
 
         function mutedBadge(text) {
-            return '<span class="badge">' + esc(text) + '</span>';
+            return rawHtml('<span class="badge">' + esc(text) + '</span>');
         }
 
         function fillKv(id, entries) {
@@ -213,8 +220,11 @@
             kv.innerHTML = '';
             for (const [k, v] of Object.entries(entries)) {
                 if (v === undefined || v === null) continue;
+                const value = v && typeof v === 'object' && typeof v.html === 'string'
+                    ? v.html
+                    : esc(String(v));
                 const div = document.createElement('div');
-                div.innerHTML = '<b>' + esc(k) + '</b><span>' + v + '</span>';
+                div.innerHTML = '<b>' + esc(k) + '</b><span>' + value + '</span>';
                 kv.appendChild(div);
             }
         }
@@ -226,7 +236,7 @@
                 const meta = status.meta || {};
                 fillKv('status-kv', {
                     'Snapshot': status.exists
-                        ? '<span class="badge ok">present</span>'
+                        ? rawHtml('<span class="badge ok">present</span>')
                         : mutedBadge('missing'),
                     'Storage': status.storage,
                     'Snapshot age': status.ageMinutes != null ? (status.ageMinutes / 60).toFixed(1) + ' h' : '-',
@@ -237,7 +247,7 @@
                     'Exported at': fmtDate(meta.exportedAt),
                     'Refresh pipeline': status.isRunning ? 'running (' + status.currentStage + ')' : 'idle',
                     'Current activity': status.isRunning && status.currentDetail
-                        ? esc(status.currentDetail)
+                        ? status.currentDetail
                         : undefined,
                     'Last refresh': fmtDate(status.lastRunAt),
                     'Last refresh result': status.lastResult,
@@ -271,14 +281,14 @@
                 fillKv('pot-kv', {
                     'Mode': pot.mode,
                     'Deno': pot.denoInstalled
-                        ? '<span class="badge ok">installed</span>'
-                        : '<span class="badge err">missing</span>',
+                        ? rawHtml('<span class="badge ok">installed</span>')
+                        : rawHtml('<span class="badge err">missing</span>'),
                     'Script (bgutil)': pot.serverInstalled
-                        ? '<span class="badge ok">installed</span>'
-                        : '<span class="badge err">missing</span>',
+                        ? rawHtml('<span class="badge ok">installed</span>')
+                        : rawHtml('<span class="badge err">missing</span>'),
                     'yt-dlp plugin': pot.pluginInstalled
-                        ? '<span class="badge ok">installed</span>'
-                        : '<span class="badge err">missing</span>',
+                        ? rawHtml('<span class="badge ok">installed</span>')
+                        : rawHtml('<span class="badge err">missing</span>'),
                     'Script path': pot.scriptPath,
                     'Last error': pot.lastError,
                 });
@@ -424,11 +434,11 @@
                 const meta = status.meta || {};
                 fillKv('tw-status-kv', {
                     'Session': status.exists
-                        ? '<span class="badge ok">present</span>'
+                        ? rawHtml('<span class="badge ok">present</span>')
                         : mutedBadge('missing'),
                     'Storage': status.storage,
                     'Health': healthBadge(meta.health),
-                    'Account': meta.account ? '@' + esc(meta.account) : (meta.userId ? mutedBadge('id ' + meta.userId) : '-'),
+                    'Account': meta.account ? '@' + meta.account : (meta.userId ? mutedBadge('id ' + meta.userId) : '-'),
                     'Cookies': status.exists ? status.cookieCount : undefined,
                     'Imported at': fmtDate(meta.importedAt),
                     'Last check': meta.lastCheckAt ? fmtDate(meta.lastCheckAt) : (status.exists ? mutedBadge('never') : undefined),

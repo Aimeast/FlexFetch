@@ -8,7 +8,7 @@ namespace FlexFetch.Services;
 /// </summary>
 public static class PasswordHasher
 {
-    private const int Iterations = 100_000;
+    private const int Iterations = 600_000;
     private const int SaltSize = 16;
     private const int KeySize = 32;
 
@@ -20,8 +20,13 @@ public static class PasswordHasher
         return $"{Iterations}.{Convert.ToBase64String(salt)}.{Convert.ToBase64String(key)}";
     }
 
-    public static bool Verify(string password, string hash)
+    public static bool Verify(string? password, string? hash)
     {
+        if (password is null || string.IsNullOrEmpty(hash))
+        {
+            return false;
+        }
+
         var parts = hash.Split('.');
         if (parts.Length != 3 || !int.TryParse(parts[0], out var iterations))
         {
