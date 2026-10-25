@@ -30,4 +30,11 @@ public interface IRouteRule
     /// DNS/IP resolution (used for fast, blocking-free route decisions).
     /// </summary>
     bool IsDomainMatch(string host);
+
+    /// <summary>
+    /// True when the rule can only be decided after resolving the host to
+    /// IPs (it has CIDR matchers). Callers use this to skip DNS entirely when
+    /// no rule needs it.
+    /// </summary>
+    bool RequiresIpResolution { get; }
 }

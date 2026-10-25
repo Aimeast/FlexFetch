@@ -25,17 +25,20 @@ public sealed class DependencyUpgradeHostedService : IntervalHostedService
 
     private readonly IConfiguration _config;
     private readonly YtdlpService _ytdlp;
+    private readonly StartupTasksHostedService _startup;
     private readonly ILogger _log;
 
     public DependencyUpgradeHostedService(
         IConfiguration config,
         YtdlpService ytdlp,
+        StartupTasksHostedService startup,
         IHostApplicationLifetime lifetime,
         ILogger log)
         : base(lifetime, log, "DependencyUpgrade")
     {
         _config = config;
         _ytdlp = ytdlp;
+        _startup = startup;
         _log = log;
     }
 
@@ -52,6 +55,11 @@ public sealed class DependencyUpgradeHostedService : IntervalHostedService
 
     protected override async Task ExecuteOnceAsync(CancellationToken cancellationToken)
     {
+        // The startup install owns first downloads and logs the component
+        // plan; wait for it so an upgrade can never start (or log) before
+        // that plan, matching the other background services.
+        await _startup.WhenComponentPlanLogged.WaitAsync(cancellationToken);
+
         if (!bool.TryParse(Get(ConfigKeys.AutoUpgrade), out var autoUpgrade) || !autoUpgrade)
         {
             return;

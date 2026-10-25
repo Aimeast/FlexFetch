@@ -68,9 +68,12 @@ public sealed partial class TwitterDownloader : IDownloader
 
     public bool IsDomainSpecific => true;
 
+    /// <summary>Exact host/suffix matching: substring tests also claimed
+    /// netflix.com ("x.com") or any URL with x.com in its query string.</summary>
+    private static readonly DomainSuffixMatcher XDomains = new(new[] { "x.com", "twitter.com" });
+
     public bool CanHandle(string url) =>
-        url.Contains("x.com", StringComparison.OrdinalIgnoreCase)
-        || url.Contains("twitter.com", StringComparison.OrdinalIgnoreCase);
+        Uri.TryCreate(url, UriKind.Absolute, out var uri) && XDomains.IsMatch(uri.Host);
 
     public async Task<AnalysisResult> AnalyzeAsync(string url, string taskId, CancellationToken cancellationToken)
     {
@@ -201,6 +204,11 @@ public sealed partial class TwitterDownloader : IDownloader
     /// ct0 csrf cookie, or null when x.com refuses the token (revoked).</summary>
     private async Task<string?> DeriveCsrfAsync(string authToken, CancellationToken cancellationToken)
     {
+        if (_twitterSession is null)
+        {
+            return null;
+        }
+
         try
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -348,7 +356,7 @@ public sealed partial class TwitterDownloader : IDownloader
             }
         }
 
-        return await client.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        return await BufferedHttp.GetAsync(client, uri, cancellationToken);
     }
 
     /// <summary>

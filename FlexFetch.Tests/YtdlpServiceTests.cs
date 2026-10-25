@@ -1,10 +1,72 @@
-﻿using FlexFetch.Services.Downloaders;
+﻿using System.Diagnostics;
+using FlexFetch.Services.Downloaders;
 
 namespace FlexFetch.Tests;
 
 [TestClass]
 public sealed class YtdlpServiceTests
 {
+    [TestMethod]
+    public async Task RunProcessWithOutputAsync_DrainsLargeStderrWithoutDeadlock()
+    {
+        // Both pipes must be read concurrently; reading stdout to EOF first
+        // deadlocks as soon as the child fills its stderr buffer.
+        var psi = new ProcessStartInfo
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        const string line = "0123456789012345678901234567890123456789";
+        if (OperatingSystem.IsWindows())
+        {
+            psi.FileName = "cmd.exe";
+            psi.Arguments = $"/c \"for /L %i in (1,1,3000) do @echo {line} 1>&2\"";
+        }
+        else
+        {
+            psi.FileName = "/bin/sh";
+            psi.ArgumentList.Add("-c");
+            psi.ArgumentList.Add("i=0; while [ $i -lt 3000 ]; do echo " + line + " 1>&2; i=$((i+1)); done");
+        }
+
+        var output = await YtdlpService.RunProcessWithOutputAsync(
+            psi, CancellationToken.None, TimeSpan.FromSeconds(20));
+
+        StringAssert.Contains(output, line);
+    }
+
+    [TestMethod]
+    public async Task RunProcessWithOutputAsync_Timeout_KillsTheProcess()
+    {
+        var psi = new ProcessStartInfo
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        if (OperatingSystem.IsWindows())
+        {
+            psi.FileName = "cmd.exe";
+            psi.Arguments = "/c \"ping -n 6 127.0.0.1 >nul\"";
+        }
+        else
+        {
+            psi.FileName = "/bin/sh";
+            psi.ArgumentList.Add("-c");
+            psi.ArgumentList.Add("sleep 10");
+        }
+
+        var started = Stopwatch.StartNew();
+        await Assert.ThrowsExactlyAsync<TimeoutException>(() => YtdlpService.RunProcessWithOutputAsync(
+            psi, CancellationToken.None, TimeSpan.FromMilliseconds(250)));
+
+        Assert.IsLessThan(5, started.Elapsed.TotalSeconds,
+            "a timed-out child must be killed, not awaited");
+    }
+
     [TestMethod]
     public void YtDlpDownloadUrl_PerPlatform()
     {

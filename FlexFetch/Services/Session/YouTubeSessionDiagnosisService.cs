@@ -75,48 +75,58 @@ public sealed class YouTubeSessionDiagnosisService
             var cookieArg = YouTubePosture.BuildExtractorArgs(YouTubePosture.CookieClients, visitorData);
             var anonymousArg = YouTubePosture.BuildExtractorArgs(YouTubePosture.AnonymousClients);
 
-            // All items run concurrently: the wall time is bounded by ONE
-            // probe timeout, not the sum of four.
-            var anonymousTasks = new[]
-            {
-                ProbeItemAsync("anonymous", "mweb", null, cookieArg, probeUrl, cancellationToken),
-                ProbeItemAsync("anonymous", "android_vr,mweb", null, anonymousArg, probeUrl, cancellationToken),
-            };
-
             var copies = new List<string>();
-            var sessionTasks = Task.WhenAll(Array.Empty<Task<DiagnoseItem>>());
-            if (_snapshot.Exists)
+            try
             {
-                // One COPY per session probe: yt-dlp rewrites the cookies
-                // file it is given, so concurrent probes must not share.
-                copies.Add(_snapshot.CreateSnapshotCopy()!);
-                copies.Add(_snapshot.CreateSnapshotCopy()!);
-                sessionTasks = Task.WhenAll(
-                    ProbeItemAsync("session", "mweb", copies[0], cookieArg, probeUrl, cancellationToken),
-                    ProbeItemAsync("session", "android_vr,mweb", copies[1], anonymousArg, probeUrl, cancellationToken));
-            }
-
-            var items = (await Task.WhenAll(anonymousTasks)).ToList();
-            items.AddRange(await sessionTasks);
-
-            foreach (var copy in copies)
-            {
-                try
+                // All items run concurrently: the wall time is bounded by ONE
+                // probe timeout, not the sum of four.
+                var anonymousTasks = new[]
                 {
-                    if (File.Exists(copy))
+                    ProbeItemAsync("anonymous", "mweb", null, cookieArg, probeUrl, cancellationToken),
+                    ProbeItemAsync("anonymous", "android_vr,mweb", null, anonymousArg, probeUrl, cancellationToken),
+                };
+
+                var sessionTasks = Task.WhenAll(Array.Empty<Task<DiagnoseItem>>());
+                if (_snapshot.Exists)
+                {
+                    // One COPY per session probe: yt-dlp rewrites the cookies
+                    // file it is given, so concurrent probes must not share.
+                    var first = _snapshot.CreateSnapshotCopy();
+                    var second = _snapshot.CreateSnapshotCopy();
+                    if (first is not null && second is not null)
                     {
-                        File.Delete(copy);
+                        copies.Add(first);
+                        copies.Add(second);
+                        sessionTasks = Task.WhenAll(
+                            ProbeItemAsync("session", "mweb", first, cookieArg, probeUrl, cancellationToken),
+                            ProbeItemAsync("session", "android_vr,mweb", second, anonymousArg, probeUrl, cancellationToken));
                     }
                 }
-                catch
+
+                var items = (await Task.WhenAll(anonymousTasks)).ToList();
+                items.AddRange(await sessionTasks);
+
+                var report = new DiagnoseReport(DateTime.UtcNow, probeUrl, items, BuildResolution(items));
+                Last = report;
+                return report;
+            }
+            finally
+            {
+                foreach (var copy in copies)
                 {
-                    // Cleanup is best-effort.
+                    try
+                    {
+                        if (File.Exists(copy))
+                        {
+                            File.Delete(copy);
+                        }
+                    }
+                    catch
+                    {
+                        // Cleanup is best-effort.
+                    }
                 }
             }
-
-            var report = new DiagnoseReport(DateTime.UtcNow, probeUrl, items, BuildResolution(items));
-            Last = report;
-            return report;
         }
         finally
         {
@@ -138,6 +148,12 @@ public sealed class YouTubeSessionDiagnosisService
             return new DiagnoseItem(mode, clients, result.RunSucceeded, result.Class.ToString(), result.Healthy,
                 result.Output.FirstOrDefault(l => l.StartsWith("ERROR:", StringComparison.OrdinalIgnoreCase)
                     || l.StartsWith("WARNING:", StringComparison.OrdinalIgnoreCase)) ?? result.VideoTitle);
+        }
+        catch (OperationCanceledException)
+        {
+            // A cancelled matrix is not an item verdict; let the caller's
+            // cleanup run and its cancellation propagate.
+            throw;
         }
         catch (Exception ex)
         {

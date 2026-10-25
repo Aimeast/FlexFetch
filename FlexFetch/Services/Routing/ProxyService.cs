@@ -2,6 +2,7 @@
 using System.Text.Json;
 using FlexFetch.Config;
 using ILogger = Serilog.ILogger;
+using Microsoft.Extensions.Primitives;
 
 namespace FlexFetch.Services.Routing;
 
@@ -15,12 +16,13 @@ namespace FlexFetch.Services.Routing;
 /// Rules are read from configuration with precedence: appsettings
 /// (Network:RouteRules JSON array) first, then the runtime config store.
 /// </summary>
-public sealed class ProxyService : IProxyService
+public sealed class ProxyService : IProxyService, IDisposable
 {
     private readonly IConfiguration _configuration;
     private readonly ILogger _log;
     private readonly string _dataDir;
-    private RouteRuleChain _chain;
+    private readonly IDisposable _reloadRegistration;
+    private volatile RouteRuleChain _chain;
 
     public ProxyService(IConfiguration configuration, ILogger log, string dataDir)
     {
@@ -28,6 +30,15 @@ public sealed class ProxyService : IProxyService
         _log = log;
         _dataDir = dataDir;
         _chain = BuildChain();
+        // The editable data-dir file is loaded with reloadOnChange: rebuild
+        // the compiled rules when it changes instead of requiring a restart.
+        _reloadRegistration = ChangeToken.OnChange(configuration.GetReloadToken, ReloadChain);
+    }
+
+    private void ReloadChain()
+    {
+        _chain = BuildChain();
+        _log.Information("Network route rules reloaded");
     }
 
     public bool ShouldProxy(Uri url)
@@ -38,7 +49,9 @@ public sealed class ProxyService : IProxyService
             return false;
         }
 
-        return _chain.Evaluate(url, ResolveIps(url)) == RouteAction.UseProxy;
+        var chain = _chain;
+        var ips = chain.RequiresIpResolution ? ResolveIps(url) : Array.Empty<IPAddress>();
+        return chain.Evaluate(url, ips) == RouteAction.UseProxy;
     }
 
     public HttpMessageHandler CreateHandler(Uri url)
@@ -49,6 +62,8 @@ public sealed class ProxyService : IProxyService
             // release URLs 302 to the real file; pages may redirect too).
             AllowAutoRedirect = true,
             UseCookies = false,
+            // A dead proxy must not hang a request indefinitely.
+            ConnectTimeout = TimeSpan.FromSeconds(15),
         };
 
         var proxy = GetProxyAddress();
@@ -60,6 +75,8 @@ public sealed class ProxyService : IProxyService
 
         return handler;
     }
+
+    public void Dispose() => _reloadRegistration.Dispose();
 
     /// <summary>Proxy URI for external tools (yt-dlp --proxy), or null for direct.</summary>
     public string? GetProxyUri(Uri url) =>

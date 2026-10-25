@@ -282,4 +282,20 @@ public sealed class ProxyServiceTests
         Assert.AreEqual(RouteAction.Direct, chain.EvaluateDomainsOnly(new Uri("https://example.cn/")));
         Assert.AreEqual(RouteAction.UseProxy, chain.EvaluateDomainsOnly(new Uri("https://example.com/")));
     }
+
+    [TestMethod]
+    public void RequiresIpResolution_TracksCidrRules()
+    {
+        var domainOnly = new RouteRuleChain(
+            new IRouteRule[] { new RouteRule(RouteAction.Direct, new DomainSuffixMatcher(new[] { "cn" }), null) },
+            RouteAction.UseProxy);
+        Assert.IsFalse(domainOnly.RequiresIpResolution);
+
+        var cidr = new CidrMatcher();
+        cidr.Load(new[] { "10.0.0.0/8" });
+        var withCidr = new RouteRuleChain(
+            new IRouteRule[] { new RouteRule(RouteAction.Direct, null, cidr) },
+            RouteAction.UseProxy);
+        Assert.IsTrue(withCidr.RequiresIpResolution);
+    }
 }

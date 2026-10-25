@@ -51,6 +51,10 @@ public sealed class YouTubeDownloaderTests
         Assert.IsTrue(downloader.CanHandle("https://youtu.be/abc"));
         Assert.IsFalse(downloader.CanHandle("https://x.com/SpaceX/status/1"));
         Assert.IsFalse(downloader.CanHandle("https://example.com/video.mp4"));
+
+        // Host suffix matching, not substring.
+        Assert.IsFalse(downloader.CanHandle("https://notyoutube.com/watch?v=abc"));
+        Assert.IsFalse(downloader.CanHandle("https://example.com/?next=youtube.com"));
     }
 
     [TestMethod]

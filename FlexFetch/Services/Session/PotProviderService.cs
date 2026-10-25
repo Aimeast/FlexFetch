@@ -426,7 +426,8 @@ public sealed class PotProviderService
 
         _log.Information("Installing bgutil script dependencies via deno install via {Proxy} (npmmirror registry)",
             InstallerProxyEnv.Describe(installerEnv));
-        await YtdlpService.RunProcessAsync(psi, cancellationToken);
+        await YtdlpService.RunProcessAsync(
+            psi, cancellationToken, timeout: TimeSpan.FromMinutes(10));
         File.WriteAllText(Path.Combine(serverDir, ".deno-deps-ok"), PotProviderVersion);
     }
 

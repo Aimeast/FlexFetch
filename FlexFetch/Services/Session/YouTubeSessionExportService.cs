@@ -108,6 +108,13 @@ public sealed class YouTubeSessionExportService
                 return result;
             }, cancellationToken);
         }
+        catch (ExportRejectedException ex)
+        {
+            // Keep the specific verdict (rotated, login required, ...) for
+            // the status API instead of flattening every rejection to Error.
+            LastResult = ex.Health;
+            throw;
+        }
         catch (Exception)
         {
             // The pipeline records the error text; the verdict mapping onto
@@ -134,7 +141,7 @@ public sealed class YouTubeSessionExportService
         var health = YouTubeSessionHealth.Ok;
 
         _pipeline.SetStage("launch");
-        await _browser.EnsureSessionAsync();
+        await _browser.EnsureSessionAsync(cancellationToken);
 
         _pipeline.SetStage("seed");
         await _browser.SeedCookiesAsync(seed);

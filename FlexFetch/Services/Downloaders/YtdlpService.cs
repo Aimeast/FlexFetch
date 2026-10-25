@@ -200,8 +200,12 @@ public sealed class YtdlpService
                 return null;
             }
 
+            // Drain stderr too: a diagnostic line large enough to fill the
+            // pipe would otherwise block the process before it exits.
+            var stderrTask = process.StandardError.ReadToEndAsync(timeout.Token);
             var line = await process.StandardOutput.ReadLineAsync(timeout.Token);
             await process.WaitForExitAsync(timeout.Token);
+            await stderrTask;
             var version = line?.Trim();
             return string.IsNullOrEmpty(version) ? null : version;
         }
@@ -252,8 +256,10 @@ public sealed class YtdlpService
                 return null;
             }
 
+            var stderrTask = process.StandardError.ReadToEndAsync(timeout.Token);
             var output = await process.StandardOutput.ReadToEndAsync(timeout.Token);
             await process.WaitForExitAsync(timeout.Token);
+            await stderrTask;
             return output.Trim();
         }
         catch (OperationCanceledException)
@@ -299,13 +305,14 @@ public sealed class YtdlpService
                 return null;
             }
 
+            var stderrTask = process.StandardError.ReadToEndAsync(timeout.Token);
             var output = await process.StandardOutput.ReadToEndAsync(timeout.Token);
             await process.WaitForExitAsync(timeout.Token);
+            var stderr = await stderrTask;
             if (process.ExitCode != 0)
             {
                 // A silent null here once left the upgrade log saying
                 // "(version unknown)" with nothing to explain why.
-                var stderr = (await process.StandardError.ReadToEndAsync(timeout.Token)).Trim();
                 _log.Warning("ffmpeg -version exited {ExitCode}: {Detail}", process.ExitCode,
                     stderr.Length == 0
                         ? "(no stderr)"
@@ -496,7 +503,7 @@ public sealed class YtdlpService
         try
         {
             var output = await RunComponentWithOutputAsync(
-                BinaryPath, BuildArgs("--update-to nightly"), cancellationToken);
+                BinaryPath, BuildYtDlpUpdateArgs(), cancellationToken);
             if (ExtractYtdlpUpToDateVersion(output) is { } version)
             {
                 _log.Debug("yt-dlp --update-to nightly output: {Output}", output.Trim());
@@ -526,7 +533,8 @@ public sealed class YtdlpService
         await _installLock.WaitAsync(cancellationToken);
         try
         {
-            var output = await RunComponentWithOutputAsync(DenoPath, "upgrade", cancellationToken, GetProxy());
+            var output = await RunComponentWithOutputAsync(
+                DenoPath, new[] { "upgrade" }, cancellationToken, GetProxy());
             if (ExtractDenoUpToDateVersion(output) is { } version)
             {
                 _log.Debug("deno upgrade output: {Output}", output.Trim());
@@ -774,14 +782,25 @@ public sealed class YtdlpService
         _proxy.GetProxyUri(new Uri("https://github.com"));
 
     /// <summary>
-    /// Builds command arguments and appends --proxy when the configured proxy
-    /// applies to the component download host (yt-dlp supports --proxy).
+    /// Builds the yt-dlp self-update argument list and appends --proxy when
+    /// the configured proxy applies to the component download host. Argument
+    /// list entries are never re-parsed, so a proxy URL cannot inject options.
     /// </summary>
-    private string BuildArgs(string command)
+    private IReadOnlyList<string> BuildYtDlpUpdateArgs()
     {
+        var args = new List<string> { "--update-to", "nightly" };
         var proxy = GetProxy();
-        return proxy is null ? command : $"{command} --proxy {proxy}";
+        if (proxy is not null)
+        {
+            args.Add("--proxy");
+            args.Add(proxy);
+        }
+
+        return args;
     }
+
+    /// <summary>Hard bound for a component self-update (network + install).</summary>
+    private static readonly TimeSpan ComponentUpdateTimeout = TimeSpan.FromMinutes(15);
 
     /// <summary>
     /// Runs a component binary with the given arguments and returns its
@@ -789,48 +808,124 @@ public sealed class YtdlpService
     /// up-to-date verdict vs. full detail). When a proxy is provided it is
     /// set on the child process environment.
     /// </summary>
-    private async Task<string> RunComponentWithOutputAsync(string fileName, string args, CancellationToken cancellationToken, string? proxyUrl = null)
+    private async Task<string> RunComponentWithOutputAsync(
+        string fileName,
+        IReadOnlyList<string> args,
+        CancellationToken cancellationToken,
+        string? proxyUrl = null)
     {
         var psi = new System.Diagnostics.ProcessStartInfo
         {
             FileName = fileName,
-            Arguments = args,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true,
         };
+        foreach (var arg in args)
+        {
+            psi.ArgumentList.Add(arg);
+        }
+
         if (!string.IsNullOrWhiteSpace(proxyUrl))
         {
             psi.Environment["HTTPS_PROXY"] = proxyUrl;
             psi.Environment["HTTP_PROXY"] = proxyUrl;
         }
 
-        return await RunProcessWithOutputAsync(psi, cancellationToken);
+        return await RunProcessWithOutputAsync(psi, cancellationToken, ComponentUpdateTimeout);
     }
 
     /// <summary>
     /// Runs a process to completion, throws on a non-zero exit code and
-    /// returns the combined output.
+    /// returns the combined output. Both streams are drained concurrently: a
+    /// child that fills its stderr pipe while stdout is being read would
+    /// otherwise deadlock. Timeouts and cancellation kill the whole tree.
     /// </summary>
-    public static async Task<string> RunProcessWithOutputAsync(System.Diagnostics.ProcessStartInfo psi, CancellationToken cancellationToken)
+    public static async Task<string> RunProcessWithOutputAsync(
+        System.Diagnostics.ProcessStartInfo psi,
+        CancellationToken cancellationToken,
+        TimeSpan? timeout = null)
     {
-        using var process = System.Diagnostics.Process.Start(psi)
-            ?? throw new InvalidOperationException($"Failed to start process: {psi.FileName}");
-
-        var stdout = await process.StandardOutput.ReadToEndAsync(cancellationToken);
-        var stderr = await process.StandardError.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken);
-        if (process.ExitCode != 0)
+        CancellationTokenSource? timeoutCts = null;
+        try
         {
-            throw new InvalidOperationException(
-                $"{Path.GetFileName(psi.FileName)} failed (exit {process.ExitCode}): {stderr.Trim()}");
-        }
+            var token = cancellationToken;
+            if (timeout is { } limit)
+            {
+                timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeoutCts.CancelAfter(limit);
+                token = timeoutCts.Token;
+            }
 
-        // Some CLIs (e.g. deno upgrade) write their output to stderr even on
-        // success, so combine both streams to avoid an empty output.
-        return string.Join(Environment.NewLine,
-            new[] { stdout, stderr }.Where(s => !string.IsNullOrWhiteSpace(s)));
+            using var process = System.Diagnostics.Process.Start(psi)
+                ?? throw new InvalidOperationException($"Failed to start process: {psi.FileName}");
+
+            var stdoutTask = process.StandardOutput.ReadToEndAsync(token);
+            var stderrTask = process.StandardError.ReadToEndAsync(token);
+            string stdout;
+            string stderr;
+            try
+            {
+                await process.WaitForExitAsync(token);
+                stdout = await stdoutTask;
+                stderr = await stderrTask;
+            }
+            catch (OperationCanceledException)
+            {
+                KillTree(process);
+                await ObserveAsync(stdoutTask, stderrTask);
+                if (timeoutCts is { IsCancellationRequested: true } && !cancellationToken.IsCancellationRequested)
+                {
+                    throw new TimeoutException(
+                        $"{Path.GetFileName(psi.FileName)} did not finish within {timeout!.Value.TotalMinutes:F0} minutes");
+                }
+
+                throw;
+            }
+
+            if (process.ExitCode != 0)
+            {
+                throw new InvalidOperationException(
+                    $"{Path.GetFileName(psi.FileName)} failed (exit {process.ExitCode}): {stderr.Trim()}");
+            }
+
+            // Some CLIs (e.g. deno upgrade) write their output to stderr even
+            // on success, so combine both streams to avoid an empty output.
+            return string.Join(Environment.NewLine,
+                new[] { stdout, stderr }.Where(s => !string.IsNullOrWhiteSpace(s)));
+        }
+        finally
+        {
+            timeoutCts?.Dispose();
+        }
+    }
+
+    private static void KillTree(System.Diagnostics.Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch
+        {
+            // The process may already be gone.
+        }
+    }
+
+    private static async Task ObserveAsync(params Task[] tasks)
+    {
+        try
+        {
+            await Task.WhenAll(tasks);
+        }
+        catch
+        {
+            // Cancellation faults are expected; this only observes them.
+        }
     }
 
     /// <summary>
@@ -838,9 +933,13 @@ public sealed class YtdlpService
     /// Shared with the session-side services (deno-based installs). When a
     /// logger is given the combined output is logged on success.
     /// </summary>
-    public static async Task RunProcessAsync(System.Diagnostics.ProcessStartInfo psi, CancellationToken cancellationToken, ILogger? log = null)
+    public static async Task RunProcessAsync(
+        System.Diagnostics.ProcessStartInfo psi,
+        CancellationToken cancellationToken,
+        ILogger? log = null,
+        TimeSpan? timeout = null)
     {
-        var output = await RunProcessWithOutputAsync(psi, cancellationToken);
+        var output = await RunProcessWithOutputAsync(psi, cancellationToken, timeout);
         if (log is null)
         {
             return;
@@ -858,9 +957,27 @@ public sealed class YtdlpService
             OperatingSystem.IsWindows(),
             OperatingSystem.IsMacOS());
 
-        var bytes = await DownloadBytesAsync(url, cancellationToken);
-        await File.WriteAllBytesAsync(BinaryPath, bytes, cancellationToken);
-        MakeExecutable(BinaryPath);
+        await DownloadAtomicAsync(url, BinaryPath, cancellationToken);
+    }
+
+    /// <summary>
+    /// Downloads to a sibling temp file, verifies the executable bit, then
+    /// renames into place. A failed or interrupted download can never leave
+    /// a truncated binary that still passes the "installed" file check.
+    /// </summary>
+    private async Task DownloadAtomicAsync(string url, string target, CancellationToken cancellationToken)
+    {
+        var tmp = target + ".tmp";
+        try
+        {
+            await DownloadToFileAsync(url, tmp, cancellationToken);
+            MakeExecutable(tmp);
+            File.Move(tmp, target, overwrite: true);
+        }
+        finally
+        {
+            TryDelete(tmp);
+        }
     }
 
     /// <summary>
@@ -889,19 +1006,34 @@ public sealed class YtdlpService
             : OperatingSystem.IsLinux() ? baseUrl + "-x86_64-unknown-linux-gnu.zip"
             : baseUrl + "-x86_64-apple-darwin.zip";
 
-        var bytes = await DownloadBytesAsync(url, cancellationToken);
-        using var stream = new MemoryStream(bytes);
-        using var archive = new System.IO.Compression.ZipArchive(stream, System.IO.Compression.ZipArchiveMode.Read);
-        var entry = archive.Entries.FirstOrDefault(e => !e.FullName.EndsWith("/", StringComparison.Ordinal));
-        if (entry is null)
+        var archivePath = Path.Combine(Path.GetTempPath(), $"deno-{Guid.NewGuid():N}.zip");
+        var tmp = DenoPath + ".tmp";
+        try
         {
-            throw new InvalidOperationException("deno archive is empty");
-        }
+            await DownloadToFileAsync(url, archivePath, cancellationToken);
+            using var stream = File.OpenRead(archivePath);
+            using var archive = new System.IO.Compression.ZipArchive(
+                stream, System.IO.Compression.ZipArchiveMode.Read);
+            var entry = archive.Entries.FirstOrDefault(e => !e.FullName.EndsWith("/", StringComparison.Ordinal));
+            if (entry is null)
+            {
+                throw new InvalidOperationException("deno archive is empty");
+            }
 
-        using var target = File.Create(DenoPath);
-        await using var source = entry.Open();
-        await source.CopyToAsync(target, cancellationToken);
-        MakeExecutable(DenoPath);
+            using (var target = File.Create(tmp))
+            {
+                await using var source = entry.Open();
+                await source.CopyToAsync(target, cancellationToken);
+            }
+
+            MakeExecutable(tmp);
+            File.Move(tmp, DenoPath, overwrite: true);
+        }
+        finally
+        {
+            TryDelete(archivePath);
+            TryDelete(tmp);
+        }
     }
 
     private async Task DownloadFfmpegAsync(CancellationToken cancellationToken)
@@ -914,19 +1046,37 @@ public sealed class YtdlpService
             // are used instead of the rolling BtbN master builds.
             const string url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
 
-            var bytes = await DownloadBytesAsync(url, cancellationToken);
-            using var stream = new MemoryStream(bytes);
-            using var archive = new System.IO.Compression.ZipArchive(stream, System.IO.Compression.ZipArchiveMode.Read);
-            var entry = archive.Entries.FirstOrDefault(e =>
-                string.Equals(Path.GetFileName(e.FullName), "ffmpeg.exe", StringComparison.OrdinalIgnoreCase));
-            if (entry is null)
+            var archivePath = Path.Combine(Path.GetTempPath(), $"ffmpeg-{Guid.NewGuid():N}.zip");
+            var tmp = FfmpegPath + ".tmp";
+            try
             {
-                throw new InvalidOperationException("ffmpeg archive does not contain ffmpeg.exe");
+                // Stream the archive to disk: it is hundreds of megabytes and
+                // must not double in memory just to extract one file.
+                await DownloadToFileAsync(url, archivePath, cancellationToken);
+                using var stream = File.OpenRead(archivePath);
+                using var archive = new System.IO.Compression.ZipArchive(
+                    stream, System.IO.Compression.ZipArchiveMode.Read);
+                var entry = archive.Entries.FirstOrDefault(e =>
+                    string.Equals(Path.GetFileName(e.FullName), "ffmpeg.exe", StringComparison.OrdinalIgnoreCase));
+                if (entry is null)
+                {
+                    throw new InvalidOperationException("ffmpeg archive does not contain ffmpeg.exe");
+                }
+
+                using (var target = File.Create(tmp))
+                {
+                    await using var source = entry.Open();
+                    await source.CopyToAsync(target, cancellationToken);
+                }
+
+                File.Move(tmp, FfmpegPath, overwrite: true);
+            }
+            finally
+            {
+                TryDelete(archivePath);
+                TryDelete(tmp);
             }
 
-            using var target = File.Create(FfmpegPath);
-            await using var source = entry.Open();
-            await source.CopyToAsync(target, cancellationToken);
             return;
         }
 
@@ -942,9 +1092,7 @@ public sealed class YtdlpService
             == System.Runtime.InteropServices.Architecture.Arm64
                 ? "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/ffmpeg-macOS-arm64"
                 : "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/ffmpeg-macOS-x64";
-        var macOSBytes = await DownloadBytesAsync(macOSUrl, cancellationToken);
-        await File.WriteAllBytesAsync(FfmpegPath, macOSBytes, cancellationToken);
-        MakeExecutable(FfmpegPath);
+        await DownloadAtomicAsync(macOSUrl, FfmpegPath, cancellationToken);
     }
 
     /// <summary>
@@ -960,11 +1108,11 @@ public sealed class YtdlpService
         var asset = await GetBtbnAssetAsync(cancellationToken);
         var archivePath = Path.Combine(Path.GetTempPath(), $"ffmpeg-{Guid.NewGuid():N}.tar.xz");
         var extractDir = Path.Combine(Path.GetTempPath(), $"ffmpeg-{Guid.NewGuid():N}");
+        var tmp = FfmpegPath + ".tmp";
         Directory.CreateDirectory(extractDir);
         try
         {
-            var bytes = await DownloadBytesAsync(asset.Url, cancellationToken);
-            await File.WriteAllBytesAsync(archivePath, bytes, cancellationToken);
+            await DownloadToFileAsync(asset.Url, archivePath, cancellationToken);
             // Extract only bin/ffmpeg: the full archive also carries several
             // hundred MB of static libraries that would be discarded anyway.
             await RunTarAsync(
@@ -975,15 +1123,18 @@ public sealed class YtdlpService
                 .FirstOrDefault(path => string.Equals(
                     Path.GetFileName(Path.GetDirectoryName(path)), "bin", StringComparison.Ordinal))
                 ?? throw new InvalidOperationException("ffmpeg archive does not contain bin/ffmpeg");
-            File.Copy(binary, FfmpegPath, overwrite: true);
+            // Rename over the running binary: a write-in-place would fail
+            // with ETXTBSY while ffmpeg is executing a merge.
+            File.Copy(binary, tmp, overwrite: true);
+            MakeExecutable(tmp);
+            File.Move(tmp, FfmpegPath, overwrite: true);
         }
         finally
         {
             TryDelete(archivePath);
             TryDelete(extractDir);
+            TryDelete(tmp);
         }
-
-        MakeExecutable(FfmpegPath);
     }
 
     /// <summary>A BtbN FFmpeg-Builds release asset selected for install: the
@@ -1066,12 +1217,23 @@ public sealed class YtdlpService
         timeout.CancelAfter(TimeSpan.FromMinutes(2));
         using var process = System.Diagnostics.Process.Start(psi)
             ?? throw new InvalidOperationException("tar could not be started");
+        var stdout = process.StandardOutput.ReadToEndAsync(timeout.Token);
         var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
-        await process.WaitForExitAsync(timeout.Token);
+        try
+        {
+            await process.WaitForExitAsync(timeout.Token);
+            await stdout;
+        }
+        catch (OperationCanceledException)
+        {
+            KillTree(process);
+            throw;
+        }
+
         if (process.ExitCode != 0)
         {
             throw new InvalidOperationException(
-                $"tar extraction failed (exit {process.ExitCode}): {await stderr}");
+                $"tar extraction failed (exit {process.ExitCode}): {(await stderr).Trim()}");
         }
     }
 
@@ -1112,6 +1274,29 @@ public sealed class YtdlpService
             | System.IO.UnixFileMode.GroupExecute | System.IO.UnixFileMode.OtherRead
             | System.IO.UnixFileMode.OtherExecute;
         File.SetUnixFileMode(path, mode);
+    }
+
+    /// <summary>
+    /// Streams a download through the proxy policy straight to a file. Used
+    /// for large component archives that must not be buffered in memory.
+    /// </summary>
+    private async Task DownloadToFileAsync(string url, string path, CancellationToken cancellationToken)
+    {
+        var uri = new Uri(url);
+        using var handler = _proxy.CreateHandler(uri);
+        using var client = new HttpClient(handler)
+        {
+            Timeout = DownloadTimeout,
+        };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("FlexFetch/1.0");
+
+        _log.Information("Downloading {Url} via proxy {Proxy}", url, _proxy.GetProxyUri(uri) ?? "direct");
+        using var response = await client.GetAsync(
+            uri, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        await using var target = new FileStream(
+            path, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true);
+        await response.Content.CopyToAsync(target, cancellationToken);
     }
 
     /// <summary>

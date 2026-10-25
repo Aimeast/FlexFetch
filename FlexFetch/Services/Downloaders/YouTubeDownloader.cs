@@ -114,9 +114,12 @@ public sealed class YouTubeDownloader : YtdlpDownloader
         _export?.TriggerReExport();
     }
 
+    /// <summary>Exact host/suffix matching: substring tests also claimed
+    /// notyoutube.com or any URL with youtube.com in its query string.</summary>
+    private static readonly DomainSuffixMatcher YouTubeDomains = new(new[] { "youtube.com", "youtu.be" });
+
     public override bool CanHandle(string url) =>
-        url.Contains("youtube.com", StringComparison.OrdinalIgnoreCase)
-        || url.Contains("youtu.be", StringComparison.OrdinalIgnoreCase);
+        Uri.TryCreate(url, UriKind.Absolute, out var uri) && YouTubeDomains.IsMatch(uri.Host);
 
     /// <summary>
     /// True when the landing URL indicates a login or verification page

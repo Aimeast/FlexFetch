@@ -136,7 +136,14 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
     {
         Interlocked.Increment(ref _useHolds);
         TouchSession();
-        return new SessionUseHold(() => Interlocked.Decrement(ref _useHolds));
+        return new SessionUseHold(() =>
+        {
+            Interlocked.Decrement(ref _useHolds);
+            // The idle clock starts when the operation ends, not when it
+            // began: a long export must not look idle the moment it releases
+            // its hold and trigger an immediate close.
+            TouchSession();
+        });
     }
 
     public FirefoxBrowserService(IProxyService proxy, StorageService storage, ILogger log)
@@ -376,16 +383,20 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
         var stdout = process.StandardOutput.ReadToEndAsync(cancellationToken);
         var stderr = process.StandardError.ReadToEndAsync(cancellationToken);
 
+        var exitTask = process.WaitForExitAsync(cancellationToken);
         var finished = await Task.WhenAny(
-            process.WaitForExitAsync(cancellationToken),
+            exitTask,
             Task.Delay(TimeSpan.FromMinutes(30), cancellationToken));
-        if (finished != process.WaitForExitAsync(CancellationToken.None) && !process.HasExited)
+        if (finished != exitTask)
         {
-            _log.Warning("Firefox install timed out; killing installer process");
             process.Kill(entireProcessTree: true);
             await process.WaitForExitAsync(CancellationToken.None);
+            cancellationToken.ThrowIfCancellationRequested();
+            _log.Warning("Firefox install timed out; killed installer process");
             throw new TimeoutException("Firefox install did not finish in time");
         }
+
+        await exitTask;
 
         var output = LastLines((await stdout).Trim(), 3)
             + Environment.NewLine + LastLines((await stderr).Trim(), 3);
@@ -476,14 +487,14 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
     }
 
     /// <summary>Launches the persistent session context (serialized, bounded).</summary>
-    public async Task EnsureSessionAsync()
+    public async Task EnsureSessionAsync(CancellationToken cancellationToken = default)
     {
         if (_sessionContext is not null)
         {
             return;
         }
 
-        await _lock.WaitAsync();
+        await _lock.WaitAsync(cancellationToken);
         try
         {
             if (_sessionContext is not null)
@@ -493,7 +504,7 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
 
             if (!IsFirefoxReady())
             {
-                await EnsureInstalledAsync();
+                await EnsureInstalledAsync(cancellationToken);
             }
 
             _playwright ??= await Playwright.CreateAsync();
@@ -507,7 +518,9 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
                 ViewportSize = new ViewportSize { Width = 1366, Height = 768 },
             };
             Directory.CreateDirectory(_profileDir);
-            _sessionContext = await _playwright.Firefox.LaunchPersistentContextAsync(_profileDir, options);
+            _sessionContext = await _playwright.Firefox
+                .LaunchPersistentContextAsync(_profileDir, options)
+                .WaitAsync(LaunchTimeout, cancellationToken);
             TouchSession();
             _log.Information("Firefox session browser started ({Profile})", _profileDir);
         }

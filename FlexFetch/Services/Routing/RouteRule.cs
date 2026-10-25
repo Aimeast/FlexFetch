@@ -41,4 +41,6 @@ public sealed class RouteRule : IRouteRule
 
     /// <summary>True when the host matches the rule's domain suffixes (no DNS needed).</summary>
     public bool IsDomainMatch(string host) => _domains is not null && _domains.IsMatch(host);
+
+    public bool RequiresIpResolution => _cidrs is not null;
 }

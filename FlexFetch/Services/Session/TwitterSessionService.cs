@@ -234,7 +234,7 @@ public sealed partial class TwitterSessionService
             }
         }
 
-        return await client.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        return await BufferedHttp.GetAsync(client, uri, cancellationToken);
     }
 
     [GeneratedRegex("\"screen_name\":\"([A-Za-z0-9_]{1,20})\"")]

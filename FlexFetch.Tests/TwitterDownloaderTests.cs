@@ -20,6 +20,12 @@ public sealed class TwitterDownloaderTests
         Assert.IsTrue(downloader.CanHandle("https://x.com/SpaceX/status/123"));
         Assert.IsTrue(downloader.CanHandle("https://twitter.com/SpaceX/status/123"));
         Assert.IsFalse(downloader.CanHandle("https://www.youtube.com/watch?v=abc"));
+
+        // Host suffix matching, not substring: netflix.com ends in "x.com"
+        // and a query string can mention x.com without being X.
+        Assert.IsFalse(downloader.CanHandle("https://www.netflix.com/watch/123"));
+        Assert.IsFalse(downloader.CanHandle("https://example.com/?ref=x.com"));
+        Assert.IsFalse(downloader.CanHandle("https://notx.com/status/1"));
     }
 
     [TestMethod]

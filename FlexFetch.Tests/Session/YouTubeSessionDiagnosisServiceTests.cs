@@ -92,6 +92,37 @@ public sealed class YouTubeSessionDiagnosisServiceTests
     }
 
     [TestMethod]
+    public async Task RunAsync_Cancellation_RemovesSessionCopies()
+    {
+        var snapshot = TestApp.CreateYouTubeStore(TestApp.CreateTempDataDir());
+        snapshot.WriteSnapshot(
+            new List<CookieItem> { new() { Domain = ".youtube.com", Name = "SID", Value = "s" } },
+            new YouTubeSessionMeta());
+        var started = new TaskCompletionSource();
+        var service = CreateService(snapshot, async (url, cookieFile, args, ct) =>
+        {
+            if (cookieFile is not null)
+            {
+                started.TrySetResult();
+                await Task.Delay(Timeout.Infinite, ct);
+            }
+
+            return Result(YtdlpOutputClass.Ok, true);
+        });
+
+        using var cts = new CancellationTokenSource();
+        var run = service.RunAsync(cts.Token);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cts.Cancel();
+
+        await Assert.ThrowsExactlyAsync<TaskCanceledException>(() => run);
+        Assert.IsFalse(
+            Directory.Exists(snapshot.CopyDirectory)
+            && Directory.EnumerateFiles(snapshot.CopyDirectory).Any(),
+            "a cancelled matrix must still delete its one-time session copies");
+    }
+
+    [TestMethod]
     public async Task RunAsync_ConcurrentSecondCall_IsRejected()
     {
         var snapshot = TestApp.CreateYouTubeStore(TestApp.CreateTempDataDir());

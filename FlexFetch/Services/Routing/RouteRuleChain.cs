@@ -18,6 +18,9 @@ public sealed class RouteRuleChain
         _defaultAction = defaultAction;
     }
 
+    /// <summary>True when any rule needs the host's resolved IPs.</summary>
+    public bool RequiresIpResolution => _rules.Any(rule => rule.RequiresIpResolution);
+
     public RouteAction Evaluate(Uri url, IReadOnlyList<IPAddress> resolvedIps)
     {
         foreach (var rule in _rules)

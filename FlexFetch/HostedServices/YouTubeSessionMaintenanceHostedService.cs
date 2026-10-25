@@ -187,7 +187,11 @@ public sealed class YouTubeSessionMaintenanceHostedService : IntervalHostedServi
         if (IsUsable(health))
         {
             ConsecutiveFailures = 0;
-            _snapshot.UpdateMeta(m => m.Health = health.ToString());
+            _snapshot.UpdateMeta(m =>
+            {
+                m.Health = health.ToString();
+                m.LastError = null;
+            });
             if (health == YouTubeSessionHealth.Ok)
             {
                 _log.Information("Session health check: the session is healthy");
