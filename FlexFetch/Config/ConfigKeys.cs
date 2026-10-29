@@ -47,4 +47,8 @@ public static class ConfigKeys
 
     // Security
     public const string ShareTokenHours = "security.shareTokenHours";
+
+    // Web UI hosting: URL prefix when a reverse proxy serves the app under
+    // a sub-path (like /flexfetch). Empty serves at the root.
+    public const string PathBase = "web.pathBase";
 }

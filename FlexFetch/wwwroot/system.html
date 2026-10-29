@@ -4,15 +4,15 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>System - FlexFetch</title>
-    <link rel="stylesheet" href="/style.css">
+    <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <header>
-        <h1><a href="/">FlexFetch</a></h1>
+        <h1><a href="index.html">FlexFetch</a></h1>
         <nav>
-            <a href="/session.html">Session</a>
-            <a href="/system.html">System</a>
-            <a href="/account.html">Account</a>
+            <a href="session.html">Session</a>
+            <a href="system.html">System</a>
+            <a href="account.html">Account</a>
             <a href="#" id="logout-link">Logout</a>
         </nav>
     </header>
@@ -33,13 +33,13 @@
         </div>
     </main>
 
-    <script src="/app.js"></script>
+    <script src="app.js"></script>
     <script>
         const msg = document.getElementById('msg');
 
         async function api(path, options) {
             const res = await fetch(path, options);
-            if (res.status === 401) { location.href = '/index.html'; return null; }
+            if (res.status === 401) { location.href = 'index.html'; return null; }
             if (res.status === 403) { show('Admin access required'); return null; }
             if (!res.ok) throw new Error('HTTP ' + res.status);
             return res.json();
@@ -59,7 +59,7 @@
 
         async function loadInfo() {
             try {
-                const info = await api('/api/system/info');
+                const info = await api('api/system/info');
                 if (!info) return;
                 const kv = document.getElementById('info-kv');
                 kv.innerHTML = '';
@@ -123,14 +123,14 @@
         async function shutdown() {
             if (!confirm('Shut down the service?')) return;
             try {
-                await api('/api/system/shutdown', { method: 'POST' });
+                await api('api/system/shutdown', { method: 'POST' });
             } catch (e) {
                 // The server stops right after responding; an aborted
                 // response (connection reset) is expected, not an error.
                 if (!(e instanceof TypeError)) { show(e.message); return; }
             }
             show('Shutting down...', true);
-            setTimeout(() => { location.href = '/index.html'; }, 800);
+            setTimeout(() => { location.href = 'index.html'; }, 800);
         }
 
         async function upgrade(btn) {
@@ -138,14 +138,14 @@
             btn.disabled = true;
             show('Starting upgrade...', true);
             try {
-                const res = await api('/api/system/upgrade', { method: 'POST' });
+                const res = await api('api/system/upgrade', { method: 'POST' });
                 if (!res) { btn.disabled = false; return; }
                 // Poll upgrade status so the message stays visible with the
                 // component currently being upgraded.
                 const poll = setInterval(async () => {
                     let status;
                     try {
-                        status = await api('/api/system/upgrade/status');
+                        status = await api('api/system/upgrade/status');
                     } catch (e) {
                         clearInterval(poll);
                         btn.disabled = false;
@@ -174,8 +174,8 @@
         }
 
         document.getElementById('logout-link').onclick = async () => {
-            await fetch('/api/auth/logout', { method: 'POST' });
-            location.href = '/index.html';
+            await fetch('api/auth/logout', { method: 'POST' });
+            location.href = 'index.html';
         };
 
         loadInfo();

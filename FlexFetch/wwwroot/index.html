@@ -4,15 +4,15 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>FlexFetch</title>
-    <link rel="stylesheet" href="/style.css">
+    <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <header>
-        <h1><a href="/">FlexFetch</a></h1>
+        <h1><a href="index.html">FlexFetch</a></h1>
         <nav>
-            <a href="/session.html" class="nav-auth" style="display:none">Session</a>
-            <a href="/system.html" class="nav-auth" style="display:none">System</a>
-            <a href="/account.html" class="nav-user" style="display:none">Account</a>
+            <a href="session.html" class="nav-auth" style="display:none">Session</a>
+            <a href="system.html" class="nav-auth" style="display:none">System</a>
+            <a href="account.html" class="nav-user" style="display:none">Account</a>
             <a href="#" id="signin-link" style="display:none">Sign in</a>
             <a href="#" id="logout-link" style="display:none">Logout</a>
         </nav>
@@ -69,7 +69,7 @@
         </div>
     </main>
 
-    <script src="/app.js"></script>
+    <script src="app.js"></script>
     <script>
         const STATUS = { 0: 'Queued', 1: 'Running', 2: 'Completed', 3: 'Failed', 4: 'Awaiting install' };
         let refreshTimer = null;
@@ -187,7 +187,7 @@
         async function login() {
             const msg = document.getElementById('auth-msg');
             try {
-                const res = await fetch('/api/auth/login', {
+                const res = await fetch('api/auth/login', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ userName: username.value, password: password.value }),
@@ -202,7 +202,7 @@
         async function register() {
             const msg = document.getElementById('auth-msg');
             try {
-                const res = await fetch('/api/auth/register', {
+                const res = await fetch('api/auth/register', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ userName: username.value, password: password.value }),
@@ -213,7 +213,7 @@
         }
 
         async function logout() {
-            await fetch('/api/auth/logout', { method: 'POST' });
+            await fetch('api/auth/logout', { method: 'POST' });
             init();
         }
 
@@ -222,7 +222,7 @@
             const url = document.getElementById('url').value.trim();
             if (!url) return;
             try {
-                await api('/api/tasks', {
+                await api('api/tasks', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ url }),
@@ -234,7 +234,7 @@
         }
 
         async function loadTasks() {
-            const tasks = await api('/api/tasks');
+            const tasks = await api('api/tasks');
             if (!tasks) return;
             taskCache = tasks;
             const tbody = document.querySelector('#task-table tbody');
@@ -448,7 +448,7 @@
                 if (t.status === 2) {
                     // Completed files open in a new browser tab (videos play
                     // there natively) instead of navigating this page.
-                    nameHtml = '<a class="file-link" href="/api/tasks/' + encodeURIComponent(t.id) +
+                    nameHtml = '<a class="file-link" href="api/tasks/' + encodeURIComponent(t.id) +
                         '/file" target="_blank" rel="noopener noreferrer">' + esc(t.fileName) + '</a>';
                 } else {
                     nameHtml = '<span class="file-name">' + esc(t.fileName) + '</span>';
@@ -481,7 +481,7 @@
             return d.toLocaleString();
         }
         async function retryTask(id) {
-            try { await api('/api/tasks/' + id + '/retry', { method: 'POST' }); loadTasks(); }
+            try { await api('api/tasks/' + id + '/retry', { method: 'POST' }); loadTasks(); }
             catch (e) { alert(e.message); }
         }
 
@@ -503,8 +503,8 @@
 
         async function shareTask(btn, id) {
             try {
-                const body = await api('/api/tasks/' + id + '/share', { method: 'POST' });
-                const link = location.origin + '/share.html?token=' + body.token;
+                const body = await api('api/tasks/' + id + '/share', { method: 'POST' });
+                const link = pageDirectoryUrl() + 'share.html?token=' + body.token;
                 await copyTextToClipboard(link);
                 flashCopied(btn);
             } catch (e) { alert(e.message); }
@@ -519,7 +519,7 @@
         // not be complete in the polling cache yet.
         async function copyTaskLinks(btn, id) {
             try {
-                const tasks = (await api('/api/tasks')) || [];
+                const tasks = (await api('api/tasks')) || [];
                 const group = tasks
                     .filter(x => x.id === id || x.parentId === id)
                     .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
@@ -528,7 +528,7 @@
                     alert('No finished files yet - download links appear as files complete.');
                     return;
                 }
-                const links = ready.map(x => location.origin + '/api/tasks/' + encodeURIComponent(x.id) + '/file');
+                const links = ready.map(x => pageDirectoryUrl() + 'api/tasks/' + encodeURIComponent(x.id) + '/file');
                 const copied = await copyTextToClipboard(links.join('\n'));
                 if (!copied) {
                     alert('Copying to the clipboard failed in this browser.');
@@ -541,7 +541,7 @@
         async function askDelete(id) {
             // Fresh snapshot: a playlist expanded moments ago may not be in
             // the polling cache yet, and its children belong in the preview.
-            taskCache = (await api('/api/tasks')) || [];
+            taskCache = (await api('api/tasks')) || [];
             const t = taskCache.find(x => x.id === id);
             if (!t) return;
             // A playlist parent has no file of its own - its children are
@@ -564,7 +564,7 @@
                 '\n\nThe task and its downloaded files will be removed.');
             if (!ok) return;
             try {
-                const res = await fetch('/api/tasks/' + id, { method: 'DELETE' });
+                const res = await fetch('api/tasks/' + id, { method: 'DELETE' });
                 if (!res.ok) throw new Error('Delete failed');
                 loadTasks();
             } catch (e) { alert(e.message); }
@@ -622,7 +622,7 @@
         // login form.
         async function init() {
             try {
-                const res = await fetch('/api/auth/status');
+                const res = await fetch('api/auth/status');
                 const status = await res.json();
                 if (status.authenticated) {
                     showApp(status.role);

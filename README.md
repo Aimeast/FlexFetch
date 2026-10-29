@@ -83,11 +83,15 @@ pwsh ./deploy/deploy.ps1 -AppDir ./flexfetch-app -DataDir ./flexfetch-data -Port
 
 The script is idempotent: re-running it does not reinstall or break existing data. The data directory is independent of the program directory, so upgrades never lose data. See `deploy/compose.yaml` for the Docker Compose template: the container needs no environment variables - `/data/appsettings.json` (seeded on first start) owns the endpoints (http 5080 redirecting to https 5081), the proxy policy and every other tunable, and survives container recreation. The image is assembled from pre-published output; building from source inside the container is not supported.
 
+### Hosting under a URL prefix
+
+A reverse proxy can serve the app under a sub-path (like `https://host/flexfetch/`) forwarding the full path unchanged: set `web.pathBase` to the prefix in the data directory's `appsettings.json` (leading slash, multi-segment prefixes work) and restart. The app strips the prefix itself and every UI reference is document-relative, so it serves at the root and under the prefix at the same time - both forms stay reachable during the transition.
+
 ## Configuration
 
 Runtime configuration lives in the data directory as an editable `appsettings.json`: seeded from the bundled template on first start, never overwritten again, and loaded with reloadOnChange (consumers re-read it live where supported, e.g. the network proxy policy). Defaults are declared in `FlexFetch/Config/ConfigRegistry.cs`. There is no config REST API - admins edit the file directly (in a deployment it sits in the data volume).
 
-Key settings: registration policy, session hours, inactive cleanup days, anonymous access, max concurrency, retries, timeouts, proxy, route rules (domain suffixes / CIDR files) with default action, session maintenance period, component auto-upgrade, data directory, share token lifetime.
+Key settings: registration policy, session hours, inactive cleanup days, anonymous access, max concurrency, retries, timeouts, proxy, route rules (domain suffixes / CIDR files) with default action, session maintenance period, component auto-upgrade, data directory, share token lifetime, URL prefix for reverse-proxy sub-path hosting (restart required).
 
 ## Project structure
 

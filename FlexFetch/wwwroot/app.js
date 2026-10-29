@@ -1,6 +1,15 @@
 ﻿// Shared helpers for all FlexFetch pages: included before each page's
 // inline script (which relies on these globals).
 
+// URL of the directory holding the current page (origin plus the path up
+// to the last '/'): under a virtual-path deployment the configured prefix
+// is part of it. Absolute URLs that leave the page context (share links
+// and download links copied for other people) must be built against this
+// base; plain fetch/navigation references stay document-relative.
+function pageDirectoryUrl() {
+    return location.origin + location.pathname.replace(/[^/]*$/, '');
+}
+
 function esc(s) {
     return (s || '').replace(/[&<>"']/g, c =>
         ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));

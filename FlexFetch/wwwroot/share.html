@@ -4,12 +4,12 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Shared download - FlexFetch</title>
-    <link rel="stylesheet" href="/style.css">
+    <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <header>
-        <h1><a href="/">FlexFetch</a></h1>
-        <nav><a href="/index.html">Home</a></nav>
+        <h1><a href="index.html">FlexFetch</a></h1>
+        <nav><a href="index.html">Home</a></nav>
     </header>
     <main>
         <div class="card">
@@ -31,7 +31,7 @@
         </div>
     </main>
 
-    <script src="/app.js"></script>
+    <script src="app.js"></script>
     <script>
         const token = new URLSearchParams(location.search).get('token');
         const STATUS = { Queued: 0, Running: 1, Completed: 2, Failed: 3 };
@@ -39,7 +39,7 @@
         async function load() {
             if (!token) { showError('Missing share token'); return; }
             try {
-                const res = await fetch('/api/share/' + token);
+                const res = await fetch('api/share/' + token);
                 if (!res.ok) { showError('Share link not found or expired'); return; }
                 const body = await res.json();
                 render(body);
@@ -73,7 +73,7 @@
                 if (f.fileName) {
                     if (statusNum === 2) {
                         const qs = f.id ? '?taskId=' + encodeURIComponent(f.id) : '';
-                        nameHtml = '<a class="file-link" href="/api/share/' + encodeURIComponent(token) +
+                        nameHtml = '<a class="file-link" href="api/share/' + encodeURIComponent(token) +
                             '/file' + qs + '" target="_blank" rel="noopener noreferrer">' + esc(f.fileName) + '</a>';
                     } else {
                         nameHtml = '<span class="file-name">' + esc(f.fileName) + '</span>';

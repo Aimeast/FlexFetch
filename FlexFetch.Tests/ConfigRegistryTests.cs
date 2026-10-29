@@ -14,6 +14,7 @@ public sealed class ConfigRegistryTests
         {
             ConfigKeys.Proxy,
             ConfigKeys.RouteRules,
+            ConfigKeys.PathBase,
         };
 
         var keys = typeof(ConfigKeys).GetFields()
@@ -60,6 +61,31 @@ public sealed class ConfigRegistryTests
         Assert.IsNull(ConfigRegistry.Validate(ConfigKeys.RegistrationPolicy, "approval"));
         Assert.IsNull(ConfigRegistry.Validate(ConfigKeys.InactiveDays, "0"));
         Assert.IsNull(ConfigRegistry.Validate(ConfigKeys.Proxy, string.Empty));
+    }
+
+    [TestMethod]
+    public void Validate_PathBase_AcceptsPrefixForms()
+    {
+        // Empty keeps root hosting; a trailing slash is tolerated because the
+        // pipeline normalizes it away.
+        Assert.IsNull(ConfigRegistry.Validate(ConfigKeys.PathBase, string.Empty));
+        Assert.IsNull(ConfigRegistry.Validate(ConfigKeys.PathBase, " "));
+        Assert.IsNull(ConfigRegistry.Validate(ConfigKeys.PathBase, "/flexfetch"));
+        Assert.IsNull(ConfigRegistry.Validate(ConfigKeys.PathBase, "/flexfetch/"));
+        Assert.IsNull(ConfigRegistry.Validate(ConfigKeys.PathBase, "/apps/flexfetch"));
+    }
+
+    [TestMethod]
+    public void Validate_PathBase_RejectsUnusablePath()
+    {
+        // The prefix must be a usable URL path: leading slash, no empty
+        // segments, no URL-significant characters.
+        Assert.IsNotNull(ConfigRegistry.Validate(ConfigKeys.PathBase, "flexfetch"));
+        Assert.IsNotNull(ConfigRegistry.Validate(ConfigKeys.PathBase, "/"));
+        Assert.IsNotNull(ConfigRegistry.Validate(ConfigKeys.PathBase, "/a//b"));
+        Assert.IsNotNull(ConfigRegistry.Validate(ConfigKeys.PathBase, "/a b"));
+        Assert.IsNotNull(ConfigRegistry.Validate(ConfigKeys.PathBase, "/a?b"));
+        Assert.IsNotNull(ConfigRegistry.Validate(ConfigKeys.PathBase, "/a#b"));
     }
 
     [TestMethod]

@@ -193,6 +193,18 @@ public static class ConfigRegistry
                 DefaultValue = "0",
                 Validator = NonNegativeInt("Must be a non-negative number of hours (0 means no expiry)"),
             },
+            new()
+            {
+                // URL prefix for hosting behind a reverse proxy sub-path
+                // (like /flexfetch): the pipeline strips it from incoming
+                // requests via UsePathBase, and every UI reference is
+                // document-relative, so the app serves at the root and
+                // under the prefix at the same time. Applied at startup -
+                // a change needs a restart.
+                Key = ConfigKeys.PathBase,
+                DefaultValue = string.Empty,
+                Validator = ValidatePathBase,
+            },
         };
 
         return items.ToDictionary(i => i.Key);
@@ -206,6 +218,29 @@ public static class ConfigRegistry
 
     private static Func<string, string?> BoolValidator(string error) =>
         v => bool.TryParse(v, out _) ? null : error;
+
+    private static string? ValidatePathBase(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var trimmed = value.Trim().TrimEnd('/');
+        if (!trimmed.StartsWith('/'))
+        {
+            return "Must start with '/' (like /flexfetch), or be empty";
+        }
+
+        if (trimmed == "/" || trimmed.Contains("//", StringComparison.Ordinal))
+        {
+            return "Must not be '/' and must not contain empty path segments";
+        }
+
+        return trimmed.All(c => c > ' ' && c < '\x7F' && c != '?' && c != '#')
+            ? null
+            : "Only printable ASCII path characters are allowed (no spaces, '?' or '#')";
+    }
 }
 
 /// <summary>Account registration policy.</summary>

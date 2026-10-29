@@ -398,8 +398,7 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
 
         await exitTask;
 
-        var output = LastLines((await stdout).Trim(), 3)
-            + Environment.NewLine + LastLines((await stderr).Trim(), 3);
+        var output = BrowserInstaller.DescribeOutput(await stdout, await stderr);
         if (process.ExitCode != 0)
         {
             throw new InvalidOperationException(
@@ -435,18 +434,6 @@ public sealed class FirefoxBrowserService : IAsyncDisposable
         var buildDir = binaryDir is null ? null : Path.GetDirectoryName(binaryDir);
         var name = buildDir is null ? string.Empty : Path.GetFileName(buildDir);
         return name.Length > 0 ? name : "unknown build";
-    }
-
-    /// <summary>Last up-to-N non-empty lines of a text (a short output must not break slicing).</summary>
-    private static string LastLines(string text, int count)
-    {
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            return string.Empty;
-        }
-
-        var lines = text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        return string.Join(" | ", lines[^Math.Min(count, lines.Length)..]);
     }
 
     /// <summary>

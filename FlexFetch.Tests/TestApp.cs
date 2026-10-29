@@ -37,7 +37,8 @@ public static class TestApp
     }
 
     public static WebApplicationFactory<Program> CreateFactory(
-        string dataDir, bool allowAnonymous = false, IReadOnlyDictionary<string, string>? settings = null)
+        string dataDir, bool allowAnonymous = false, IReadOnlyDictionary<string, string>? settings = null,
+        string? webRoot = null)
     {
         return new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
@@ -50,6 +51,13 @@ public static class TestApp
             // Development environment and would otherwise inherit whatever
             // appsettings.Development.json happens to set for it.
             builder.UseSetting("account:allowAnonymous", allowAnonymous ? "true" : "false");
+            // Static-file tests point the web root at the app project's
+            // wwwroot: the test project has no wwwroot of its own.
+            if (webRoot is not null)
+            {
+                builder.UseSetting("webroot", webRoot);
+            }
+
             if (settings is not null)
             {
                 foreach (var (key, value) in settings)

@@ -32,6 +32,51 @@ public sealed class CodeConventionTests
             "Coding convention violations:" + Environment.NewLine + string.Join(Environment.NewLine, violations));
     }
 
+    [TestMethod]
+    public void WebUi_UsesDocumentRelativeReferences()
+    {
+        // Virtual-path hosting (web.pathBase) serves the UI under any URL
+        // prefix: a root-absolute reference would escape the prefix, so
+        // every reference must resolve against the document. Absolute URLs
+        // shared outside the page context (share links, handed-over
+        // download links) are built with the pageDirectoryUrl() helper.
+        var wwwroot = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory, "..", "..", "..", "..", "FlexFetch", "wwwroot"));
+        var files = Directory.EnumerateFiles(wwwroot, "*", SearchOption.AllDirectories)
+            .Where(f => f.EndsWith(".html", StringComparison.Ordinal)
+                || f.EndsWith(".js", StringComparison.Ordinal)
+                || f.EndsWith(".css", StringComparison.Ordinal))
+            .ToList();
+
+        Assert.IsGreaterThan(0, files.Count, "No web UI files found");
+
+        var forbidden = new[]
+        {
+            "href=\"/",
+            "src=\"/",
+            "('/",
+            "= '/",
+            "origin + '/",
+            "url(/",
+        };
+
+        var violations = new List<string>();
+        foreach (var file in files)
+        {
+            var text = File.ReadAllText(file);
+            foreach (var needle in forbidden)
+            {
+                if (text.Contains(needle, StringComparison.Ordinal))
+                {
+                    violations.Add($"{Path.GetFileName(file)}: contains {needle}");
+                }
+            }
+        }
+
+        Assert.IsEmpty(violations,
+            "Root-absolute web references found:" + Environment.NewLine + string.Join(Environment.NewLine, violations));
+    }
+
     private static bool IsBuildArtifact(string path)
     {
         var sep = Path.DirectorySeparatorChar;

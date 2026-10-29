@@ -4,15 +4,15 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Account - FlexFetch</title>
-    <link rel="stylesheet" href="/style.css">
+    <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <header>
-        <h1><a href="/">FlexFetch</a></h1>
+        <h1><a href="index.html">FlexFetch</a></h1>
         <nav>
-            <a href="/session.html">Session</a>
-            <a href="/system.html">System</a>
-            <a href="/account.html">Account</a>
+            <a href="session.html">Session</a>
+            <a href="system.html">System</a>
+            <a href="account.html">Account</a>
             <a href="#" id="logout-link">Logout</a>
         </nav>
     </header>
@@ -33,13 +33,13 @@
         </div>
     </main>
 
-    <script src="/app.js"></script>
+    <script src="app.js"></script>
     <script>
         const msg = document.getElementById('msg');
 
         async function api(path, options) {
             const res = await fetch(path, options);
-            if (res.status === 401) { location.href = '/index.html'; return null; }
+            if (res.status === 401) { location.href = 'index.html'; return null; }
             if (!res.ok) throw new Error('HTTP ' + res.status);
             return res.json();
         }
@@ -62,7 +62,7 @@
                 return;
             }
             try {
-                const res = await fetch('/api/auth/change-password', {
+                const res = await fetch('api/auth/change-password', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ currentPassword, newPassword }),
@@ -78,15 +78,15 @@
         }
 
         document.getElementById('logout-link').onclick = async () => {
-            await fetch('/api/auth/logout', { method: 'POST' });
-            location.href = '/index.html';
+            await fetch('api/auth/logout', { method: 'POST' });
+            location.href = 'index.html';
         };
 
         // The page only makes sense signed in; guests and logged-out
         // visitors are bounced back to the tasks page (its login form).
-        fetch('/api/auth/status').then(r => r.json()).then(status => {
+        fetch('api/auth/status').then(r => r.json()).then(status => {
             if (!status.authenticated) {
-                location.href = '/index.html';
+                location.href = 'index.html';
             }
         });
     </script>

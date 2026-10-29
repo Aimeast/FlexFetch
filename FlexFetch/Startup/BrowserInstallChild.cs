@@ -24,6 +24,19 @@ public static class BrowserInstallChild
                 Path.Combine(Path.GetFullPath(childDataDir), "components", "ms-playwright"));
         }
 
+        // A publish transferred from Windows lands without the driver node
+        // binary's execute bit; repair it here so the driver can start at all.
+        // Notices go to stderr: the parent keeps the stderr head in failure
+        // reports and the whole stderr in the success log, so either way the
+        // notice surfaces.
+        foreach (var notice in BrowserInstaller.EnsureNodeExecutable(
+            AppContext.BaseDirectory,
+            OperatingSystem.IsWindows(),
+            Environment.GetEnvironmentVariable("PLAYWRIGHT_NODEJS_PATH")))
+        {
+            Console.Error.WriteLine(notice);
+        }
+
         var exitCode = 0;
         foreach (var step in BrowserInstaller.Steps(browserName, OperatingSystem.IsWindows()))
         {
@@ -43,7 +56,21 @@ public static class BrowserInstallChild
                     OperatingSystem.IsWindows());
             }
 
-            exitCode = Microsoft.Playwright.Program.Main(step);
+            try
+            {
+                exitCode = Microsoft.Playwright.Program.Main(step);
+            }
+            catch (Exception ex)
+            {
+                // Playwright's Main lets driver-start failures escape; left
+                // uncaught they abort this process with SIGABRT (exit code
+                // 134), a code the parent cannot distinguish from a hard
+                // runtime crash. Fail with a plain code and the cause on
+                // stderr instead.
+                Console.Error.WriteLine("Playwright step \"" + step[0] + "\" failed: " + ex.Message);
+                exitCode = 1;
+            }
+
             if (exitCode != 0)
             {
                 break;
