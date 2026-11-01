@@ -47,6 +47,20 @@ public static class RuntimeSetup
             Environment.GetEnvironmentVariable("PATH"),
             Path.Combine(Path.GetFullPath(dataDir), "components")));
 
+        // Deno's module and compile cache (the PO token script's whole import
+        // graph, the JS challenge runtime): a cold cache blows the plugin's
+        // 15s probe budget on slow hosts, so it is pinned into the persistent
+        // data root instead of a home directory that deployments may not even
+        // define - and where it does exist it sits outside the volume, out of
+        // reach of the boot warm-up's guarantees. Deno keys the cache by
+        // binary version internally, so upgrades recompile on their own.
+        var denoDir = ResolveDenoDir(dataDir, Environment.GetEnvironmentVariable(YtdlpService.DenoDirEnv));
+        if (denoDir is not null)
+        {
+            Directory.CreateDirectory(denoDir);
+            Environment.SetEnvironmentVariable(YtdlpService.DenoDirEnv, denoDir);
+        }
+
         // Editable runtime configuration on the data directory: seeded from the
         // bundled template on first start and loaded last, so volume-persistent
         // user edits override appsettings*.json without touching the image. A
@@ -79,6 +93,17 @@ public static class RuntimeSetup
 
         return dataDir;
     }
+
+    /// <summary>
+    /// The DENO_DIR value to export for child processes: the data
+    /// directory's cache folder. A non-blank external value wins and null
+    /// is returned - the deployment's own pin must not be overridden, or
+    /// the boot warm-up would fill a cache the plugin's probes never hit.
+    /// </summary>
+    public static string? ResolveDenoDir(string dataDir, string? externalValue) =>
+        string.IsNullOrWhiteSpace(externalValue)
+            ? YtdlpService.DenoCacheDirFor(Path.GetFullPath(dataDir))
+            : null;
 
     /// <summary>
     /// Resolves the data directory: an explicit storage.dataDir wins;

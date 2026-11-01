@@ -23,6 +23,25 @@ public sealed class YtdlpService
     /// <summary>Root directory of the managed external components.</summary>
     public string ComponentDir => _componentsDir;
 
+    /// <summary>Root of the persistent data directory this instance serves.</summary>
+    private readonly string _dataDir;
+
+    /// <summary>Environment variable deno reads for its on-disk module and
+    /// compile cache. The bgutil script provider's probes run through the
+    /// same cache, and the plugin's hard 15s probe budget makes a cold
+    /// cache fatal on slow hosts - hence the pin into the data directory.</summary>
+    public const string DenoDirEnv = "DENO_DIR";
+
+    /// <summary>The deno cache folder of a data directory: a cache/ tree
+    /// next to components/, inside the persistent data root (in containers
+    /// the mounted volume) instead of a home directory that deployments
+    /// may not even define.</summary>
+    public static string DenoCacheDirFor(string dataDir) =>
+        Path.Combine(dataDir, "cache", "deno");
+
+    /// <summary>The pinned deno cache folder of this instance's data directory.</summary>
+    public string DenoCacheDir => DenoCacheDirFor(_dataDir);
+
     /// <summary>Per-download timeout; a slow proxy must not hang forever.</summary>
     private static readonly TimeSpan DownloadTimeout = TimeSpan.FromMinutes(15);
 
@@ -61,6 +80,7 @@ public sealed class YtdlpService
     {
         _proxy = proxy;
         _log = log;
+        _dataDir = dataDir;
         _componentsDir = Path.Combine(dataDir, "components");
         Directory.CreateDirectory(_componentsDir);
         _fetchLatestFfmpegTag = fetchLatestFfmpegTag ?? GetLatestFfmpegTagAsync;

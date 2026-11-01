@@ -199,10 +199,16 @@ public static class YtdlpOutputClassifier
         }
 
         // Transient failures: timeouts, rate limiting, server errors, and the
-        // googlevideo (GVS) CDN 403 jitter.
+        // googlevideo (GVS) CDN 403 jitter. A 403 on the media data request
+        // is the GVS rejection a missing/expired PO token produces - the URL
+        // itself was fine during extraction, so it is retried, never treated
+        // as content or auth.
         var isGvs403 = line.Contains("googlevideo", StringComparison.OrdinalIgnoreCase)
             && line.Contains("http error 403", StringComparison.OrdinalIgnoreCase);
+        var isMediaData403 = line.Contains("unable to download video data", StringComparison.OrdinalIgnoreCase)
+            && line.Contains("http error 403", StringComparison.OrdinalIgnoreCase);
         if (isGvs403
+            || isMediaData403
             || line.Contains("timed out", StringComparison.OrdinalIgnoreCase)
             || line.Contains("timeout", StringComparison.OrdinalIgnoreCase)
             || line.Contains("unable to connect", StringComparison.OrdinalIgnoreCase)
@@ -220,4 +226,21 @@ public static class YtdlpOutputClassifier
 
         return YtdlpOutputClass.Unknown;
     }
+
+    /// <summary>
+    /// True for a line reporting that a PO token provider itself failed
+    /// (PoTokenProviderError, an invalid response or an unexpected error).
+    /// These are infrastructure faults: the session and the content were
+    /// never judged, so they must not be counted as session failures or
+    /// reject a freshly exported jar. Stable fragments of yt-dlp's pot
+    /// director messages.
+    /// </summary>
+    public static bool IsPoTokenProviderFault(string line) =>
+        !string.IsNullOrWhiteSpace(line)
+        && (line.Contains("fetching PO Token from", StringComparison.OrdinalIgnoreCase)
+            || line.Contains("Invalid PO Token response", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>True when the run's output contains a provider fault.</summary>
+    public static bool HasPoTokenProviderFault(IReadOnlyList<string> outputLines) =>
+        outputLines.Any(IsPoTokenProviderFault);
 }

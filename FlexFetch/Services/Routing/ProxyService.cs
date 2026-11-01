@@ -1,8 +1,8 @@
 ﻿using System.Net;
 using System.Text.Json;
 using FlexFetch.Config;
-using ILogger = Serilog.ILogger;
 using Microsoft.Extensions.Primitives;
+using ILogger = Serilog.ILogger;
 
 namespace FlexFetch.Services.Routing;
 
@@ -64,6 +64,11 @@ public sealed class ProxyService : IProxyService, IDisposable
             UseCookies = false,
             // A dead proxy must not hang a request indefinitely.
             ConnectTimeout = TimeSpan.FromSeconds(15),
+            // "Direct" must mean direct: the default picks up the process
+            // environment's proxy (HTTP_PROXY/ALL_PROXY), so a route rule
+            // saying Direct would still be tunnelled - loopback requests
+            // would even be handed to a local proxy that cannot serve them.
+            UseProxy = false,
         };
 
         var proxy = GetProxyAddress();

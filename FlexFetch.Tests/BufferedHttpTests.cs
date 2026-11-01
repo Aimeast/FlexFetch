@@ -21,7 +21,7 @@ public sealed class BufferedHttpTests
             new Dictionary<string, string> { ["Set-Cookie"] = "a=b" }));
 
         HttpResponseMessage buffered;
-        using (var client = new HttpClient())
+        using (var client = new HttpClient(new SocketsHttpHandler { UseProxy = false }))
         {
             buffered = await BufferedHttp.GetAsync(client, new Uri(server.BaseUrl), CancellationToken.None);
         }

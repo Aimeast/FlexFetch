@@ -319,6 +319,9 @@ public sealed class GenericFileDownloaderTests
         {
             AllowAutoRedirect = false,
             UseCookies = false,
+            // Loopback test traffic must never be handed to the host's
+            // environment proxy (HTTP_PROXY is set on developer machines).
+            UseProxy = false,
         };
 
         public string? GetProxyUri(Uri url) => null;

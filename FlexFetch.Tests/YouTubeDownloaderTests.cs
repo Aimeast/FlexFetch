@@ -16,14 +16,38 @@ public sealed class YouTubeDownloaderTests
 
     private static (YouTubeDownloader Downloader, YouTubeSessionStore Snapshot, string Dir) CreateDownloader(
         Func<string, OptionSet, CancellationToken, Task<RunResult<VideoData>>>? fetch = null,
-        Func<string, OptionSet, Action<double>, Action<long>, CancellationToken, Task<RunResult<string>>>? download = null)
+        Func<string, OptionSet, Action<double>, Action<long>, CancellationToken, Task<RunResult<string>>>? download = null,
+        PotProviderService? pot = null)
     {
         var dir = TestApp.CreateTempDataDir();
         var proxy = new DirectProxyService();
         var ytdlp = new YtdlpService(proxy, Log, dir);
         var storage = new StorageService(dir);
         var snapshot = TestApp.CreateYouTubeStore(dir);
-        return (new YouTubeDownloader(ytdlp, proxy, storage, Log, snapshot, fetchData: fetch, download: download), snapshot, dir);
+        return (new YouTubeDownloader(ytdlp, proxy, storage, Log, snapshot, pot: pot, fetchData: fetch, download: download), snapshot, dir);
+    }
+
+    /// <summary>Scaffolds an installed-enough PO token stack in dir and
+    /// hands back a service whose warm-up run is observed, mirroring the
+    /// PotProviderServiceTests scaffolding.</summary>
+    private static PotProviderService CreatePot(string dir, Action onWarmUp)
+    {
+        var components = Path.Combine(dir, "components");
+        var server = Path.Combine(components, "bgutil-ytdlp-pot-provider", "server");
+        Directory.CreateDirectory(Path.Combine(server, "src"));
+        File.WriteAllText(Path.Combine(server, "src", "generate_once.ts"), "x");
+        File.WriteAllText(Path.Combine(server, "package.json"), "x");
+        File.WriteAllText(Path.Combine(components, OperatingSystem.IsWindows() ? "deno.exe" : "deno"), "x");
+        var proxy = new DirectProxyService();
+        return new PotProviderService(
+            new YtdlpService(proxy, Log, dir),
+            proxy,
+            Log,
+            (_, _) =>
+            {
+                onWarmUp();
+                return Task.CompletedTask;
+            });
     }
 
     private static void SeedSnapshot(YouTubeSessionStore snapshot, string? visitorData = "visitor-123")
@@ -356,6 +380,142 @@ public sealed class YouTubeDownloaderTests
 
         Assert.AreEqual(AuthFailureReason.LoginRequired, ex.Reason);
         Assert.AreEqual(1, calls);
+    }
+
+    // --- PO token supply wiring (the plugin's probe budget on slow hosts) ---
+
+    [TestMethod]
+    public async Task AnalyzeAsync_AuthError_WarmsDenoBeforeTheSessionRetry()
+    {
+        // The cookie'd mweb posture needs a PO token: the deno warm-up must
+        // run between the anonymous failure and the retry fetch so the
+        // plugin's probe finds a hot compile cache.
+        var dir = TestApp.CreateTempDataDir();
+        var proxy = new DirectProxyService();
+        var ytdlp = new YtdlpService(proxy, Log, dir);
+        var snapshot = TestApp.CreateYouTubeStore(dir);
+        var events = new List<string>();
+        var pot = CreatePot(dir, () => events.Add("warm"));
+        var calls = 0;
+        var downloader = new YouTubeDownloader(
+            ytdlp, proxy, new StorageService(dir), Log, snapshot,
+            pot: pot,
+            fetchData: (_, _, _) =>
+            {
+                calls++;
+                events.Add($"fetch{calls}");
+                return Task.FromResult(calls == 1
+                    ? BotCheckFailure()
+                    : new RunResult<VideoData>(
+                        true,
+                        Array.Empty<string>(),
+                        new VideoData { Title = "Fetched", Extension = "mp4", Url = "https://example.com/v.mp4" }));
+            });
+        SeedSnapshot(snapshot);
+
+        var analysis = await downloader.AnalyzeAsync("https://www.youtube.com/watch?v=abc", "task-1", CancellationToken.None);
+
+        Assert.AreEqual("Fetched", analysis.Title);
+        CollectionAssert.AreEqual(new[] { "fetch1", "warm", "fetch2" }, events);
+    }
+
+    [TestMethod]
+    public async Task AnalyzeAsync_ProbeTimeoutFailure_DropsTheDenoWarmUpMemo()
+    {
+        // A run whose output shows the plugin's probe timing out means the
+        // compile cache went cold while the memo claims it is hot: the memo
+        // must be dropped so the next supervisor round recompiles.
+        var dir = TestApp.CreateTempDataDir();
+        var proxy = new DirectProxyService();
+        var ytdlp = new YtdlpService(proxy, Log, dir);
+        var snapshot = TestApp.CreateYouTubeStore(dir);
+        var warmUps = 0;
+        var pot = CreatePot(dir, () => warmUps++);
+        var downloader = new YouTubeDownloader(
+            ytdlp, proxy, new StorageService(dir), Log, snapshot,
+            pot: pot,
+            fetchData: (_, _, _) => Task.FromResult(new RunResult<VideoData>(
+                false,
+                new[] { "ERROR: Command '['deno', 'run', '--allow-env', '--version']' timed out after 15.0 seconds" },
+                null!)));
+
+        await pot.WarmUpDenoAsync();
+        Assert.AreEqual(1, warmUps);
+
+        try
+        {
+            await downloader.AnalyzeAsync("https://www.youtube.com/watch?v=abc", "task-1", CancellationToken.None);
+            Assert.Fail("the analysis must fail on the probe-timeout output");
+        }
+        catch (AssertFailedException)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            // The failure class (retryable or not) is not the point here;
+            // the assertion below is.
+        }
+
+        await pot.WarmUpDenoAsync();
+        Assert.AreEqual(2, warmUps, "the probe-timeout signature must drop the warm-up memo");
+    }
+
+    [TestMethod]
+    public async Task DownloadAsync_MediaData403_IsRetryable()
+    {
+        // GVS rejects the media URL with 403 when its GVS PO token is
+        // missing or stale: transient, never a content or auth verdict.
+        var dir = TestApp.CreateTempDataDir();
+        var downloader = new YouTubeDownloader(
+            new YtdlpService(new DirectProxyService(), Log, dir),
+            new DirectProxyService(),
+            new StorageService(dir),
+            Log,
+            TestApp.CreateYouTubeStore(dir),
+            download: (_, _, _, _, _) => Task.FromResult(new RunResult<string>(
+                false,
+                new[] { "ERROR: unable to download video data: HTTP Error 403: Forbidden" },
+                string.Empty)));
+
+        await Assert.ThrowsExactlyAsync<RetryableException>(
+            () => downloader.DownloadAsync(
+                new TaskItem { Id = "t1", Url = "https://www.youtube.com/watch?v=abc" },
+                new AnalysisResult { SuggestedFileName = "v.mp4" },
+                _ => { },
+                CancellationToken.None));
+    }
+
+    [TestMethod]
+    public async Task DownloadAsync_ProviderFault_IsRetryableAndNamed()
+    {
+        // A provider fault turns an otherwise unclassified failure into a
+        // retry, and the task-facing message says why instead of blaming
+        // the video.
+        var dir = TestApp.CreateTempDataDir();
+        var downloader = new YouTubeDownloader(
+            new YtdlpService(new DirectProxyService(), Log, dir),
+            new DirectProxyService(),
+            new StorageService(dir),
+            Log,
+            TestApp.CreateYouTubeStore(dir),
+            download: (_, _, _, _, _) => Task.FromResult(new RunResult<string>(
+                false,
+                new[]
+                {
+                    "WARNING: [youtube] [pot] Error fetching PO Token from \"bgutil:http\" provider: PoTokenProviderError('boom')",
+                    "ERROR: unable to download video data: HTTP Error 403: Forbidden",
+                },
+                string.Empty)));
+
+        var ex = await Assert.ThrowsExactlyAsync<RetryableException>(
+            () => downloader.DownloadAsync(
+                new TaskItem { Id = "t1", Url = "https://www.youtube.com/watch?v=abc" },
+                new AnalysisResult { SuggestedFileName = "v.mp4" },
+                _ => { },
+                CancellationToken.None));
+
+        StringAssert.Contains(ex.Message, "PO token provider failed");
     }
 
     // --- Web health-gate signal (shared with the export pipeline) ---

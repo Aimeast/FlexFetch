@@ -103,7 +103,7 @@ public static class SessionApi
 
         group.MapGet("/youtube/pot-status", (PotProviderService pot) => Results.Ok(new
         {
-            mode = "bgutil script via deno (no server process)",
+            mode = "bgutil script via deno (no server process; widened plugin timeouts)",
             denoInstalled = pot.IsDenoInstalled,
             serverInstalled = pot.IsServerInstalled,
             pluginInstalled = pot.IsPluginInstalled,

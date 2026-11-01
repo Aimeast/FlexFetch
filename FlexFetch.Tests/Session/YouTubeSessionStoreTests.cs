@@ -79,6 +79,52 @@ public sealed class YouTubeSessionStoreTests
     }
 
     [TestMethod]
+    public void Age_ImportOnlySnapshot_AgesFromImportedAt_AndMetaUpdatesDoNotResetIt()
+    {
+        // An imported snapshot has no ExportedAt until the first full
+        // refresh. Falling back to the file mtime let every canary rewrite
+        // reset the clock, so the full-refresh gear never ran and
+        // "Exported at" stayed empty forever.
+        var store = CreateStore();
+        store.WriteSnapshot(
+            new List<CookieItem> { new() { Domain = ".youtube.com", Name = "SID", Value = "s" } },
+            new YouTubeSessionMeta { ImportedAt = DateTime.UtcNow.AddHours(-20) });
+
+        var age = store.Age;
+        Assert.IsNotNull(age);
+        Assert.IsTrue(age.Value.TotalHours >= 19.9, $"age {age} does not reflect ImportedAt");
+
+        store.UpdateMeta(m => m.Health = YouTubeSessionHealth.Ok.ToString());
+        var afterMetaUpdate = store.Age;
+        Assert.IsNotNull(afterMetaUpdate);
+        Assert.IsTrue(afterMetaUpdate.Value.TotalHours >= 19.9,
+            "a canary meta update must not reset an imported snapshot's age");
+    }
+
+    [TestMethod]
+    public void SessionWriteAnchor_TakesTheNewestJarWrite()
+    {
+        var now = DateTime.UtcNow;
+
+        // A later import means the jar is newer than the last export.
+        Assert.AreEqual(now.AddHours(-2), YouTubeSessionStore.SessionWriteAnchor(new YouTubeSessionMeta
+        {
+            ExportedAt = now.AddHours(-30),
+            ImportedAt = now.AddHours(-2),
+        }));
+
+        // A later export supersedes the import.
+        Assert.AreEqual(now.AddHours(-2), YouTubeSessionStore.SessionWriteAnchor(new YouTubeSessionMeta
+        {
+            ExportedAt = now.AddHours(-2),
+            ImportedAt = now.AddHours(-30),
+        }));
+
+        Assert.IsNull(YouTubeSessionStore.SessionWriteAnchor(new YouTubeSessionMeta()));
+        Assert.IsNull(YouTubeSessionStore.SessionWriteAnchor(null));
+    }
+
+    [TestMethod]
     public void SiteIsolation_YoutubeFileCannotBeReadAsTwitter()
     {
         var storage = new StorageService(_dir);

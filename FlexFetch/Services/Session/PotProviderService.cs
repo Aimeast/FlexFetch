@@ -27,6 +27,14 @@ public sealed class PotProviderService
     /// run absorbs.</summary>
     public static readonly TimeSpan WarmUpTimeout = TimeSpan.FromSeconds(120);
 
+    /// <summary>How long a successful warm-up stays trusted. Deno's on-disk
+    /// compile cache can go cold without the binary changing (observed in
+    /// the field: probes exceeded the plugin's budget hours after a
+    /// successful boot warm-up, with the binary untouched) - the refresh
+    /// bounds how long a silently lost cache starves the PO token supply,
+    /// which on the cookie'd mweb posture ends in HTTP 403 downloads.</summary>
+    public static readonly TimeSpan WarmUpRefreshInterval = TimeSpan.FromMinutes(15);
+
     /// <summary>GitHub repository of the server sources (the release page
     /// only ships the yt-dlp plugin zip; the script runs from the source).</summary>
     public const string ServerRepoUrl = "https://github.com/Brainicism/bgutil-ytdlp-pot-provider";
@@ -35,19 +43,28 @@ public sealed class PotProviderService
     private readonly IProxyService _proxy;
     private readonly ILogger _log;
     private readonly SemaphoreSlim _installLock = new(1, 1);
+    private readonly SemaphoreSlim _warmUpLock = new(1, 1);
     private readonly Func<System.Diagnostics.ProcessStartInfo, CancellationToken, Task>? _warmUpRunner;
-    private string? _warmUpIdentity;
+    private readonly Func<DateTime> _utcClock;
+    private volatile WarmUpMemo? _warmUpMemo;
+
+    /// <summary>Proof of a successful warm-up: the deno binary identity it
+    /// compiled for and when. Swapped as a whole so invalidation from the
+    /// download paths never tears a read.</summary>
+    private sealed record WarmUpMemo(string DenoIdentity, DateTime WarmedAtUtc);
 
     public PotProviderService(
         YtdlpService ytdlp,
         IProxyService proxy,
         ILogger log,
-        Func<System.Diagnostics.ProcessStartInfo, CancellationToken, Task>? warmUpRunner = null)
+        Func<System.Diagnostics.ProcessStartInfo, CancellationToken, Task>? warmUpRunner = null,
+        Func<DateTime>? utcClock = null)
     {
         _ytdlp = ytdlp;
         _proxy = proxy;
         _log = log;
         _warmUpRunner = warmUpRunner;
+        _utcClock = utcClock ?? (() => DateTime.UtcNow);
     }
 
     private string ComponentsDir => _ytdlp.ComponentDir;
@@ -85,7 +102,25 @@ public sealed class PotProviderService
 
     public bool IsDenoInstalled => File.Exists(DenoPath);
 
-    public bool IsPluginInstalled => Directory.Exists(Path.Combine(PluginsDir, "bgutil-ytdlp-potprovider"));
+    /// <summary>The wrapper directory name, shared by the install and the
+    /// installed check - a mismatch made every boot re-download the plugin
+    /// while the extracted copy sat in the other name.</summary>
+    private const string PluginWrapperName = "bgutil-ytdlpotprovider";
+
+    public bool IsPluginInstalled => Directory.Exists(Path.Combine(PluginsDir, PluginWrapperName));
+
+    /// <summary>The plugin's hard per-request budget after patching: a slow
+    /// host needs the whole script start (4-14s observed) plus the challenge
+    /// fetch and the VM run, which the stock 20s does not cover.</summary>
+    public const double PluginTokenTimeoutSeconds = 120;
+
+    /// <summary>The plugin's script-version probe budget after patching: the
+    /// stock 15s is consumed by the module load alone on slow hosts.</summary>
+    public const double PluginProbeTimeoutSeconds = 60;
+
+    /// <summary>Set once the installed plugin's hard-coded timeouts were
+    /// verified (or patched) in this process.</summary>
+    private bool _pluginTimeoutsChecked;
 
     public string? LastError { get; private set; }
 
@@ -138,6 +173,13 @@ public sealed class PotProviderService
             {
                 await InstallPluginAsync(cancellationToken);
             }
+
+            // The plugin ships hard 15s/20s budgets tuned for fast machines;
+            // on a slow host the script start alone exceeds them (the token
+            // is lost and the media URL ends in HTTP 403). Widen them on the
+            // installed copy - idempotent, and a future plugin that no longer
+            // matches the pattern is reported instead of silently regressing.
+            EnsurePluginTimeouts();
         }
         finally
         {
@@ -148,16 +190,19 @@ public sealed class PotProviderService
     /// <summary>
     /// Runs the bgutil script once through deno with the plugin's exact
     /// arguments so deno's on-disk compile cache is hot before the first
-    /// real PO token request. The plugin probes the script with a hard 15s
-    /// timeout (getpot_bgutil_script._GET_SCRIPT_VSN_TIMEOUT); a cold deno
-    /// on a low-power host exceeds it, the probe then reports the provider
-    /// unavailable and YouTube loses its PO token even though every
-    /// component is fine. Memoized on the deno binary's identity: the
-    /// auto-upgrade replaces the binary mid-process and deno's compile
-    /// cache is keyed by its version, so a replaced binary re-warms on the
-    /// next supervisor round (without this, the once-per-process memo from
-    /// the boot run would leave every later script spawn cold until
-    /// restart). A failed run is retried by the next round too. Start,
+    /// real PO token request. The plugin probes the script with a hard
+    /// timeout; a cold deno on a low-power host exceeds it, the probe then
+    /// reports the provider unavailable and YouTube loses its PO token even
+    /// though every component is fine. Memoized on the deno binary's
+    /// identity plus a refresh interval: the auto-upgrade replaces the
+    /// binary mid-process and deno's compile cache is keyed by its version
+    /// (a replaced binary re-warms on the next supervisor round), while the
+    /// interval re-warms when the cache goes cold silently - both leave
+    /// every later script spawn over the plugin's budget until something
+    /// recompiles. A failed run is retried by the next round too.
+    /// Download-path callers use the same entry point before a session-cookie
+    /// retry, so the memo hit is a cheap stat and a cold cache compiles once
+    /// under the generous budget instead of inside the plugin's one. Start,
     /// finish and failure are all logged so the warm-up is visible in the
     /// boot log.
     /// </summary>
@@ -169,40 +214,81 @@ public sealed class PotProviderService
         }
 
         var identity = DenoIdentity();
-        if (identity is not null && _warmUpIdentity == identity)
+        if (IsWarmUpFresh(identity))
         {
             return;
         }
 
-        var started = System.Diagnostics.Stopwatch.StartNew();
-        _log.Information(
-            "Pre-warming deno for the PO token script (a cold start exceeds the plugin's 15s probe budget on slow hosts)");
+        // The supervisor round and download-path retries can both land here:
+        // serialize so a cold compile runs once and a waiter finds the fresh
+        // memo after the wait.
+        await _warmUpLock.WaitAsync(cancellationToken);
         try
         {
-            var psi = BuildWarmUpProcess();
-            if (_warmUpRunner is not null)
+            if (IsWarmUpFresh(identity))
             {
-                await _warmUpRunner(psi, cancellationToken);
-            }
-            else
-            {
-                await RunWarmUpProcessAsync(psi, cancellationToken);
+                return;
             }
 
-            _warmUpIdentity = identity;
-            _log.Information("Deno pre-warm finished in {Seconds:F1}s", started.Elapsed.TotalSeconds);
+            var started = System.Diagnostics.Stopwatch.StartNew();
+            _log.Information(
+                "Pre-warming deno for the PO token script (a cold start exceeds the plugin's probe budget on slow hosts)");
+            try
+            {
+                var psi = BuildWarmUpProcess();
+                if (_warmUpRunner is not null)
+                {
+                    await _warmUpRunner(psi, cancellationToken);
+                }
+                else
+                {
+                    await RunWarmUpProcessAsync(psi, cancellationToken);
+                }
+
+                if (identity is not null)
+                {
+                    _warmUpMemo = new WarmUpMemo(identity, _utcClock());
+                }
+
+                _log.Information("Deno pre-warm finished in {Seconds:F1}s", started.Elapsed.TotalSeconds);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _log.Warning("Deno pre-warm failed after {Seconds:F1}s: {Message}",
+                    started.Elapsed.TotalSeconds, ex.Message);
+                throw;
+            }
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        finally
         {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            _log.Warning("Deno pre-warm failed after {Seconds:F1}s: {Message}",
-                started.Elapsed.TotalSeconds, ex.Message);
-            throw;
+            _warmUpLock.Release();
         }
     }
+
+    /// <summary>True when the deno binary still matches a successfully
+    /// warmed identity and the warm-up is younger than the refresh
+    /// interval. A stat failure of the binary keeps the previous semantics:
+    /// the warm-up then runs unconditionally and records nothing.</summary>
+    private bool IsWarmUpFresh(string? identity)
+    {
+        var memo = _warmUpMemo;
+        if (identity is null || memo is null || memo.DenoIdentity != identity)
+        {
+            return false;
+        }
+
+        return _utcClock() - memo.WarmedAtUtc < WarmUpRefreshInterval;
+    }
+
+    /// <summary>Drops the warm-up memo so the next call recompiles. Called
+    /// when a run's error output shows the plugin's probe timing out - the
+    /// one signal that the compile cache went cold while the memo still
+    /// claims it is hot.</summary>
+    public void InvalidateWarmUp() => _warmUpMemo = null;
 
     /// <summary>An identity stamp of the installed deno binary (last-write
     /// time and length): the auto-upgrade replaces the file in place, which
@@ -433,17 +519,106 @@ public sealed class PotProviderService
 
     /// <summary>Downloads and unpacks the yt-dlp plugin of the pinned version;
     /// the zip root is yt_dlp_plugins/... and must land inside a wrapper
-    /// directory of any name for yt-dlp to discover it.</summary>
+    /// directory of any name for yt-dlp to discover it. The freshly unpacked
+    /// copy gets the widened timeouts immediately.</summary>
     private async Task InstallPluginAsync(CancellationToken cancellationToken)
     {
         var url = $"https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/download/{PotProviderVersion}/bgutil-ytdlp-pot-provider.zip";
         var zip = await _ytdlp.DownloadBytesAsync(url, cancellationToken);
-        var wrapper = Path.Combine(PluginsDir, "bgutil-ytdlp-potprovider");
+        var wrapper = Path.Combine(PluginsDir, PluginWrapperName);
         Directory.CreateDirectory(wrapper);
 
         using var stream = new MemoryStream(zip);
         using var archive = new ZipArchive(stream, ZipArchiveMode.Read);
         archive.ExtractToDirectory(wrapper, overwriteFiles: true);
         _log.Information("Installed bgutil yt-dlp plugin {Version} into {Wrapper}", PotProviderVersion, wrapper);
+        _pluginTimeoutsChecked = false;
+        EnsurePluginTimeouts();
+    }
+
+    /// <summary>
+    /// Puts the plugin's hard-coded script budgets above what a slow host
+    /// needs: the stock 15s/20s cover a fast machine only, and on the
+    /// deployment this was measured on the script start alone took 4-14s -
+    /// the probe expired, the run lost its token and the mweb media stream
+    /// ended in HTTP 403. Runs once per process; every rewrite is logged,
+    /// and a plugin that no longer carries the expected assignment is
+    /// reported (a silent miss would reintroduce the 403s after an upgrade).
+    /// </summary>
+    private void EnsurePluginTimeouts()
+    {
+        if (_pluginTimeoutsChecked)
+        {
+            return;
+        }
+
+        var extractorDir = Path.Combine(PluginsDir, PluginWrapperName, "yt_dlp_plugins", "extractor");
+        PatchTimeout(
+            Path.Combine(extractorDir, "getpot_bgutil.py"),
+            "_GETPOT_TIMEOUT",
+            20,
+            PluginTokenTimeoutSeconds);
+        PatchTimeout(
+            Path.Combine(extractorDir, "getpot_bgutil_script.py"),
+            "_GET_SCRIPT_VSN_TIMEOUT",
+            15,
+            PluginProbeTimeoutSeconds);
+        _pluginTimeoutsChecked = true;
+    }
+
+    private void PatchTimeout(string path, string constant, double stockValue, double patchedValue)
+    {
+        if (!File.Exists(path))
+        {
+            _log.Warning("PO token plugin file missing for the timeout patch: {Path}", path);
+            return;
+        }
+
+        var source = File.ReadAllText(path);
+        if (!TryReplaceTimeoutAssignment(source, constant, stockValue, patchedValue, out var patched))
+        {
+            _log.Warning(
+                "PO token plugin no longer carries {Constant} = {Value}; the widened timeout was not applied - re-check the pinned plugin version",
+                constant, stockValue);
+            return;
+        }
+
+        if (patched != source)
+        {
+            File.WriteAllText(path, patched);
+            _log.Information("Widened the PO token plugin {Constant} from {Stock}s to {Patched}s",
+                constant, stockValue, patchedValue);
+        }
+    }
+
+    /// <summary>
+    /// Rewrites one numeric assignment (<c>CONST = 20.0</c>) to the widened
+    /// value. True when the assignment is present (whether or not it needed
+    /// the rewrite - an already-patched copy yields the same text); false
+    /// when the plugin shape changed. Pure so tests pin the rewrite without
+    /// touching an install.
+    /// </summary>
+    public static bool TryReplaceTimeoutAssignment(
+        string source,
+        string constant,
+        double stockValue,
+        double patchedValue,
+        out string patched)
+    {
+        patched = source;
+        var stock = $"{constant} = {stockValue.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+        var widened = $"{constant} = {patchedValue.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+        if (source.Contains(widened, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (!source.Contains(stock, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        patched = source.Replace(stock, widened, StringComparison.Ordinal);
+        return true;
     }
 }

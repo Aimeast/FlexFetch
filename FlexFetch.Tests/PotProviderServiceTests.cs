@@ -12,12 +12,13 @@ public sealed class PotProviderServiceTests
     private readonly string _dataDir = TestApp.CreateTempDataDir();
 
     private PotProviderService CreateService(
-        Func<System.Diagnostics.ProcessStartInfo, CancellationToken, Task>? warmUpRunner = null)
+        Func<System.Diagnostics.ProcessStartInfo, CancellationToken, Task>? warmUpRunner = null,
+        Func<DateTime>? utcClock = null)
     {
         ILogger log = TestLog.Instance;
         var proxy = new ProxyService(new TestConfig(), log, _dataDir);
         var ytdlp = new YtdlpService(proxy, log, _dataDir);
-        return new PotProviderService(ytdlp, proxy, log, warmUpRunner);
+        return new PotProviderService(ytdlp, proxy, log, warmUpRunner, utcClock);
     }
 
     private string ServerDir()
@@ -152,6 +153,51 @@ public sealed class PotProviderServiceTests
     }
 
     [TestMethod]
+    public async Task WarmUp_RerunsAfterTheRefreshInterval()
+    {
+        // Deno's compile cache can go cold without the binary changing; the
+        // refresh interval bounds how long a silently lost cache starves the
+        // PO token supply.
+        ScaffoldInstalled();
+        var now = new DateTime(2026, 10, 30, 12, 0, 0, DateTimeKind.Utc);
+        var runs = 0;
+        var service = CreateService((_, _) =>
+        {
+            runs++;
+            return Task.CompletedTask;
+        }, utcClock: () => now);
+
+        await service.WarmUpDenoAsync();
+        now += PotProviderService.WarmUpRefreshInterval - TimeSpan.FromMinutes(1);
+        await service.WarmUpDenoAsync();
+        Assert.AreEqual(1, runs, "a fresh warm-up is not re-run inside the refresh interval");
+
+        now += TimeSpan.FromMinutes(2);
+        await service.WarmUpDenoAsync();
+        Assert.AreEqual(2, runs, "a stale warm-up memo re-runs the compile");
+    }
+
+    [TestMethod]
+    public async Task InvalidateWarmUp_ForcesTheNextWarmUpToRun()
+    {
+        // A probe timeout inside yt-dlp is the one signal that the compile
+        // cache went cold while the memo still claims it is hot.
+        ScaffoldInstalled();
+        var runs = 0;
+        var service = CreateService((_, _) =>
+        {
+            runs++;
+            return Task.CompletedTask;
+        });
+
+        await service.WarmUpDenoAsync();
+        service.InvalidateWarmUp();
+        await service.WarmUpDenoAsync();
+
+        Assert.AreEqual(2, runs, "an invalidated memo re-runs the warm-up on the next call");
+    }
+
+    [TestMethod]
     public async Task WarmUp_Failure_IsRetriedOnNextCall()
     {
         ScaffoldInstalled();
@@ -189,5 +235,51 @@ public sealed class PotProviderServiceTests
         await service.WarmUpDenoAsync();
 
         Assert.AreEqual(0, calls);
+    }
+
+    [TestMethod]
+    public void InstalledPluginWrapper_IsDetected()
+    {
+        // Regression: the install and the installed check used different
+        // wrapper names (a hyphen apart), so every boot re-downloaded the
+        // plugin while the extracted copy sat in the other directory.
+        Directory.CreateDirectory(Path.Combine(
+            _dataDir, "components", "yt-dlp-plugins", "bgutil-ytdlpotprovider"));
+
+        Assert.IsTrue(CreateService().IsPluginInstalled);
+    }
+
+    [TestMethod]
+    public void TimeoutPatch_RewritesTheStockBudgets()
+    {
+        // The plugin ships budgets tuned for fast machines: 20s per token
+        // request and 15s for the script probe. On a slow host the script
+        // start alone exceeds them and the run loses its token (HTTP 403 on
+        // the media stream), so the installed copy is widened.
+        const string baseSource = "class BgUtilPTPBase:\n    _GETPOT_TIMEOUT = 20.0\n";
+        Assert.IsTrue(PotProviderService.TryReplaceTimeoutAssignment(
+            baseSource, "_GETPOT_TIMEOUT", 20, PotProviderService.PluginTokenTimeoutSeconds, out var patchedBase));
+        StringAssert.Contains(patchedBase, "_GETPOT_TIMEOUT = 120.0");
+        Assert.IsFalse(patchedBase.Contains("_GETPOT_TIMEOUT = 20.0", StringComparison.Ordinal));
+
+        const string scriptSource = "class BgUtilScriptPTPBase:\n    _GET_SCRIPT_VSN_TIMEOUT = 15.0\n";
+        Assert.IsTrue(PotProviderService.TryReplaceTimeoutAssignment(
+            scriptSource, "_GET_SCRIPT_VSN_TIMEOUT", 15, PotProviderService.PluginProbeTimeoutSeconds, out var patchedScript));
+        StringAssert.Contains(patchedScript, "_GET_SCRIPT_VSN_TIMEOUT = 60.0");
+    }
+
+    [TestMethod]
+    public void TimeoutPatch_IsIdempotentAndRejectsUnknownShapes()
+    {
+        // A second boot re-applies nothing; a plugin that no longer carries
+        // the stock assignment must be reported instead of silently keeping
+        // the old budget (the caller logs the warning).
+        Assert.IsTrue(PotProviderService.TryReplaceTimeoutAssignment(
+            "    _GETPOT_TIMEOUT = 120.0\n", "_GETPOT_TIMEOUT", 20, 120, out var alreadyPatched));
+        Assert.AreEqual("    _GETPOT_TIMEOUT = 120.0\n", alreadyPatched);
+
+        Assert.IsFalse(PotProviderService.TryReplaceTimeoutAssignment(
+            "    _GETPOT_TIMEOUT = 30.0\n", "_GETPOT_TIMEOUT", 20, 120, out var untouched));
+        Assert.AreEqual("    _GETPOT_TIMEOUT = 30.0\n", untouched);
     }
 }

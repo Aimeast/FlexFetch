@@ -56,10 +56,12 @@
             <h2>YouTube PO token provider</h2>
             <div class="muted" style="margin-bottom:0.5rem">
                 Generates YouTube PO tokens through the bgutil script, executed
-                by Deno whenever yt-dlp needs one (no server process). Needed
-                for videos that play in the browser but are denied to API
-                clients from flagged IPs. The pieces install automatically at
-                startup.
+                by Deno whenever yt-dlp needs one (no server process). The
+                installed plugin's per-request timeouts are widened for slow
+                hosts, where the stock budgets expire before the token is
+                generated. Needed for videos that play in the browser but are
+                denied to API clients from flagged IPs. The pieces install
+                automatically at startup.
             </div>
             <div class="kv" id="pot-kv"></div>
         </div>
@@ -283,7 +285,7 @@
                     'Deno': pot.denoInstalled
                         ? rawHtml('<span class="badge ok">installed</span>')
                         : rawHtml('<span class="badge err">missing</span>'),
-                    'Script (bgutil)': pot.serverInstalled
+                    'Server (bgutil)': pot.serverInstalled
                         ? rawHtml('<span class="badge ok">installed</span>')
                         : rawHtml('<span class="badge err">missing</span>'),
                     'yt-dlp plugin': pot.pluginInstalled

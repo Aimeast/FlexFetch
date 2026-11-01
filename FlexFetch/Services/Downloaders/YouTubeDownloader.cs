@@ -19,6 +19,10 @@ namespace FlexFetch.Services.Downloaders;
 /// </summary>
 public sealed class YouTubeDownloader : YtdlpDownloader
 {
+    /// <summary>Fingerprint of the bgutil script-deno provider's version
+    /// probe expiring (getpot_bgutil_script._GET_SCRIPT_VSN_TIMEOUT).</summary>
+    private const string ProbeTimeoutSignature = "'--version']' timed out";
+
     private readonly YouTubeSessionStore _snapshot;
     private readonly YouTubeSessionExportService? _export;
     private readonly PotProviderService? _pot;
@@ -70,6 +74,50 @@ public sealed class YouTubeDownloader : YtdlpDownloader
         SetExtractorArgs(options,
             YouTubePosture.BuildExtractorArgs(YouTubePosture.CookieClients, visitorData),
             _pot?.ScriptPathArg);
+    }
+
+    /// <summary>The plugin probes the PO token script with a hard timeout;
+    /// when it expires inside yt-dlp, the run loses its PO token and the
+    /// cookie'd mweb media URLs end in HTTP 403 on the video stream. Feed
+    /// the signature back so the memoized deno warm-up is dropped and the
+    /// next supervisor round recompiles.</summary>
+    protected override void OnRunFailed(IReadOnlyList<string> errorOutput)
+    {
+        if (_pot is null
+            || !errorOutput.Any(line => line.Contains(ProbeTimeoutSignature, StringComparison.Ordinal)))
+        {
+            return;
+        }
+
+        _pot.InvalidateWarmUp();
+        Log.Warning(
+            "The PO token script probe timed out inside yt-dlp; the deno warm-up was re-armed for the next supervisor round");
+    }
+
+    /// <summary>The cookie'd mweb posture needs a PO token: make sure the
+    /// deno compile cache is hot before the retry so the plugin's probe
+    /// finds it that way even when the cache went cold after boot. A failed
+    /// warm-up is logged and swallowed - the retry proceeds and yt-dlp
+    /// decides with whatever the provider can supply.</summary>
+    protected override async Task OnBeforeSessionRetryAsync(CancellationToken cancellationToken)
+    {
+        if (_pot is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _pot.WarmUpDenoAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Deno warm-up before the session retry failed; proceeding without it");
+        }
     }
 
     /// <summary>

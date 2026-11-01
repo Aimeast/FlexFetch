@@ -1,4 +1,5 @@
 ﻿using FlexFetch.Config;
+using FlexFetch.Startup;
 using Microsoft.Extensions.Configuration;
 
 namespace FlexFetch.Tests;
@@ -28,5 +29,28 @@ public sealed class ProgramTests
             ? "/data"
             : ConfigRegistry.GetDefault(ConfigKeys.DataDir);
         Assert.AreEqual(expected, Program.ResolveDataDir(config));
+    }
+
+    [TestMethod]
+    public void ResolveDenoDir_Unpinned_ComputesDataCacheFolder()
+    {
+        // The deno compile cache is pinned next to the components, inside
+        // the persistent data root - never a home directory deployments may
+        // not even define.
+        var dataDir = TestApp.CreateTempDataDir();
+        Assert.AreEqual(
+            Path.Combine(dataDir, "cache", "deno"),
+            RuntimeSetup.ResolveDenoDir(dataDir, null));
+        Assert.AreEqual(
+            Path.Combine(dataDir, "cache", "deno"),
+            RuntimeSetup.ResolveDenoDir(dataDir, "  "));
+    }
+
+    [TestMethod]
+    public void ResolveDenoDir_PinnedByDeployment_KeepsTheExternalValue()
+    {
+        // Overriding an external DENO_DIR would split the boot warm-up's
+        // cache from the cache the plugin's probes hit.
+        Assert.IsNull(RuntimeSetup.ResolveDenoDir("/data", "/opt/deno-cache"));
     }
 }

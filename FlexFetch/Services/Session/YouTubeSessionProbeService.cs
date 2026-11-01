@@ -15,12 +15,21 @@ public sealed record ProbeResult(
     bool RunSucceeded,
     YtdlpOutputClass Class,
     IReadOnlyList<string> Output,
-    string VideoTitle)
+    string VideoTitle,
+    bool ProviderFault = false)
 {
     /// <summary>True only when the run succeeded AND no fatal marker appeared:
     /// exit code 0 with a rotation WARNING still counts as unhealthy (yt-dlp
     /// falls back to anonymous "success").</summary>
     public bool Healthy => RunSucceeded && Class == YtdlpOutputClass.Ok;
+
+    /// <summary>
+    /// True when the run's only failure signal is the PO token provider
+    /// (it failed or timed out): the session itself was not judged, so
+    /// callers must not count it as a session failure or reject a jar.
+    /// </summary>
+    public bool ProviderFaultOnly => ProviderFault
+        && Class is (YtdlpOutputClass.Ok or YtdlpOutputClass.Retryable or YtdlpOutputClass.Unknown);
 }
 
 /// <summary>
@@ -176,10 +185,11 @@ public sealed class YouTubeSessionProbeService
         var success = exitCode == 0;
         var class_ = YtdlpOutputClassifier.Classify(lines, success);
         var title = data?.Title ?? string.Empty;
+        var providerFault = YtdlpOutputClassifier.HasPoTokenProviderFault(lines);
 
         _log.Information("Session probe verdict: {Class} (run success={Success}, {Lines} output lines)",
             class_, success, lines.Count);
-        return new ProbeResult(success, class_, lines, title);
+        return new ProbeResult(success, class_, lines, title, providerFault);
     }
 
     /// <summary>Probe URL from configuration (a stable public video).</summary>

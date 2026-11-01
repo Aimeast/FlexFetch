@@ -136,4 +136,41 @@ public sealed class YtdlpOutputClassifierTests
         Assert.AreEqual("youtube:player_client=android_vr,mweb",
             YouTubePosture.BuildExtractorArgs(YouTubePosture.AnonymousClients));
     }
+
+    [TestMethod]
+    public void MediaData403_IsRetryable()
+    {
+        // The GVS rejection a missing/stale PO token produces: the URL was
+        // valid during extraction, so this is transient - never content or
+        // auth, and never a permanent failure.
+        Assert.AreEqual(YtdlpOutputClass.Retryable,
+            YtdlpOutputClassifier.ClassifyLine("ERROR: unable to download video data: HTTP Error 403: Forbidden"));
+    }
+
+    [TestMethod]
+    public void PoTokenProviderFault_DetectionIsSpecific()
+    {
+        // The pot director's provider-failure messages are infrastructure
+        // signals; missing-token preconditions are not provider faults and
+        // must keep their own classification.
+        Assert.IsTrue(YtdlpOutputClassifier.IsPoTokenProviderFault(
+            "WARNING: [youtube] [pot] Error fetching PO Token from \"bgutil:http\" provider: "
+            + "PoTokenProviderError('_get_pot failed: Timeout expired')"));
+        Assert.IsTrue(YtdlpOutputClassifier.IsPoTokenProviderFault(
+            "WARNING: [youtube] [pot] Unexpected error when fetching PO Token from \"bgutil:http\" provider: boom"));
+        Assert.IsTrue(YtdlpOutputClassifier.IsPoTokenProviderFault(
+            "ERROR: [youtube] [pot] Invalid PO Token response received from \"bgutil:http\" provider"));
+
+        Assert.IsFalse(YtdlpOutputClassifier.IsPoTokenProviderFault(
+            "WARNING: [youtube] Unable to fetch GVS PO Token for mweb client: Missing required Visitor Data"));
+        Assert.IsFalse(YtdlpOutputClassifier.IsPoTokenProviderFault(
+            "ERROR: unable to download video data: HTTP Error 403: Forbidden"));
+
+        Assert.IsTrue(YtdlpOutputClassifier.HasPoTokenProviderFault(new[]
+        {
+            "WARNING: unrelated",
+            "WARNING: [youtube] [pot] Error fetching PO Token from \"bgutil:http\" provider: x",
+        }));
+        Assert.IsFalse(YtdlpOutputClassifier.HasPoTokenProviderFault(Array.Empty<string>()));
+    }
 }

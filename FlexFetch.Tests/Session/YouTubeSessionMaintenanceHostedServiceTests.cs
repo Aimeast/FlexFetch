@@ -65,6 +65,46 @@ public sealed class YouTubeSessionMaintenanceHostedServiceTests
         Assert.IsFalse(YouTubeSessionMaintenanceHostedService.IsUsable(YouTubeSessionHealth.Unknown));
     }
 
+    [TestMethod]
+    public async Task AgedRound_ProviderFaultRejection_DoesNotRecordASessionVerdict()
+    {
+        // A PO token provider outage is infrastructure: the session was never
+        // judged, so it must not walk toward the SESSION ALERT threshold.
+        var recorded = false;
+        await YouTubeSessionMaintenanceHostedService.RunAgedExportRoundAsync(
+            TestLog.Instance,
+            _ => throw new ExportRejectedException(
+                YouTubeSessionHealth.Error, "probe could not generate a token", providerFault: true),
+            (_, _) => recorded = true,
+            CancellationToken.None);
+
+        Assert.IsFalse(recorded, "a provider fault must not be counted as a session failure");
+    }
+
+    [TestMethod]
+    public void ProbeResult_ProviderFaultOnly_RequiresAProviderFaultAndNoSessionVerdict()
+    {
+        var fault = new ProbeResult(
+            true,
+            YtdlpOutputClass.Retryable,
+            new[] { "WARNING: [youtube] [pot] Error fetching PO Token from \"bgutil:http\" provider: x" },
+            "t",
+            ProviderFault: true);
+        Assert.IsTrue(fault.ProviderFaultOnly, "token-only failure: the session was not judged");
+        Assert.IsFalse(fault.Healthy);
+
+        var sessionProblem = new ProbeResult(
+            true,
+            YtdlpOutputClass.BotCheck,
+            new[] { "ERROR: Sign in to confirm you're not a bot" },
+            "t",
+            ProviderFault: true);
+        Assert.IsFalse(sessionProblem.ProviderFaultOnly, "a session verdict wins over provider noise");
+
+        var clean = new ProbeResult(true, YtdlpOutputClass.Ok, Array.Empty<string>(), "t");
+        Assert.IsFalse(clean.ProviderFaultOnly);
+    }
+
     private static async Task<(YouTubeSessionHealth? Health, string? Detail)> Run(
         Func<CancellationToken, Task<YouTubeSessionHealth>> runExport)
     {

@@ -106,6 +106,14 @@ public sealed class YouTubeSessionMaintenanceHostedService : IntervalHostedServi
             var health = await runExport(cancellationToken);
             recordVerdict(health, null);
         }
+        catch (ExportRejectedException ex) when (ex.ProviderFault)
+        {
+            // An infrastructure outage, not a session verdict: counting it
+            // toward the failure threshold would raise a false SESSION ALERT.
+            log.Warning(
+                "Periodic session export skipped: the PO token provider failed ({Detail}); the session was not judged",
+                ex.Message);
+        }
         catch (ExportRejectedException ex)
         {
             recordVerdict(ex.Health, ex.Message);
@@ -155,6 +163,18 @@ public sealed class YouTubeSessionMaintenanceHostedService : IntervalHostedServi
                 copy,
                 YouTubePosture.BuildExtractorArgs(YouTubePosture.CookieClients, visitorData),
                 cancellationToken);
+            if (probe.ProviderFaultOnly)
+            {
+                // The provider (not the session) failed: the probe output
+                // carried a token-fetch fault and no session verdict, so the
+                // bookkeeping keeps its last real result instead of walking
+                // toward a false SESSION ALERT.
+                _log.Warning(
+                    "Session health check: the PO token provider failed ({Detail}); the session verdict is skipped this round",
+                    string.Join(" | ", probe.Output.Take(2)));
+                return;
+            }
+
             RecordVerdict(probe.Healthy ? YouTubeSessionHealth.Ok : YouTubeSessionExportService.MapProbeClass(probe.Class),
                 string.Join(" | ", probe.Output.Take(2)));
         }

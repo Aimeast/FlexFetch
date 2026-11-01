@@ -261,6 +261,7 @@ public class YtdlpDownloader : IDownloader
         {
             if (!result.Success || result.Data is null)
             {
+                OnRunFailed(result.ErrorOutput);
                 // Anonymous first: only an auth-class failure makes a session
                 // worth attaching (subclass hook).
                 if (ShouldRetryWithSession(result.ErrorOutput))
@@ -271,7 +272,12 @@ public class YtdlpDownloader : IDownloader
                         ApplySessionPosture(options, cookieFile);
                         Log.Information("Task {TaskId}: retrying with session cookies ({CookieFile})",
                             taskId, Path.GetFileName(cookieFile));
+                        await OnBeforeSessionRetryAsync(cancellationToken);
                         result = await _fetchData(url, options, cancellationToken);
+                        if (!result.Success || result.Data is null)
+                        {
+                            OnRunFailed(result.ErrorOutput);
+                        }
                     }
                 }
 
@@ -319,6 +325,11 @@ public class YtdlpDownloader : IDownloader
         string? cookieFile = null;
         try
         {
+            if (!result.Success)
+            {
+                OnRunFailed(result.ErrorOutput);
+            }
+
             if (!result.Success && ShouldRetryWithSession(result.ErrorOutput))
             {
                 cookieFile = await AcquireSessionCookieFileAsync(task.Id, cancellationToken);
@@ -327,7 +338,12 @@ public class YtdlpDownloader : IDownloader
                     ApplySessionPosture(options, cookieFile);
                     Log.Information("Task {TaskId}: retrying download with session cookies ({CookieFile})",
                         task.Id, Path.GetFileName(cookieFile));
+                    await OnBeforeSessionRetryAsync(cancellationToken);
                     result = await _downloadVideo(task.Url, options, progress, size => UpdateFileSize(task, size), cancellationToken);
+                    if (!result.Success)
+                    {
+                        OnRunFailed(result.ErrorOutput);
+                    }
                 }
             }
 
@@ -383,6 +399,20 @@ public class YtdlpDownloader : IDownloader
         options.Cookies = cookieFile;
     }
 
+    /// <summary>Called with the error output of every failed run (analysis
+    /// or download), before any session retry is attempted - and again when
+    /// the retry run itself fails. Subclasses feed failure signatures back
+    /// into the services they own.</summary>
+    protected virtual void OnRunFailed(IReadOnlyList<string> errorOutput)
+    {
+    }
+
+    /// <summary>Awaited after a session posture was applied, just before
+    /// the retry run starts. Lets a subclass prepare services the retry's
+    /// posture depends on; failures here must not block the retry.</summary>
+    protected virtual Task OnBeforeSessionRetryAsync(CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+
     /// <summary>Inspects the output of a SUCCESSFUL run: a rotated-session
     /// WARNING still means the jar is dying (yt-dlp fell back to anonymous)
     /// and must trigger a re-export even at exit code 0.</summary>
@@ -424,6 +454,23 @@ public class YtdlpDownloader : IDownloader
     {
         var message = BuildFailureMessage(errorOutput, prefix);
         var cls = YtdlpOutputClassifier.Classify(errorOutput, runSucceeded: false);
+        // A PO token provider fault is infrastructure, not content or auth:
+        // the media URL it guarded was rejected without its token (the GVS
+        // 403), and the retry succeeds once the provider recovers. The
+        // condition is spelled out in the message so the task list shows why
+        // the task is waiting instead of blaming the video.
+        if (YtdlpOutputClassifier.HasPoTokenProviderFault(errorOutput))
+        {
+            if (cls is YtdlpOutputClass.Unknown or YtdlpOutputClass.Ok)
+            {
+                cls = YtdlpOutputClass.Retryable;
+            }
+
+            message += cls == YtdlpOutputClass.Retryable
+                ? " (PO token provider failed; the task retries after it recovers)"
+                : " (PO token provider failed)";
+        }
+
         return cls switch
         {
             YtdlpOutputClass.Retryable => new RetryableException(message),

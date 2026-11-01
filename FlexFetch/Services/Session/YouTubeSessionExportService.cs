@@ -178,9 +178,23 @@ public sealed class YouTubeSessionExportService
             meta.LastProbeClass = probe.Class.ToString();
             if (!probe.Healthy)
             {
-                throw new ExportRejectedException(
-                    MapProbeClass(probe.Class),
-                    $"Probe rejected the candidate jar: {Describe(probe)}");
+                if (probe.ProviderFaultOnly && probe.RunSucceeded)
+                {
+                    // InnerTube answered with the candidate jar; only the
+                    // token provider failed. An infrastructure outage must
+                    // not reject a valid jar (the refresh would stall for as
+                    // long as the provider is down).
+                    _log.Warning(
+                        "Session export: the PO token provider failed during the gate; the candidate jar was accepted on its InnerTube response ({Detail})",
+                        Describe(probe));
+                }
+                else
+                {
+                    throw new ExportRejectedException(
+                        MapProbeClass(probe.Class),
+                        $"Probe rejected the candidate jar: {Describe(probe)}",
+                        probe.ProviderFaultOnly);
+                }
             }
         }
         finally
@@ -265,16 +279,27 @@ public sealed class YouTubeSessionExportService
 
             if (!probe.Healthy)
             {
-                var health = MapProbeClass(probe.Class);
-                _snapshot.UpdateMeta(m =>
+                if (probe.ProviderFaultOnly && probe.RunSucceeded)
                 {
-                    m.Health = health.ToString();
-                    m.LastProbeClass = probe.Class.ToString();
-                    m.LastError = $"Import rejected: {Describe(probe)}";
-                });
-                return new SessionImportResult(false, health,
-                    $"Import rejected by probe ({probe.Class}): {Describe(probe)}",
-                    parse.Cookies.Count, 0, CurrentCount());
+                    // Same rule as the export gate: the session was accepted,
+                    // the provider merely could not supply a token.
+                    _log.Warning(
+                        "Session import: the PO token provider failed during the probe; the import was accepted on its InnerTube response ({Detail})",
+                        Describe(probe));
+                }
+                else
+                {
+                    var health = MapProbeClass(probe.Class);
+                    _snapshot.UpdateMeta(m =>
+                    {
+                        m.Health = health.ToString();
+                        m.LastProbeClass = probe.Class.ToString();
+                        m.LastError = $"Import rejected: {Describe(probe)}";
+                    });
+                    return new SessionImportResult(false, health,
+                        $"Import rejected by probe ({probe.Class}): {Describe(probe)}",
+                        parse.Cookies.Count, 0, CurrentCount());
+                }
             }
         }
         finally
@@ -444,10 +469,17 @@ public sealed class YouTubeSessionExportService
 /// <summary>The pipeline rejected the candidate jar (snapshot untouched).</summary>
 public sealed class ExportRejectedException : Exception
 {
-    public ExportRejectedException(YouTubeSessionHealth health, string message) : base(message)
+    public ExportRejectedException(YouTubeSessionHealth health, string message, bool providerFault = false)
+        : base(message)
     {
         Health = health;
+        ProviderFault = providerFault;
     }
 
     public YouTubeSessionHealth Health { get; }
+
+    /// <summary>True when the rejection came from a PO token provider
+    /// outage, not from the session: the caller must not count it as a
+    /// session failure.</summary>
+    public bool ProviderFault { get; }
 }

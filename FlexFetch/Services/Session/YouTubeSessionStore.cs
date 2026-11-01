@@ -66,8 +66,9 @@ public enum YouTubeSessionHealth
 /// export/import pipeline; yt-dlp, probes and the canary always receive a
 /// random-named plaintext COPY (yt-dlp rewrites the cookies file it is
 /// given, so the original must never be handed to it). The snapshot age is
-/// taken from the meta's ExportedAt, NOT from the file mtime: meta-only
-/// canary updates rewrite the file and would reset the age every check.
+/// taken from the jar's own write stamps (export/import), NOT from the file
+/// mtime: meta-only canary updates rewrite the file and would reset the age
+/// every check.
 /// </summary>
 public sealed class YouTubeSessionStore
 {
@@ -96,9 +97,14 @@ public sealed class YouTubeSessionStore
     public bool Exists => _files.Exists(SiteName);
 
     /// <summary>
-    /// Age of the last full export (meta.ExportedAt), or null when missing.
-    /// Deliberately not the file mtime: meta-only canary verdicts rewrite the
-    /// file and would make the snapshot look freshly exported forever.
+    /// Age of the session data: the later of the two timestamps that
+    /// actually wrote the jar (a full export or an import). Deliberately
+    /// NOT the file mtime and NOT any other meta write: a canary verdict
+    /// rewrites the file every round, so an mtime-based age resets itself
+    /// and starves the full-refresh gear forever - an imported snapshot
+    /// then never exports and "Exported at" stays empty. Null only when no
+    /// timestamp exists at all (a legacy snapshot), where the file mtime is
+    /// the only anchor left.
     /// </summary>
     public TimeSpan? Age
     {
@@ -106,9 +112,9 @@ public sealed class YouTubeSessionStore
         {
             try
             {
-                if (ReadMeta()?.ExportedAt is { } exported)
+                if (SessionWriteAnchor(ReadMeta()) is { } anchor)
                 {
-                    return DateTime.UtcNow - exported;
+                    return DateTime.UtcNow - anchor;
                 }
             }
             catch (SessionFileUnreadableException)
@@ -119,6 +125,26 @@ public sealed class YouTubeSessionStore
             var path = _files.PathFor(SiteName);
             return File.Exists(path) ? DateTime.UtcNow - File.GetLastWriteTimeUtc(path) : null;
         }
+    }
+
+    /// <summary>The newest moment the jar itself was written: the export
+    /// stamp when the pipeline wrote it, the import stamp when a browser
+    /// export was pasted in, whichever is later. Canary verdicts update
+    /// metadata only and must never move this anchor.</summary>
+    public static DateTime? SessionWriteAnchor(YouTubeSessionMeta? meta)
+    {
+        DateTime? anchor = null;
+        if (meta?.ExportedAt is { } exported)
+        {
+            anchor = exported;
+        }
+
+        if (meta?.ImportedAt is { } imported && (anchor is null || imported > anchor))
+        {
+            anchor = imported;
+        }
+
+        return anchor;
     }
 
     /// <summary>Loads the session cookies (empty when missing/unreadable).</summary>
